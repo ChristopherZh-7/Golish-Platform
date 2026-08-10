@@ -5,6 +5,7 @@
 //! close its Unit. Only the runtime-memory team finalizer may do that.
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::Value;
 use sqlx::{Executor, PgConnection, PgPool, Postgres};
 use uuid::Uuid;
@@ -589,6 +590,152 @@ fn is_aggregator_item(plan: &StageTeamPlanRow, item: &StageWorkItemRow) -> bool 
         && !item.required_for_barrier
 }
 
+fn is_out_of_band_reviewer_item(item: &StageWorkItemRow) -> bool {
+    item.kind == "target_intel_read_only_review"
+        && item.output_schema == "intel_review.v1"
+        && !item.required_for_barrier
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationModelWorkItemEvidenceAuthority {
+    schema: String,
+    manifest_id: Uuid,
+    manifest_hash: String,
+    organization_id: Uuid,
+    work_item_key: String,
+    work_item_kind: String,
+    projection_hash: String,
+    projection: Value,
+    source_input_keys: Vec<String>,
+    evidence_ids: Vec<i64>,
+}
+
+fn parse_application_model_work_item_evidence_authority(
+    item: &StageWorkItemRow,
+) -> RuntimeMemoryStoreResult<ApplicationModelWorkItemEvidenceAuthority> {
+    let refs = item
+        .input_refs
+        .as_array()
+        .filter(|refs| refs.len() == 1)
+        .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "application_model_work_item_evidence_authority_mismatch",
+        })?;
+    let authority =
+        serde_json::from_value::<ApplicationModelWorkItemEvidenceAuthority>(refs[0].clone())
+            .map_err(|_| RuntimeMemoryStoreError::IdentityMismatch {
+                code: "application_model_work_item_evidence_authority_mismatch",
+            })?;
+    if authority.schema != "application_model_work_item_input.v1"
+        || authority.organization_id != item.organization_id
+        || authority.work_item_key != item.stable_key
+        || authority.work_item_kind != item.kind
+        || !validate_hash(&authority.manifest_hash)
+        || !validate_hash(&authority.projection_hash)
+        || !authority.projection.is_object()
+        || authority.projection_hash
+            != format!(
+                "sha256:{}",
+                operation_scope_decisions::sha256_json(&authority.projection)
+            )
+        || authority
+            .source_input_keys
+            .iter()
+            .any(|key| key.trim().is_empty() || key.len() > 256)
+        || authority
+            .source_input_keys
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "application_model_work_item_evidence_authority_mismatch",
+        });
+    }
+    Ok(authority)
+}
+
+fn application_model_work_item_inherited_evidence_ids(
+    item: &StageWorkItemRow,
+    manifest_evidence_ids: &std::collections::BTreeSet<i64>,
+) -> RuntimeMemoryStoreResult<std::collections::BTreeSet<i64>> {
+    let authority = parse_application_model_work_item_evidence_authority(item)?;
+    let whitelist = authority
+        .evidence_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if whitelist.len() != authority.evidence_ids.len()
+        || authority
+            .evidence_ids
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        || authority.evidence_ids.iter().any(|id| *id <= 0)
+        || !whitelist.is_subset(manifest_evidence_ids)
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "application_model_work_item_evidence_authority_mismatch",
+        });
+    }
+    Ok(whitelist)
+}
+
+async fn load_application_model_work_item_inherited_evidence_ids(
+    connection: &mut PgConnection,
+    unit: &stage_run_units::StageRunUnitRow,
+    item: &StageWorkItemRow,
+) -> RuntimeMemoryStoreResult<std::collections::BTreeSet<i64>> {
+    if unit.stage_kind != "application_understanding" {
+        return Ok(std::collections::BTreeSet::new());
+    }
+    let authority = parse_application_model_work_item_evidence_authority(item)?;
+    let manifest = sqlx::query_as::<_, (Uuid, String)>(
+        r#"SELECT id,manifest_hash
+             FROM application_model_manifests
+            WHERE operation_id=$1 AND scope_snapshot_id=$2
+              AND stage_execution_id=$3 AND stage_run_unit_id=$4
+              AND organization_id=$5
+            FOR SHARE"#,
+    )
+    .bind(unit.operation_id)
+    .bind(unit.scope_snapshot_id)
+    .bind(unit.stage_execution_id)
+    .bind(unit.id)
+    .bind(unit.organization_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    if manifest.as_slice() != [(authority.manifest_id, authority.manifest_hash.clone())] {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "application_model_work_item_evidence_authority_mismatch",
+        });
+    }
+    let source_inputs = sqlx::query_as::<_, (String, Vec<i64>)>(
+        r#"SELECT input_key,evidence_ids
+             FROM application_model_manifest_inputs
+            WHERE manifest_id=$1 AND input_key=ANY($2)
+            ORDER BY input_key
+            FOR SHARE"#,
+    )
+    .bind(authority.manifest_id)
+    .bind(&authority.source_input_keys)
+    .fetch_all(&mut *connection)
+    .await?;
+    if source_inputs.len() != authority.source_input_keys.len()
+        || source_inputs
+            .iter()
+            .zip(&authority.source_input_keys)
+            .any(|((persisted, _), expected)| persisted != expected)
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "application_model_work_item_evidence_authority_mismatch",
+        });
+    }
+    let manifest_evidence_ids = source_inputs
+        .into_iter()
+        .flat_map(|(_, evidence_ids)| evidence_ids)
+        .collect::<std::collections::BTreeSet<_>>();
+    application_model_work_item_inherited_evidence_ids(item, &manifest_evidence_ids)
+}
+
 fn barrier_manifest_hash(
     plan: &StageTeamPlanRow,
     items: &[StageWorkItemRow],
@@ -601,7 +748,7 @@ fn barrier_manifest_hash(
         .collect::<std::collections::BTreeMap<_, _>>();
     let producer_items = items
         .iter()
-        .filter(|item| !is_aggregator_item(plan, item))
+        .filter(|item| !is_aggregator_item(plan, item) && !is_out_of_band_reviewer_item(item))
         .map(|item| {
             serde_json::json!({
                 "id": item.id,
@@ -689,7 +836,7 @@ pub(crate) async fn load_barrier_with_connection_ignoring_worker(
         .await?;
     let producer_item_ids = items
         .iter()
-        .filter(|item| !is_aggregator_item(&plan, item))
+        .filter(|item| !is_aggregator_item(&plan, item) && !is_out_of_band_reviewer_item(item))
         .map(|item| item.id)
         .collect::<std::collections::HashSet<_>>();
     let required = producer_item_ids.len() as i64;
@@ -792,6 +939,27 @@ pub struct CompletedStageWorkerRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CompleteInvestigationTaskPrimaryRow {
+    pub fence: RuntimeMemoryTxFence,
+    pub team_plan_id: Uuid,
+    pub primary_work_item_id: Uuid,
+    pub expected_work_item_row_version: i64,
+    pub expected_plan_row_version: i64,
+    pub expected_dispatch_epoch: i64,
+    pub expected_barrier_manifest_hash: String,
+    pub terminal_checkpoint: Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletedInvestigationTaskPrimaryRow {
+    pub unit: stage_run_units::StageRunUnitRow,
+    pub plan: StageTeamPlanRow,
+    pub work_item: StageWorkItemRow,
+    pub worker: stage_worker_runs::StageWorkerRunRow,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RetryStageWorkerRow {
     pub fence: RuntimeMemoryTxFence,
     pub team_plan_id: Uuid,
@@ -839,7 +1007,7 @@ fn output_replays_exactly(existing: &StageWorkerOutputRow, input: &CompleteStage
         && existing.output_hash == input.output_hash
 }
 
-fn canonical_stage_worker_output_hash(input: &CompleteStageWorkerRow) -> String {
+pub fn canonical_stage_worker_output_hash(input: &CompleteStageWorkerRow) -> String {
     let material = serde_json::json!({
         "blocker_code": input.blocker_codes.first(),
         "canonical_output": input.canonical_output,
@@ -1334,7 +1502,7 @@ pub(crate) async fn work_item_attempts_used(
     .await?)
 }
 
-async fn is_exact_closed_company_final_submitter_with_submission(
+async fn is_exact_closed_coordinator_final_submitter_with_submission(
     connection: &mut PgConnection,
     plan: &StageTeamPlanRow,
     item: &StageWorkItemRow,
@@ -1345,11 +1513,12 @@ async fn is_exact_closed_company_final_submitter_with_submission(
         || plan.final_submitter_kind != "worker"
         || plan.aggregator_kind != "worker"
         || plan.aggregator_role.as_deref() != Some(item.role.as_str())
-        || plan
-            .dynamic_request_policy
-            .get("coordination_mode")
-            .and_then(serde_json::Value::as_str)
-            != Some("company_controller")
+        || !matches!(
+            plan.dynamic_request_policy
+                .get("coordination_mode")
+                .and_then(serde_json::Value::as_str),
+            Some("company_controller" | "investigation_task_orchestrator")
+        )
         || item.stable_key != "leader:primary"
         || item.required_for_barrier
         || worker.lease_token.is_none()
@@ -1418,7 +1587,7 @@ pub(crate) async fn reap_expired_clean_stage_worker(
     // deterministic closeout, not producing another coverage fact. Do not
     // spend producer attempt fuel or forge an attempts-exhausted output for it.
     let finalizer_retry_scheduled =
-        is_exact_closed_company_final_submitter_with_submission(connection, plan, item, worker)
+        is_exact_closed_coordinator_final_submitter_with_submission(connection, plan, item, worker)
             .await?;
     let retry_scheduled = finalizer_retry_scheduled || attempts_used < max_attempts;
 
@@ -1538,10 +1707,11 @@ fn exhausted_output_replays_exactly(
         && existing.output_hash == expected.output_hash
 }
 
-async fn validate_stage_worker_output_authority(
+pub(crate) async fn validate_stage_worker_output_authority(
     connection: &mut PgConnection,
     unit: &stage_run_units::StageRunUnitRow,
     plan: &StageTeamPlanRow,
+    item: &StageWorkItemRow,
     input: &CompleteStageWorkerRow,
 ) -> RuntimeMemoryStoreResult<()> {
     let evidence_ids = input
@@ -1603,6 +1773,41 @@ async fn validate_stage_worker_output_authority(
             .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
                 code: "stage_worker_output_checked_empty_invalid",
             })?;
+    if input.output_schema == "investigation_cognitive_output.v1" {
+        match input.business_disposition.as_str() {
+            // A successful cognitive child returns advisory planning material,
+            // never canonical truth. Keeping every authority-bearing set empty
+            // makes that boundary structural rather than prose-only.
+            "found"
+                if input.canonical_output.is_object()
+                    && fact_values.is_empty()
+                    && input.evidence_ids.is_empty()
+                    && checked_empty_cells.is_empty()
+                    && input.blocker_codes.is_empty()
+                    && input.evidence_watermark.is_none() =>
+            {
+                if canonical_stage_worker_output_hash(input) != input.output_hash {
+                    return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                        code: "stage_worker_output_hash_mismatch",
+                    });
+                }
+                return Ok(());
+            }
+            "found" => {
+                return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "investigation_cognitive_output_must_be_advisory_only",
+                });
+            }
+            // Provider/runtime failure remains a typed blocked output and is
+            // validated by the ordinary disposition path below.
+            "blocked" => {}
+            _ => {
+                return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "invalid_investigation_cognitive_output",
+                });
+            }
+        }
+    }
     match input.business_disposition.as_str() {
         "found" if fact_keys.is_empty() && input.evidence_ids.is_empty() => {
             return Err(RuntimeMemoryStoreError::IdentityMismatch {
@@ -1641,6 +1846,15 @@ async fn validate_stage_worker_output_authority(
     let freshness_floor = unit.started_at.ok_or(RuntimeMemoryStoreError::Conflict {
         code: "stage_worker_unit_has_no_freshness_floor",
     })?;
+    let allowed_inherited_evidence_ids =
+        load_application_model_work_item_inherited_evidence_ids(connection, unit, item).await?;
+    if unit.stage_kind == "application_understanding"
+        && !evidence_ids.is_subset(&allowed_inherited_evidence_ids)
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "application_model_work_item_evidence_authority_mismatch",
+        });
+    }
     let canonical_refs = canonical_fact_refs::resolve_for_handoff(
         connection,
         plan.operation_id,
@@ -1674,7 +1888,7 @@ async fn validate_stage_worker_output_authority(
         plan.organization_id,
         &project_path_at_freeze,
         freshness_floor,
-        &std::collections::BTreeSet::new(),
+        &allowed_inherited_evidence_ids,
     )
     .await
 }
@@ -1768,7 +1982,7 @@ pub async fn complete_stage_worker(
             code: "stage_producer_must_not_terminalize_unit",
         });
     }
-    validate_stage_worker_output_authority(&mut tx, &unit, &plan, &input).await?;
+    validate_stage_worker_output_authority(&mut tx, &unit, &plan, &item, &input).await?;
     let worker = sqlx::query_as::<_, stage_worker_runs::StageWorkerRunRow>(
         "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
     )
@@ -1906,6 +2120,563 @@ pub async fn complete_stage_worker(
         output,
         replayed: false,
     })
+}
+
+/// Close the unique planning-only Investigation Task Primary without passing
+/// its StageRunUnit. The stage-level unified Investigation closure remains the
+/// only authority allowed to terminalize that Unit.
+pub async fn complete_investigation_task_primary(
+    pool: &PgPool,
+    input: CompleteInvestigationTaskPrimaryRow,
+) -> RuntimeMemoryStoreResult<CompletedInvestigationTaskPrimaryRow> {
+    if !validate_hash(&input.expected_barrier_manifest_hash)
+        || !input.terminal_checkpoint.is_array() && !input.terminal_checkpoint.is_object()
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "invalid_investigation_primary_completion",
+        });
+    }
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, (Option<Uuid>, String)>(
+        "SELECT superseded_by,runtime_memory_contract
+           FROM operation_state WHERE operation_id=$1 FOR UPDATE",
+    )
+    .bind(input.fence.operation_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "operation_state",
+    })?;
+    if operation.0.is_some() || operation.1 != "v2_only" {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "investigation_primary_operation_not_runnable",
+        });
+    }
+    let unit = sqlx::query_as::<_, stage_run_units::StageRunUnitRow>(
+        "SELECT * FROM stage_run_units
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3 FOR UPDATE",
+    )
+    .bind(input.fence.stage_run_unit_id)
+    .bind(input.fence.operation_id)
+    .bind(input.fence.stage_execution_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_run_units",
+    })?;
+    let plan = sqlx::query_as::<_, StageTeamPlanRow>(&format!(
+        "SELECT {PLAN_COLUMNS} FROM stage_team_plans WHERE id=$1 FOR UPDATE"
+    ))
+    .bind(input.team_plan_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    let item = sqlx::query_as::<_, StageWorkItemRow>(&format!(
+        "SELECT {ITEM_COLUMNS} FROM stage_work_items WHERE id=$1 FOR UPDATE"
+    ))
+    .bind(input.primary_work_item_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_work_items",
+    })?;
+    let worker = sqlx::query_as::<_, stage_worker_runs::StageWorkerRunRow>(
+        "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
+    )
+    .bind(input.fence.worker_run_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_worker_runs",
+    })?;
+    let synthesis_recovery_source_item_id = item
+        .stable_key
+        .strip_prefix("leader:synthesis-recovery:")
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let primary_subject =
+        if item.stable_key == "leader:primary" || synthesis_recovery_source_item_id.is_some() {
+            Some(None)
+        } else {
+            item.stable_key
+                .strip_prefix("task:")
+                .and_then(|value| value.strip_suffix(":primary"))
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .map(Some)
+        };
+    let task_primary_infrastructure_recovery_source_worker_id = worker
+        .parent_request_id
+        .as_deref()
+        .and_then(|value| value.strip_prefix("investigation-task-primary-infrastructure-recovery:"))
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let mut synthesis_recovery_exact = synthesis_recovery_source_item_id.is_none();
+    let (logical_primary_work_item_id, logical_primary_worker_run_id) = if let Some(
+        source_item_id,
+    ) =
+        synthesis_recovery_source_item_id
+    {
+        let source_item = sqlx::query_as::<_, StageWorkItemRow>(&format!(
+            "SELECT {ITEM_COLUMNS} FROM stage_work_items WHERE id=$1 AND team_plan_id=$2 FOR SHARE"
+        ))
+        .bind(source_item_id)
+        .bind(plan.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "stage_work_items",
+        })?;
+        let source_worker_run_id: Option<Uuid> = sqlx::query_scalar(
+            r#"SELECT worker.id
+                     FROM stage_worker_runs worker
+                     JOIN stage_worker_outputs output
+                       ON output.team_plan_id=$2
+                      AND output.work_item_id=$1
+                      AND output.worker_run_id=worker.id
+                    WHERE worker.work_item_id=$1
+                      AND worker.status='failed'
+                      AND worker.terminal_at IS NOT NULL
+                      AND worker.lease_token IS NULL
+                      AND worker.active_tool_call_id IS NULL
+                      AND output.business_disposition='blocked'
+                      AND output.canonical_output->>'kind'='stage_team_attempts_exhausted'
+                      AND output.canonical_output->>'failure_code'=
+                          'stage_team_worker_lease_expired'
+                      AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                          ANY(output.blocker_codes)"#,
+        )
+        .bind(source_item.id)
+        .bind(plan.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let recovery_v1_item_id = Uuid::new_v5(
+            &source_item.id,
+            b"sealed-investigation-synthesis-recovery-primary-v1",
+        );
+        let recovery_generation = investigation_synthesis_recovery_generation(
+            source_item.id,
+            &source_item.kind,
+            item.id,
+            &item.kind,
+        );
+        let recovery_v2_predecessor_exact = if recovery_generation == Some(2) {
+            let predecessor = sqlx::query_as::<_, StageWorkItemRow>(&format!(
+                "SELECT {ITEM_COLUMNS} FROM stage_work_items
+                      WHERE id=$1 AND team_plan_id=$2 FOR SHARE"
+            ))
+            .bind(recovery_v1_item_id)
+            .bind(plan.id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(predecessor) = predecessor {
+                let predecessor_worker_run_id: Option<Uuid> = sqlx::query_scalar(
+                        r#"SELECT recovery_worker.id
+                             FROM stage_worker_runs recovery_worker
+                             JOIN stage_worker_outputs recovery_output
+                               ON recovery_output.team_plan_id=$2
+                              AND recovery_output.work_item_id=$1
+                              AND recovery_output.worker_run_id=recovery_worker.id
+                            WHERE recovery_worker.work_item_id=$1
+                              AND recovery_worker.status='failed'
+                              AND recovery_worker.terminal_at IS NOT NULL
+                              AND recovery_worker.lease_token IS NULL
+                              AND recovery_worker.active_tool_call_id IS NULL
+                              AND recovery_worker.checkpoint #>> '{stage_team_execution_failure,code}'=
+                                  'stage_team_worker_lease_expired'
+                              AND recovery_output.business_disposition='blocked'
+                              AND recovery_output.canonical_output->>'kind'=
+                                  'stage_team_attempts_exhausted'
+                              AND recovery_output.canonical_output->>'failure_code'=
+                                  'stage_team_worker_lease_expired'
+                              AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                                  ANY(recovery_output.blocker_codes)
+                              AND (SELECT COUNT(*) FROM stage_worker_runs all_worker
+                                    WHERE all_worker.work_item_id=$1)=1
+                              AND (SELECT COUNT(*) FROM stage_worker_outputs all_output
+                                    WHERE all_output.work_item_id=$1)=1"#,
+                    )
+                    .bind(predecessor.id)
+                    .bind(plan.id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                predecessor_worker_run_id.is_some()
+                    && predecessor.stable_key == item.stable_key
+                    && predecessor.kind == source_item.kind
+                    && predecessor.role == source_item.role
+                    && predecessor.input_manifest_hash == source_item.input_manifest_hash
+                    && predecessor.input_refs == source_item.input_refs
+                    && !predecessor.required_for_barrier
+                    && predecessor.conflict_key.is_none()
+                    && predecessor.priority == source_item.priority
+                    && predecessor.attempt_policy == source_item.attempt_policy
+                    && predecessor.budget == source_item.budget
+                    && predecessor.output_schema == source_item.output_schema
+                    && predecessor.created_by == "server_seed"
+                    && predecessor.status == "exhausted"
+                    && predecessor.terminal_at.is_some()
+            } else {
+                false
+            }
+        } else {
+            recovery_generation == Some(1)
+        };
+        synthesis_recovery_exact = source_worker_run_id.is_some()
+            && recovery_v2_predecessor_exact
+            && item.created_by == "server_seed"
+            && source_item.stable_key == "leader:primary"
+            && source_item.created_by == "server_seed"
+            && source_item.status == "exhausted"
+            && source_item.terminal_at.is_some()
+            && item.dispatch_epoch == source_item.dispatch_epoch
+            && item.role == source_item.role
+            && item.input_manifest_hash == source_item.input_manifest_hash
+            && item.input_refs == source_item.input_refs
+            && item.attempt_policy == source_item.attempt_policy
+            && item.budget == source_item.budget
+            && item.output_schema == source_item.output_schema;
+        (source_item.id, source_worker_run_id.unwrap_or(Uuid::nil()))
+    } else if let (Some(source_worker_run_id), Some(Some(verification_task_id))) = (
+        task_primary_infrastructure_recovery_source_worker_id,
+        primary_subject,
+    ) {
+        let source_item_id = Uuid::new_v5(
+            &verification_task_id,
+            b"investigation-task-primary-work-item-v1",
+        );
+        let expected_source_worker_run_id = Uuid::new_v5(
+            &verification_task_id,
+            b"investigation-task-primary-worker-v1",
+        );
+        let recovery_item_id = Uuid::new_v5(
+            &source_item_id,
+            b"investigation-task-primary-infrastructure-recovery-work-item-v1",
+        );
+        let recovery_worker_run_id = Uuid::new_v5(
+            &expected_source_worker_run_id,
+            b"investigation-task-primary-infrastructure-recovery-worker-v1",
+        );
+        let recovery_v2_item_id = Uuid::new_v5(
+            &source_item_id,
+            b"investigation-task-primary-infrastructure-recovery-work-item-v2",
+        );
+        let recovery_v2_worker_run_id = Uuid::new_v5(
+            &expected_source_worker_run_id,
+            b"investigation-task-primary-infrastructure-recovery-worker-v2",
+        );
+        let recovery_generation =
+            if item.id == recovery_item_id && worker.id == recovery_worker_run_id {
+                1
+            } else if item.id == recovery_v2_item_id && worker.id == recovery_v2_worker_run_id {
+                2
+            } else {
+                0
+            };
+        let exact: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM investigation_task_primary_rearms rearm
+                     JOIN stage_work_items source_item
+                       ON source_item.id=rearm.primary_work_item_id
+                      AND source_item.team_plan_id=rearm.stage_team_plan_id
+                     JOIN stage_worker_runs source_worker
+                       ON source_worker.id=rearm.primary_worker_run_id
+                      AND source_worker.work_item_id=source_item.id
+                     JOIN stage_worker_outputs source_output
+                       ON source_output.team_plan_id=rearm.stage_team_plan_id
+                      AND source_output.work_item_id=source_item.id
+                      AND source_output.worker_run_id=source_worker.id
+                     JOIN investigation_pentagi_task_plans task_plan
+                       ON task_plan.stage_team_plan_id=rearm.stage_team_plan_id
+                      AND task_plan.subject_kind='verification_task'
+                      AND task_plan.subject_id=rearm.verification_task_id
+                      AND task_plan.subject_fingerprint_sha256=
+                          rearm.subject_fingerprint_sha256
+                     JOIN pentagi_logical_dispatch_receipts dispatch
+                       ON dispatch.task_plan_id=task_plan.task_plan_id
+                      AND dispatch.actor_kind='primary'
+                      AND dispatch.subtask_id IS NULL
+                      AND dispatch.stage_work_item_id=source_item.id
+                      AND dispatch.worker_run_id=source_worker.id
+                    WHERE rearm.verification_task_id=$1
+                      AND rearm.stage_team_plan_id=$2
+                      AND rearm.operation_id=$3
+                      AND rearm.stage_execution_id=$4
+                      AND rearm.stage_run_unit_id=$5
+                      AND rearm.scope_snapshot_id=$6
+                      AND rearm.organization_id=$7
+                      AND rearm.resume_dispatch_epoch=$8
+                      AND rearm.status='applied'
+                      AND source_item.id=$9
+                      AND source_item.status='exhausted'
+                      AND source_item.terminal_at IS NOT NULL
+                      AND source_worker.id=$10
+                      AND source_worker.status='failed'
+                      AND source_worker.terminal_at IS NOT NULL
+                      AND source_worker.lease_token IS NULL
+                      AND source_worker.active_tool_call_id IS NULL
+                      AND source_output.business_disposition='blocked'
+                      AND source_output.canonical_output->>'kind'=
+                          'stage_team_attempts_exhausted'
+                      AND source_output.canonical_output->>'failure_code'=
+                          'stage_team_worker_lease_expired'
+                      AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                          ANY(source_output.blocker_codes)
+               )"#,
+        )
+        .bind(verification_task_id)
+        .bind(plan.id)
+        .bind(plan.operation_id)
+        .bind(plan.stage_execution_id)
+        .bind(plan.stage_run_unit_id)
+        .bind(plan.scope_snapshot_id)
+        .bind(plan.organization_id)
+        .bind(plan.dispatch_epoch)
+        .bind(source_item_id)
+        .bind(source_worker_run_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let recovery_v1_predecessor_exact = if recovery_generation == 2 {
+            sqlx::query_scalar::<_, bool>(
+                r#"SELECT EXISTS(
+                       SELECT 1
+                         FROM stage_work_items predecessor_item
+                         JOIN stage_worker_runs predecessor_worker
+                           ON predecessor_worker.work_item_id=predecessor_item.id
+                         JOIN stage_worker_outputs predecessor_output
+                           ON predecessor_output.work_item_id=predecessor_item.id
+                          AND predecessor_output.worker_run_id=predecessor_worker.id
+                        WHERE predecessor_item.id=$1
+                          AND predecessor_item.team_plan_id=$2
+                          AND predecessor_item.status='exhausted'
+                          AND predecessor_item.terminal_at IS NOT NULL
+                          AND predecessor_worker.id=$3
+                          AND predecessor_worker.status='failed'
+                          AND predecessor_worker.terminal_at IS NOT NULL
+                          AND predecessor_worker.lease_token IS NULL
+                          AND predecessor_worker.active_tool_call_id IS NULL
+                          AND predecessor_worker.checkpoint #>>
+                              '{stage_team_execution_failure,code}'=
+                              'stage_team_worker_lease_expired'
+                          AND predecessor_output.business_disposition='blocked'
+                          AND predecessor_output.canonical_output->>'kind'=
+                              'stage_team_attempts_exhausted'
+                          AND predecessor_output.canonical_output->>'failure_code'=
+                              'stage_team_worker_lease_expired'
+                          AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                              ANY(predecessor_output.blocker_codes)
+                          AND NOT EXISTS(
+                              SELECT 1 FROM stage_worker_requests request
+                               WHERE request.parent_work_item_id=predecessor_item.id)
+                          AND NOT EXISTS(
+                              SELECT 1 FROM stage_work_item_dependencies dependency
+                               WHERE dependency.work_item_id=predecessor_item.id)
+                   )"#,
+            )
+            .bind(recovery_item_id)
+            .bind(plan.id)
+            .bind(recovery_worker_run_id)
+            .fetch_one(&mut *tx)
+            .await?
+        } else {
+            true
+        };
+        synthesis_recovery_exact = exact
+            && source_worker_run_id == expected_source_worker_run_id
+            && recovery_generation > 0
+            && recovery_v1_predecessor_exact
+            && item.kind
+                == if recovery_generation == 1 {
+                    "investigation_primary_recovery"
+                } else {
+                    "investigation_primary_recovery_v2"
+                }
+            && worker.worker_generation == recovery_generation
+            && worker.work_item_kind == item.kind
+            && worker.work_item_key == item.stable_key;
+        (source_item_id, source_worker_run_id)
+    } else {
+        (item.id, worker.id)
+    };
+    let pentagi_subject_bound = if let Some(verification_task_id) = primary_subject {
+        sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM investigation_pentagi_task_plans task_plan
+                     JOIN pentagi_logical_dispatch_receipts dispatch
+                       ON dispatch.task_plan_id=task_plan.task_plan_id
+                      AND dispatch.actor_kind='primary' AND dispatch.subtask_id IS NULL
+                    WHERE task_plan.stage_team_plan_id=$1
+                      AND task_plan.operation_id=$2 AND task_plan.stage_execution_id=$3
+                      AND task_plan.stage_run_unit_id=$4 AND task_plan.organization_id=$5
+                      AND task_plan.status IN ('open','sealed')
+                      AND dispatch.stage_work_item_id=$6 AND dispatch.worker_run_id=$7
+                      AND (
+                           ($8::UUID IS NULL AND task_plan.subject_kind='analysis_attempt')
+                           OR
+                           ($8::UUID IS NOT NULL AND task_plan.subject_kind='verification_task'
+                            AND task_plan.subject_id=$8
+                            AND task_plan.subject_fingerprint_sha256=$9)
+                      )
+               )"#,
+        )
+        .bind(plan.id)
+        .bind(plan.operation_id)
+        .bind(plan.stage_execution_id)
+        .bind(plan.stage_run_unit_id)
+        .bind(plan.organization_id)
+        .bind(logical_primary_work_item_id)
+        .bind(logical_primary_worker_run_id)
+        .bind(verification_task_id)
+        .bind(&item.input_manifest_hash)
+        .fetch_one(&mut *tx)
+        .await?
+    } else {
+        false
+    };
+    let investigation_contract = plan.stage_kind == "investigation"
+        && plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(Value::as_str)
+            == Some("investigation_task_orchestrator")
+        && plan.leader_role == "investigation"
+        && plan.aggregator_role.as_deref() == Some("investigation");
+    if !investigation_contract
+        || plan.operation_id != input.fence.operation_id
+        || plan.stage_execution_id != input.fence.stage_execution_id
+        || plan.stage_run_unit_id != input.fence.stage_run_unit_id
+        || plan.organization_id != unit.organization_id
+        || plan.scope_snapshot_id != unit.scope_snapshot_id
+        || plan.dispatch_epoch != input.expected_dispatch_epoch
+        || item.team_plan_id != plan.id
+        || item.stage_run_unit_id != plan.stage_run_unit_id
+        || !is_aggregator_item(&plan, &item)
+        || item.required_for_barrier
+        || primary_subject.is_none()
+        || !synthesis_recovery_exact
+        || !pentagi_subject_bound
+        || worker.work_item_id != Some(item.id)
+        || worker.stage_run_unit_id != unit.id
+        || worker.organization_id != unit.organization_id
+        || unit.stage_kind != "investigation"
+        || unit.status != "running"
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "investigation_primary_completion_fence_mismatch",
+        });
+    }
+    if item.status == "completed" && worker.status == "passed" {
+        if item.row_version == input.expected_work_item_row_version.saturating_add(1)
+            && plan.row_version == input.expected_plan_row_version
+            && plan.requests_closed_at.is_some()
+            && worker.checkpoint_version
+                == input.fence.expected_checkpoint_version.saturating_add(1)
+            && worker.checkpoint == input.terminal_checkpoint
+        {
+            tx.commit().await?;
+            return Ok(CompletedInvestigationTaskPrimaryRow {
+                unit,
+                plan,
+                work_item: item,
+                worker,
+                replayed: true,
+            });
+        }
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "investigation_primary_completion_replay_mismatch",
+        });
+    }
+    if plan.requests_closed_at.is_none()
+        || plan.row_version != input.expected_plan_row_version
+        || item.status != "running"
+        || item.row_version != input.expected_work_item_row_version
+        || worker.status != "running"
+    {
+        return Err(RuntimeMemoryStoreError::StaleVersion {
+            entity: "investigation_task_primary",
+            expected: input.expected_plan_row_version,
+            actual: plan.row_version,
+        });
+    }
+    let barrier = load_barrier_with_connection_ignoring_worker(&mut tx, plan.id, None).await?;
+    if barrier.requests_closed_at.is_none()
+        || barrier.required_work_items != barrier.terminal_required_work_items
+        || barrier.live_workers != 0
+        || barrier.retry_pending_work_items != 0
+        || barrier.recovery_required_workers != 0
+        || barrier.missing_outputs != 0
+        || barrier.manifest_hash != input.expected_barrier_manifest_hash
+    {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "investigation_primary_delegation_barrier_not_closed",
+        });
+    }
+    let worker = stage_worker_runs::finish_passed_for_stage_output(
+        &mut *tx,
+        &input.fence,
+        &input.terminal_checkpoint,
+        None,
+    )
+    .await?;
+    let item = sqlx::query_as::<_, StageWorkItemRow>(&format!(
+        "UPDATE stage_work_items
+            SET status='completed',row_version=row_version+1,terminal_at=NOW(),updated_at=NOW()
+          WHERE id=$1 AND team_plan_id=$2 AND status='running' AND row_version=$3
+          RETURNING {ITEM_COLUMNS}"
+    ))
+    .bind(item.id)
+    .bind(plan.id)
+    .bind(input.expected_work_item_row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::StaleVersion {
+        entity: "stage_work_items",
+        expected: input.expected_work_item_row_version,
+        actual: -1,
+    })?;
+    // StageTeam plans have no mutable terminal status. Closing the request
+    // epoch already seals their scheduling authority; the terminal Primary
+    // WorkItem/WorkerRun pair is the completion witness. Keep the locked plan
+    // unchanged so response-loss replay observes the same row version.
+    let unit = stage_run_units::get_with_executor(&mut *tx, unit.id)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "stage_run_units",
+        })?;
+    if unit.status != "running" {
+        return Err(RuntimeMemoryStoreError::Conflict {
+            code: "investigation_primary_must_not_terminalize_unit",
+        });
+    }
+    tx.commit().await?;
+    Ok(CompletedInvestigationTaskPrimaryRow {
+        unit,
+        plan,
+        work_item: item,
+        worker,
+        replayed: false,
+    })
+}
+
+fn investigation_synthesis_recovery_generation(
+    source_item_id: Uuid,
+    source_kind: &str,
+    recovery_item_id: Uuid,
+    recovery_kind: &str,
+) -> Option<u8> {
+    let recovery_v1_item_id = Uuid::new_v5(
+        &source_item_id,
+        b"sealed-investigation-synthesis-recovery-primary-v1",
+    );
+    if recovery_item_id == recovery_v1_item_id && recovery_kind == source_kind {
+        return Some(1);
+    }
+    let recovery_v2_item_id = Uuid::new_v5(
+        &recovery_v1_item_id,
+        b"sealed-investigation-synthesis-recovery-primary-v2",
+    );
+    (recovery_item_id == recovery_v2_item_id && recovery_kind == "investigation_primary_recovery")
+        .then_some(2)
 }
 
 /// Persist a producer/helper execution failure without forging a business
@@ -2188,6 +2959,42 @@ pub async fn retry_stage_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn investigation_completion_classifies_only_the_deterministic_v1_v2_chain() {
+        let source = Uuid::new_v4();
+        let v1 = Uuid::new_v5(
+            &source,
+            b"sealed-investigation-synthesis-recovery-primary-v1",
+        );
+        let v2 = Uuid::new_v5(&v1, b"sealed-investigation-synthesis-recovery-primary-v2");
+        assert_eq!(
+            investigation_synthesis_recovery_generation(source, "primary", v1, "primary"),
+            Some(1)
+        );
+        assert_eq!(
+            investigation_synthesis_recovery_generation(
+                source,
+                "primary",
+                v2,
+                "investigation_primary_recovery",
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            investigation_synthesis_recovery_generation(source, "primary", v2, "primary"),
+            None
+        );
+        assert_eq!(
+            investigation_synthesis_recovery_generation(
+                source,
+                "primary",
+                Uuid::new_v4(),
+                "investigation_primary_recovery",
+            ),
+            None
+        );
+    }
 
     #[test]
     fn team_barrier_never_passes_with_open_epoch_or_live_sibling() {

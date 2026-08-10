@@ -66,10 +66,10 @@ pub struct AppState {
     /// GUI-owned orphan blob GC lifecycle. It starts only after DB readiness
     /// and is joined before the process tears down the DB.
     pub reporting_artifact_gc: crate::reporting_artifact_store::ReportArtifactGcRuntime,
-    /// Process-owned asynchronous Hypothesis Registry read-model projector.
-    /// Canonical commits never wait for it; startup polling recovers backlog.
-    pub investigation_projection_worker:
-        golish_db::repo::investigation_projection::InvestigationProjectionWorker,
+    /// Process-owned read-model projector plus commit-after-projection refresh
+    /// publisher. Canonical commits never wait for either lifecycle.
+    pub investigation_projection_event_bridge:
+        golish_agent_app::ai::InvestigationProjectionEventBridge,
 }
 
 impl AppState {
@@ -109,10 +109,8 @@ impl AppState {
             db_pool.clone(),
             reporting_artifact_store_factory,
         );
-        let investigation_projection_worker =
-            golish_db::repo::investigation_projection::InvestigationProjectionWorker::new(
-                db_pool.clone(),
-            );
+        let investigation_projection_event_bridge =
+            crate::ai::compose_investigation_projection_event_bridge(db_pool.clone());
 
         Self {
             pty_manager: Arc::new(crate::pty::PtyManager::new()),
@@ -134,7 +132,7 @@ impl AppState {
             memory_supervisor,
             cleanup_closeout,
             reporting_artifact_gc,
-            investigation_projection_worker,
+            investigation_projection_event_bridge,
         }
     }
 

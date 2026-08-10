@@ -12,6 +12,7 @@ use golish_agent_kit::db_traits::*;
 use golish_db::repo::{candidate_analysis as db, hypothesis_registry as registry};
 use serde_json::Value;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 fn map_db_error(error: golish_db::DbError) -> HypothesisRegistryError {
     let detail = error.to_string();
@@ -117,6 +118,9 @@ fn snapshot_disposition(
     match value {
         db::CandidateSnapshotDispositionRow::SealedReady => {
             CandidateAnalysisSnapshotDispositionV1::SealedReady
+        }
+        db::CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals => {
+            CandidateAnalysisSnapshotDispositionV1::SealedAnalysisReadyWithResiduals
         }
         db::CandidateSnapshotDispositionRow::BlockedAuthorityBundle => {
             CandidateAnalysisSnapshotDispositionV1::BlockedAuthorityBundle
@@ -293,6 +297,97 @@ impl PgHypothesisRegistryRepository {
     pub fn new(pool: Arc<PgPool>) -> Self {
         Self { pool }
     }
+
+    async fn require_finalized_target_intel_goal_authority(
+        &self,
+        operation_id: Uuid,
+        scope_snapshot_id: Uuid,
+        organization_id: Uuid,
+    ) -> Result<(), HypothesisRegistryError> {
+        let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String, String)>(
+            r#"WITH authority_scope AS (
+                   SELECT $1::UUID AS operation_id,$2::UUID AS scope_snapshot_id
+                   UNION ALL
+                   SELECT input.source_operation_id,input.source_scope_snapshot_id
+                     FROM operation_stage_forks fork
+                     JOIN operation_stage_fork_inputs input
+                       ON input.operation_id=fork.operation_id
+                      AND input.source_operation_id=fork.source_operation_id
+                      AND input.source_scope_snapshot_id=fork.source_scope_snapshot_id
+                      AND input.organization_id=$3
+                      AND input.source_stage_kind='target_intel'
+                     JOIN operation_state source_operation
+                       ON source_operation.operation_id=input.source_operation_id
+                      AND source_operation.superseded_by IS NULL
+                     JOIN stage_handoffs source_handoff
+                       ON source_handoff.id=input.source_handoff_id
+                      AND source_handoff.operation_id=input.source_operation_id
+                      AND source_handoff.organization_id=input.organization_id
+                      AND source_handoff.from_stage_kind='target_intel'
+                      AND source_handoff.invalidated_at IS NULL
+                    WHERE fork.operation_id=$1
+                      AND fork.target_scope_snapshot_id=$2
+               )
+               SELECT epoch.id,review.id,review.bundle_sha256,review.verdict_sha256,
+                      review.operation_contract_sha256
+                 FROM authority_scope authority
+                 JOIN target_intel_goal_operation_contracts contract
+                   ON contract.operation_id=authority.operation_id
+                 JOIN target_intel_goal_epochs epoch
+                   ON epoch.operation_id=contract.operation_id
+                  AND epoch.organization_id=$3
+                  AND epoch.scope_snapshot_id=authority.scope_snapshot_id
+                  AND epoch.status='finalized' AND epoch.terminal_at IS NOT NULL
+                 JOIN stage_run_units unit
+                   ON unit.id=epoch.stage_run_unit_id
+                  AND unit.operation_id=epoch.operation_id
+                  AND unit.organization_id=epoch.organization_id
+                  AND unit.scope_snapshot_id=epoch.scope_snapshot_id
+                  AND unit.stage_kind='target_intel'
+                  AND unit.status='passed' AND unit.terminal_at IS NOT NULL
+                 JOIN stage_runs run
+                   ON run.id=epoch.stage_execution_id
+                  AND run.operation_id=epoch.operation_id
+                  AND run.stage_kind='target_intel'
+                  AND run.status='completed' AND run.completed_at IS NOT NULL
+                 JOIN target_intel_goal_reviews review
+                   ON review.goal_epoch_id=epoch.id
+                  AND review.operation_id=epoch.operation_id
+                  AND review.organization_id=epoch.organization_id
+                  AND review.stage_execution_id=epoch.stage_execution_id
+                  AND review.stage_run_unit_id=epoch.stage_run_unit_id
+                  AND review.scope_snapshot_id=epoch.scope_snapshot_id
+                  AND review.status='pass' AND review.terminal_at IS NOT NULL
+                WHERE contract.runtime_mode='intel_goal_v1'
+                  AND contract.completion_authority='intel_goal_v1'
+                  AND contract.goal_contract_version='target_intel_goal.v1'
+                  AND review.operation_contract_sha256=contract.goal_contract_sha256
+                ORDER BY epoch.epoch DESC,review.round DESC"#,
+        )
+        .bind(operation_id)
+        .bind(scope_snapshot_id)
+        .bind(organization_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|error| HypothesisRegistryError::Storage(error.to_string()))?;
+        let [authority] = rows.as_slice() else {
+            return Err(HypothesisRegistryError::AuthorityMismatch(
+                "Candidate analysis requires exactly one finalized Target Intel Goal authority"
+                    .to_owned(),
+            ));
+        };
+        if authority.0.is_nil()
+            || authority.1.is_nil()
+            || [&authority.2, &authority.3, &authority.4]
+                .into_iter()
+                .any(|hash| !hash.starts_with("sha256:") || hash.len() != 71)
+        {
+            return Err(HypothesisRegistryError::AuthorityMismatch(
+                "Finalized Target Intel Goal authority hashes are invalid".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -301,6 +396,12 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
         &self,
         request: FreezeCandidateAnalysisSnapshot,
     ) -> Result<CandidateAnalysisSnapshotView, HypothesisRegistryError> {
+        self.require_finalized_target_intel_goal_authority(
+            request.operation_id,
+            request.scope_snapshot_id,
+            request.organization_id,
+        )
+        .await?;
         let row = db::freeze_candidate_snapshot(
             self.pool.as_ref(),
             db::FreezeCandidateSnapshotInput {
@@ -1067,6 +1168,7 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
             projection_outbox_batch_id: row.projection_outbox_batch_id,
             projection_source_batch_seq: row.projection_source_batch_seq,
             projection_outbox_member_set_hash: row.projection_outbox_member_set_hash,
+            post_seal_route: row.post_seal_route,
             replayed: row.replayed,
         })
     }

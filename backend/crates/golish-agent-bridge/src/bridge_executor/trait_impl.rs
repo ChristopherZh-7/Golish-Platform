@@ -1,6 +1,7 @@
 //! `AgentExecutor` trait implementation for `BridgeAgentExecutor`.
 
 use anyhow::{Context, Result};
+use tracing::Instrument;
 
 use golish_agent_kit::harness::StageKind;
 use golish_agent_kit::task_orchestrator::{
@@ -17,6 +18,7 @@ use super::BridgeAgentExecutor;
 /// run that ends `content_len=0` BLOCK after the model already submitted. Same
 /// stage ⇒ keep the capture as a fallback; stage switch / no stage / unparseable
 /// capture ⇒ reset (cross-stage pollution stays impossible).
+#[allow(dead_code)]
 fn captured_belongs_to_stage(captured: Option<&str>, stage: Option<StageKind>) -> bool {
     let (Some(json), Some(stage)) = (captured, stage) else {
         return false;
@@ -134,39 +136,44 @@ impl AgentExecutor for BridgeAgentExecutor {
         self.bridge
             .publish_active_execution_context(execution_context)
             .await?;
-        // C2c/PR1 · reset the deliverable-capture sink — UNLESS the capture
-        // belongs to this very stage: the retry loop re-enters here once per gate
-        // attempt, and a same-stage capture from the previous attempt is the
-        // fallback submission when the model returns empty text this attempt.
-        {
-            let trusted = self.bridge.harness_captured_submission.read().await.clone();
-            let keep_trusted = captured_belongs_to_stage(
-                trusted
-                    .as_ref()
-                    .map(|capture| capture.canonical_deliverable_json.as_str()),
-                execution_context.harness_stage,
-            );
-            if !keep_trusted {
-                *self.bridge.harness_captured_submission.write().await = None;
-            }
-            let keep_legacy = captured_belongs_to_stage(
-                self.bridge.harness_last_deliverable.read().await.as_deref(),
-                execution_context.harness_stage,
-            );
-            if !keep_legacy {
-                *self.bridge.harness_last_deliverable.write().await = None;
-            }
-            if keep_trusted || keep_legacy {
-                tracing::info!(
-                    "[TaskMode] keeping same-stage StageDeliverable capture across retry attempts"
-                );
-            }
-        }
+        // C2c/PR1 · one capture belongs to one provider turn. The harness retry
+        // loop re-enters this method after a Gate BLOCK, so retaining a
+        // same-stage capture here would grade the previous rejected payload when
+        // the model fails to submit a corrected one. Clear both sinks before the
+        // turn; a successful submit during this turn repopulates them, while a
+        // prose-only/invalid retry remains fail-closed as a missing deliverable.
+        *self.bridge.harness_captured_submission.write().await = None;
+        *self.bridge.harness_last_deliverable.write().await = None;
 
-        let content_result = self
-            .bridge
-            .execute_isolated_with_context(&prompt, primary_loop_context(execution_context))
-            .await;
+        // Poll the provider-heavy isolated turn as its own scheduled task. A
+        // plain Box only moves Future state to the heap; it does not unwind the
+        // caller's native poll frames before polling the child. The debug
+        // provider dispatch plus TaskOrchestrator chain can therefore exceed
+        // the production 32 MiB stage-run worker stack on its first poll.
+        //
+        // JoinSet is deliberate: dropping this parent future aborts the child,
+        // unlike a detached JoinHandle, so Stop/cancellation cannot leave an
+        // isolated agent continuing to execute tools in the background.
+        let mut isolated_turn = tokio::task::JoinSet::new();
+        let turn_bridge = self.bridge.clone();
+        let turn_context = primary_loop_context(execution_context);
+        isolated_turn.spawn(
+            async move {
+                turn_bridge
+                    .execute_isolated_with_context(&prompt, turn_context)
+                    .await
+            }
+            .in_current_span(),
+        );
+        let content_result = match isolated_turn.join_next().await {
+            Some(Ok(result)) => result,
+            Some(Err(join_error)) => Err(anyhow::anyhow!(
+                "TaskMode isolated provider task failed: {join_error}"
+            )),
+            None => Err(anyhow::anyhow!(
+                "TaskMode isolated provider task ended without a result"
+            )),
+        };
         // Every active authorization/runtime-identity handle is subtask-local.
         // Clear them before propagating an isolated-loop error so the next
         // subtask cannot inherit this stage, unit, organization, or worker lease.

@@ -5321,6 +5321,7 @@ async fn runtime_cutover_keeps_attack_at_dual_write_legacy_for_new_operations() 
             profile: "red_team".to_string(),
             entry_stage: "scoping".to_string(),
             project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: None,
         },
     )
@@ -6003,6 +6004,7 @@ async fn attack_rollout_cas_and_operation_creation_freeze_exact_contract() {
         "red_team",
         "scoping",
         "dual_write_legacy_read",
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("freeze current attack rollout on operation insert");
@@ -6044,6 +6046,7 @@ async fn attack_rollout_cas_and_operation_creation_freeze_exact_contract() {
         "red_team",
         "scoping",
         "dual_write_v2_preferred",
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("dual-write attack may run with the preferred V2 runtime-memory reader");
@@ -6054,6 +6057,7 @@ async fn attack_rollout_cas_and_operation_creation_freeze_exact_contract() {
         "red_team",
         "scoping",
         "v2_only",
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("dual-write attack may run with the V2-only runtime-memory contract");
@@ -6063,6 +6067,7 @@ async fn attack_rollout_cas_and_operation_creation_freeze_exact_contract() {
         "red_team",
         "scoping",
         "legacy_v1",
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await;
     assert!(

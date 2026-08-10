@@ -14,19 +14,94 @@ pub use registry::create_default_sub_agents_from_registry;
 use crate::definition::SubAgentDefinition;
 
 use super::prompts::{
-    build_adviser_prompt, build_attack_analyst_prompt, build_browser_prompt,
-    build_candidate_hypothesis_analyst_prompt, build_candidate_hypothesis_controller_prompt,
-    build_candidate_verifier_prompt, build_coder_prompt, build_enricher_prompt,
-    build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
-    build_merge_conflict_critic_prompt, build_orchestrator_prompt, build_pentester_prompt,
-    build_planner_prompt, build_post_exploit_operator_prompt, build_prober_prompt,
-    build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
-    build_researcher_prompt, build_vuln_scanner_prompt,
+    build_adviser_prompt, build_application_understanding_company_synthesizer_prompt,
+    build_application_understanding_shard_modeler_prompt, build_attack_analyst_prompt,
+    build_browser_prompt, build_candidate_hypothesis_analyst_prompt,
+    build_candidate_hypothesis_controller_prompt, build_candidate_verifier_prompt,
+    build_coder_prompt, build_enricher_prompt, build_enumerator_prompt, build_installer_prompt,
+    build_memorist_prompt, build_merge_conflict_critic_prompt, build_orchestrator_prompt,
+    build_pentester_prompt, build_planner_prompt, build_post_exploit_operator_prompt,
+    build_prober_prompt, build_recon_prompt, build_refiner_prompt, build_reflector_prompt,
+    build_reporter_prompt, build_researcher_prompt, build_resolution_analyst_prompt,
+    build_verification_campaign_prompt, build_vuln_scanner_prompt, VerificationCampaignRole,
 };
+
+pub(super) fn verification_campaign_agent_definitions() -> Vec<SubAgentDefinition> {
+    use VerificationCampaignRole::*;
+    [
+        ("verification_lead", "Verification Lead", Lead),
+        (
+            "verification_pentester",
+            "Verification Pentester",
+            Pentester,
+        ),
+        (
+            "verification_researcher",
+            "Verification Researcher",
+            Researcher,
+        ),
+        (
+            "verification_poc_designer",
+            "Verification PoC Designer",
+            PocDesigner,
+        ),
+        (
+            "verification_auth_specialist",
+            "Verification Auth Specialist",
+            AuthSpecialist,
+        ),
+        (
+            "verification_api_specialist",
+            "Verification API Specialist",
+            ApiSpecialist,
+        ),
+        (
+            "verification_business_logic_specialist",
+            "Verification Business Logic Specialist",
+            BusinessLogicSpecialist,
+        ),
+        (
+            "verification_injection_specialist",
+            "Verification Injection Specialist",
+            InjectionSpecialist,
+        ),
+        (
+            "verification_evidence_analyst",
+            "Verification Evidence Analyst",
+            EvidenceAnalyst,
+        ),
+        (
+            "verification_independent_critic",
+            "Verification Independent Critic",
+            IndependentCritic,
+        ),
+        ("verification_refiner", "Verification Refiner", Refiner),
+        ("verification_adviser", "Verification Adviser", Adviser),
+        (
+            "verification_reflector",
+            "Verification Reflector",
+            Reflector,
+        ),
+    ]
+    .into_iter()
+    .map(|(id, name, role)| {
+        SubAgentDefinition::new(
+            id,
+            name,
+            "Closed, durable Verification Campaign reasoning role; no execution authority.",
+            build_verification_campaign_prompt(role),
+        )
+        .with_tools(vec!["submit_result".to_string()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_idle_timeout(180)
+    })
+    .collect()
+}
 
 /// Create default sub-agents for common tasks.
 pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
-    vec![
+    let mut agents = vec![
         SubAgentDefinition::new(
             "coder",
             "Coder",
@@ -153,6 +228,54 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_idle_timeout(300)
         .with_delegatable_agents(vec!["enricher".to_string(), "memorist".to_string()]),
         SubAgentDefinition::new(
+            "investigation",
+            "Investigation Primary",
+            "Organization-isolated Investigation Primary. It plans bounded analysis and verification cognition, dynamically delegates specialists, and submits typed strategy and lineage; host-owned operators alone perform external actions.",
+            format!(
+                "{}\n\n{}",
+                build_orchestrator_prompt(),
+                "You are the unique Primary for one organization-bound Investigation task. Use update_plan to create and revise a bounded plan, and dynamically delegate only the specialists needed for current evidence gaps. Workers may return strategy, evidence interpretation, and typed action intent only. Neither you nor nested workers may directly perform HTTP, browser, CLI, credential, pentest, action execution, Finding writes, or canonical hypothesis mutation. Database facts and Evidence Ledger are authoritative; RAG/KG/methodology are advisory. A hypothesis click is observe-only and cannot schedule work. Finish only through typed host receipts and the deterministic Investigation gate."
+            ),
+        )
+        .with_tools(vec![
+            "update_plan".to_string(),
+            "query_target_data".to_string(),
+            "list_in_scope_targets".to_string(),
+            "list_recent_evidence".to_string(),
+            "search_knowledge_base".to_string(),
+            "read_knowledge".to_string(),
+            "graph_search".to_string(),
+            "graph_neighbors".to_string(),
+            "graph_attack_paths".to_string(),
+            "submit_stage_deliverable".to_string(),
+        ])
+        .with_readonly(true)
+        .with_max_iterations(50)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec![
+            "pentester".to_string(),
+            "researcher".to_string(),
+            "browser".to_string(),
+            "coder".to_string(),
+            "installer".to_string(),
+            "enricher".to_string(),
+            "memorist".to_string(),
+            "adviser".to_string(),
+        ]),
+        SubAgentDefinition::new(
+            "resolution_analyst",
+            "Resolution Analyst",
+            "Bounded evidence-anchored analyst for one server-assigned unresolved JS/API cluster. It cannot browse, probe, read arbitrary files, publish canonical truth, or submit a stage deliverable.",
+            build_resolution_analyst_prompt(),
+        )
+        .with_tools(vec![
+            "enum_js_get_resolution_cluster".to_string(),
+            "enum_js_submit_resolution".to_string(),
+        ])
+        .with_readonly(true)
+        .with_max_iterations(4)
+        .with_idle_timeout(120),
+        SubAgentDefinition::new(
             "attack_analyst",
             "Attack Analyst",
             "Reasoning-only attack_candidate specialist. Produces bounded Candidate plans from durable facts and evidence; it never executes verification actions.",
@@ -164,6 +287,28 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "submit_stage_deliverable".to_string(),
         ])
         .with_max_iterations(30)
+        .with_idle_timeout(180),
+        SubAgentDefinition::new(
+            "application_understanding_shard_modeler",
+            "Application Understanding Shard Modeler",
+            "Closed semantic modeler for one host-frozen application shard. It cannot collect data or cross identity boundaries.",
+            build_application_understanding_shard_modeler_prompt(),
+        )
+        .with_tools(vec!["submit_result".to_string()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_max_tokens(32_768)
+        .with_idle_timeout(180),
+        SubAgentDefinition::new(
+            "application_understanding_company_synthesizer",
+            "Application Understanding Company Synthesizer",
+            "Closed company-level synthesizer over host-validated shard outputs. It cannot collect data or cross organization boundaries.",
+            build_application_understanding_company_synthesizer_prompt(),
+        )
+        .with_tools(vec!["submit_result".to_string()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_max_tokens(32_768)
         .with_idle_timeout(180),
         SubAgentDefinition::new(
             "candidate_hypothesis_controller",
@@ -273,7 +418,9 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             // endpoints/paths out of it.
             "browser_collect_js_api".to_string(),
             "js_extract_apis".to_string(),
+            "enum_reduce_parameters_v2".to_string(),
             "route_probe_paths".to_string(),
+            "enum_review_coverage_v2".to_string(),
             "list_recent_evidence".to_string(),
             "submit_stage_deliverable".to_string(),
             "search_knowledge_base".to_string(),
@@ -458,5 +605,7 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
             "browser".into(),
         ])
         .as_pipeline_only(),
-    ]
+    ];
+    agents.extend(verification_campaign_agent_definitions());
+    agents
 }

@@ -74,11 +74,15 @@ describe("eventHandlerRegistry", () => {
     expect(eventHandlerRegistry.harness_trace).toBeDefined();
   });
 
-  it("has exactly 46 registered handlers", () => {
+  it("contains the production Investigation projection refresh handler", () => {
+    expect(eventHandlerRegistry.investigation_projection_changed).toBeDefined();
+  });
+
+  it("has exactly 47 registered handlers", () => {
     const registeredHandlers = Object.keys(eventHandlerRegistry).filter(
       (key) => eventHandlerRegistry[key as keyof EventHandlerRegistry] !== undefined
     );
-    expect(registeredHandlers.length).toBe(46);
+    expect(registeredHandlers.length).toBe(47);
   });
 });
 

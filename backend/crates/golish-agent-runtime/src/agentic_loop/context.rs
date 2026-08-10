@@ -6,6 +6,7 @@ use golish_sub_agents::SubAgentRegistry;
 use golish_tools::ToolRegistry;
 use rig::completion::Message;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, RwLock};
 
@@ -186,6 +187,10 @@ pub struct AgenticLoopContext<'a> {
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub runtime_memory: Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    /// Product-composed Application Understanding controller invoked only by
+    /// the visible Primary Agent's `stage_run` call.
+    pub application_understanding_runtime:
+        Option<Arc<dyn golish_agent_kit::task_orchestrator::ApplicationUnderstandingStageRuntime>>,
     /// Optional host-owned Plan B Candidate analysis runtime. The bridge only
     /// snapshots this capability; repository construction and authorization
     /// remain in the production composition root.
@@ -225,6 +230,14 @@ pub struct AgenticLoopContext<'a> {
     pub output_classifier: Option<OutputClassifier>,
     /// Web fetch provider (injected by the host crate).
     pub web_fetcher: Option<Arc<dyn golish_core::WebFetchProvider>>,
+    /// Explicit eval/fixture-only Goal Loop selector. Production operation
+    /// state and profile names can never synthesize this authority.
+    pub target_intel_goal_shadow:
+        Option<&'a crate::eval_support::TargetIntelGoalShadowFixture>,
+    /// Shared host-owned evidence adapter used by both root and SubAgent paths
+    /// while the fixture selector above is active.
+    pub intel_public_adapter:
+        Option<Arc<dyn golish_agent_kit::tool_executors::IntelPublicEvidenceAdapter>>,
 
     /// C3 · active harness stage for per-tool dispatch authz (forbidden-tool
     /// barrier). Set by the host bridge when running a harness-staged subtask;
@@ -300,6 +313,81 @@ pub(crate) struct BoundScopedContextIdentity {
     pub organization_id: uuid::Uuid,
 }
 
+/// Redacted prompt data plus the exact-set receipt material needed by the
+/// unified Investigation read-session ledger. Raw ContextPack values stay in
+/// the runtime; only counts and hashes cross the persistence port.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RetrievedScopedContextData {
+    pub rendered: String,
+    pub context_item_count: usize,
+    pub context_item_set_sha256: String,
+    pub omission_count: usize,
+    pub omission_set_sha256: String,
+    pub omission_members: Vec<String>,
+}
+
+pub(crate) fn scoped_context_exact_set_receipt(
+    schema: &str,
+    mut members: Vec<String>,
+) -> (usize, String) {
+    use sha2::{Digest, Sha256};
+
+    members.sort();
+    members.dedup();
+    let mut hasher = Sha256::new();
+    hasher.update((schema.len() as u64).to_be_bytes());
+    hasher.update(schema.as_bytes());
+    hasher.update((members.len() as u64).to_be_bytes());
+    for member in &members {
+        hasher.update((member.len() as u64).to_be_bytes());
+        hasher.update(member.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    (members.len(), format!("sha256:{encoded}"))
+}
+
+impl RetrievedScopedContextData {
+    pub(crate) fn with_host_omission(mut self, source: &str, reason: &str) -> Self {
+        self.omission_members
+            .push(format!("host:{source}:{reason}"));
+        self.omission_count = self.omission_count.saturating_add(1);
+        let (_, digest) = scoped_context_exact_set_receipt(
+            "investigation_context_omissions.v1",
+            self.omission_members.clone(),
+        );
+        self.omission_set_sha256 = digest;
+        self
+    }
+}
+
+fn context_omission_members(
+    omitted: &golish_memory_app::ContextOmissionSummary,
+) -> Result<Vec<String>, String> {
+    if omitted.item_ids.len() > omitted.omitted_count
+        || (omitted.omitted_count == 0
+            && (!omitted.item_ids.is_empty() || !omitted.reasons.is_empty()))
+    {
+        return Err("knowledge_context_omission_census_invalid".to_string());
+    }
+    let (_, reason_set_sha256) = scoped_context_exact_set_receipt(
+        "investigation_context_omission_reasons.v1",
+        omitted.reasons.clone(),
+    );
+    let mut members = omitted
+        .item_ids
+        .iter()
+        .map(|item_id| format!("{reason_set_sha256}:item:{item_id}"))
+        .collect::<Vec<_>>();
+    for ordinal in members.len()..omitted.omitted_count {
+        members.push(format!("{reason_set_sha256}:anonymous:{ordinal}"));
+    }
+    Ok(members)
+}
+
 const MAX_CONTEXT_QUERY_CHARS: usize = 4_096;
 
 fn bounded_context_query(query: &str, stage: &str) -> String {
@@ -343,13 +431,27 @@ fn validate_bound_scoped_context_identity(
     Ok(bound)
 }
 
-pub(crate) async fn retrieve_scoped_context_data(
+fn scoped_context_request(
+    query: String,
+    include_mutable_runtime: bool,
+) -> golish_memory_domain::ContextRequest {
+    let mut request = golish_memory_domain::ContextRequest::for_harness(query, 2_048);
+    if !include_mutable_runtime {
+        request
+            .requested_classes
+            .remove(&golish_memory_domain::KnowledgeClass::RuntimeState);
+    }
+    request
+}
+
+async fn retrieve_scoped_context_receipt_data_with_runtime_policy(
     ctx: &AgenticLoopContext<'_>,
     query: &str,
     organization_id: Option<uuid::Uuid>,
     worker_run_id: Option<uuid::Uuid>,
     bound_identity: Option<BoundScopedContextIdentity>,
-) -> Result<Option<String>, String> {
+    include_mutable_runtime: bool,
+) -> Result<Option<RetrievedScopedContextData>, String> {
     let Some(provider) = ctx.knowledge_context.as_ref() else {
         return Ok(None);
     };
@@ -407,7 +509,7 @@ pub(crate) async fn retrieve_scoped_context_data(
     let pack = provider
         .retrieve(
             subject,
-            golish_memory_domain::ContextRequest::for_harness(query, 2_048),
+            scoped_context_request(query, include_mutable_runtime),
         )
         .await
         .map_err(|error| {
@@ -433,9 +535,69 @@ pub(crate) async fn retrieve_scoped_context_data(
         omission_reasons = ?pack.omitted.reasons,
         "exact-scope ContextPack retrieved"
     );
+    let context_members = pack
+        .items()
+        .map(|item| format!("{}:{}", item.item_id, item.content_hash))
+        .collect::<Vec<_>>();
+    let (context_item_count, context_item_set_sha256) =
+        scoped_context_exact_set_receipt("investigation_context_items.v1", context_members);
+    let omission_count = pack.omitted.omitted_count;
+    let omission_members = context_omission_members(&pack.omitted)?;
+    let (_, omission_set_sha256) = scoped_context_exact_set_receipt(
+        "investigation_context_omissions.v1",
+        omission_members.clone(),
+    );
     let rendered =
         golish_agent_kit::harness::render_context_pack(&pack).map_err(|error| error.to_string())?;
-    Ok(Some(rendered.data_block().to_string()))
+    Ok(Some(RetrievedScopedContextData {
+        rendered: rendered.data_block().to_string(),
+        context_item_count,
+        context_item_set_sha256,
+        omission_count,
+        omission_set_sha256,
+        omission_members,
+    }))
+}
+
+/// Retrieve the immutable input census sealed by the unified Investigation
+/// read-session authority. The current Unit/Worker rows are deliberately not
+/// members: their attempt/checkpoint fields change as soon as the Primary
+/// executes and would make response-loss replay fail by construction.
+pub(crate) async fn retrieve_scoped_context_receipt_data(
+    ctx: &AgenticLoopContext<'_>,
+    query: &str,
+    organization_id: Option<uuid::Uuid>,
+    worker_run_id: Option<uuid::Uuid>,
+    bound_identity: Option<BoundScopedContextIdentity>,
+) -> Result<Option<RetrievedScopedContextData>, String> {
+    retrieve_scoped_context_receipt_data_with_runtime_policy(
+        ctx,
+        query,
+        organization_id,
+        worker_run_id,
+        bound_identity,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn retrieve_scoped_context_data(
+    ctx: &AgenticLoopContext<'_>,
+    query: &str,
+    organization_id: Option<uuid::Uuid>,
+    worker_run_id: Option<uuid::Uuid>,
+    bound_identity: Option<BoundScopedContextIdentity>,
+) -> Result<Option<String>, String> {
+    retrieve_scoped_context_receipt_data_with_runtime_policy(
+        ctx,
+        query,
+        organization_id,
+        worker_run_id,
+        bound_identity,
+        true,
+    )
+    .await
+    .map(|data| data.map(|data| data.rendered))
 }
 
 /// Result of a single tool execution.
@@ -518,7 +680,8 @@ pub(super) fn emit_event(ctx: &AgenticLoopContext<'_>, event: AiEvent) {
 #[cfg(test)]
 mod stage_run_reentry_guard_tests {
     use super::{
-        bounded_context_query, validate_bound_scoped_context_identity, BoundScopedContextIdentity,
+        bounded_context_query, context_omission_members, scoped_context_exact_set_receipt,
+        scoped_context_request, validate_bound_scoped_context_identity, BoundScopedContextIdentity,
         StageRunReentryGuard, MAX_CONTEXT_QUERY_CHARS,
     };
     use golish_agent_kit::harness::StageKind;
@@ -579,6 +742,69 @@ mod stage_run_reentry_guard_tests {
         assert_eq!(
             bounded_context_query("   ", "target_intel"),
             "stage=target_intel\nretrieve exact-scope operational context"
+        );
+    }
+
+    #[test]
+    fn scoped_context_receipt_hashes_the_unique_sorted_member_set() {
+        let first = scoped_context_exact_set_receipt(
+            "investigation_context_items.v1",
+            vec!["b".to_string(), "a".to_string(), "a".to_string()],
+        );
+        let replay = scoped_context_exact_set_receipt(
+            "investigation_context_items.v1",
+            vec!["a".to_string(), "b".to_string()],
+        );
+
+        assert_eq!(first.0, 2);
+        assert_eq!(first, replay);
+        assert!(first.1.starts_with("sha256:"));
+        assert_eq!(first.1.len(), 71);
+    }
+
+    #[test]
+    fn investigation_read_snapshot_excludes_its_mutating_runtime_rows() {
+        let sealed = scoped_context_request("investigation".to_string(), false);
+        assert!(!sealed
+            .requested_classes
+            .contains(&golish_memory_domain::KnowledgeClass::RuntimeState));
+        assert!(sealed
+            .requested_classes
+            .contains(&golish_memory_domain::KnowledgeClass::PassedHandoff));
+
+        let live = scoped_context_request("supervisor".to_string(), true);
+        assert!(live
+            .requested_classes
+            .contains(&golish_memory_domain::KnowledgeClass::RuntimeState));
+    }
+
+    #[test]
+    fn omission_members_bind_reasons_without_inflating_the_reported_count() {
+        let members = context_omission_members(&golish_memory_app::ContextOmissionSummary {
+            omitted_count: 2,
+            reasons: vec!["redacted".to_string(), "budget".to_string()],
+            item_ids: vec!["item-a".to_string()],
+        })
+        .expect("valid omission census");
+
+        assert_eq!(members.len(), 2);
+        assert!(members[0].contains(":item:item-a"));
+        assert!(members[1].contains(":anonymous:1"));
+        assert_eq!(
+            members[0].split(":item:").next(),
+            members[1].split(":anonymous:").next()
+        );
+    }
+
+    #[test]
+    fn omission_members_reject_unaccounted_reason_only_state() {
+        assert_eq!(
+            context_omission_members(&golish_memory_app::ContextOmissionSummary {
+                omitted_count: 0,
+                reasons: vec!["redacted".to_string()],
+                item_ids: Vec::new(),
+            }),
+            Err("knowledge_context_omission_census_invalid".to_string())
         );
     }
 }

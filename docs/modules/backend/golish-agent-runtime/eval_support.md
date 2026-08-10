@@ -47,3 +47,12 @@
 ```bash
 cd backend && cargo nextest run -p golish-agent-runtime eval_support
 ```
+
+## Target Intel Goal fixture composition（2026-08-02）
+
+- `EvalConfig` may carry an explicit fake `IntelPublicEvidenceAdapter`; the builder enables the
+  strict-passive Goal shadow fixture at the same time. Single- and multi-turn eval contexts copy
+  that adapter into the real agentic loop instead of using a separate eval-only dispatch path.
+- All normal constructors leave both the Goal fixture and adapter unset. Existing operations and
+  production profiles cannot infer or enable this mode, so a test must provide explicit typed
+  fixture authority.

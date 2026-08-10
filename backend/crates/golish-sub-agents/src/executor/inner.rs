@@ -14,15 +14,16 @@ use std::time::Duration;
 
 use anyhow::Result;
 use rig::completion::{AssistantContent, CompletionModel as RigCompletionModel, Message};
-use rig::message::{Text, UserContent};
+use rig::message::{Text, ToolChoice, UserContent};
 use rig::one_or_many::OneOrMany;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::definition::{SubAgentContext, SubAgentDefinition, SubAgentResult};
 use crate::executor_helpers::{build_assistant_content, epoch_secs};
 use crate::executor_types::{
-    cancellation_requested, wait_for_cancelled, SubAgentChainError, SubAgentExecutorContext,
-    ToolProvider,
+    cancellation_requested, wait_for_cancelled, BoundTerminalExecutionContract, SubAgentChainError,
+    SubAgentExecutorContext, ToolProvider,
 };
 use crate::executor_udiff::process_coder_udiff;
 use crate::transcript::SubAgentTranscriptWriter;
@@ -44,28 +45,207 @@ use super::tool_setup::{build_tool_definitions, validate_closed_candidate_analys
 use super::CheckpointedChainId;
 
 const MAX_BOUND_STAGE_SUBMIT_REPROMPTS: usize = 2;
+const BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED: &str = "BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED";
+
+fn collect_terminal_schema_constants(
+    schema: &serde_json::Value,
+    path: &str,
+    constants: &mut Vec<serde_json::Value>,
+) {
+    if constants.len() >= 16 {
+        return;
+    }
+    let Some(object) = schema.as_object() else {
+        return;
+    };
+    if let Some(value) = object.get("const") {
+        let value = match value {
+            serde_json::Value::String(value) => {
+                serde_json::Value::String(truncate_str(value, 128).to_string())
+            }
+            serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+                value.clone()
+            }
+            _ => serde_json::Value::String("[non-scalar const omitted]".to_string()),
+        };
+        constants.push(serde_json::json!({"path": path, "value": value}));
+    }
+    if let Some(properties) = object
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    {
+        for (name, child) in properties {
+            collect_terminal_schema_constants(child, &format!("{path}.{name}"), constants);
+        }
+    }
+    if let Some(items) = object.get("items") {
+        collect_terminal_schema_constants(items, &format!("{path}[]"), constants);
+    }
+}
+
+fn sub_agent_observation_input(
+    task: &str,
+    sub_prompt: &str,
+    terminal_contract: Option<&BoundTerminalExecutionContract>,
+) -> String {
+    let Some(contract) = terminal_contract else {
+        return if sub_prompt.len() > 1000 {
+            format!("{}...[truncated]", truncate_str(sub_prompt, 1000))
+        } else {
+            sub_prompt.to_string()
+        };
+    };
+
+    let required_fields = contract
+        .result_schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .take(64)
+        .collect::<Vec<_>>();
+    let mut identity_constants = Vec::new();
+    collect_terminal_schema_constants(&contract.result_schema, "$result", &mut identity_constants);
+    let summary = serde_json::json!({
+        "task": truncate_str(task, 512),
+        "terminal_contract": {
+            "schema_type": contract.result_schema.get("type"),
+            "required_fields": required_fields,
+            "identity_constants": identity_constants,
+        }
+    })
+    .to_string();
+    truncate_str(&summary, 1000).to_string()
+}
 
 fn bound_stage_submit_reprompt(
     bound_worker: bool,
+    stage_team_output_schema: Option<&str>,
     tools: &[rig::completion::ToolDefinition],
     reprompts_used: usize,
 ) -> Option<String> {
-    if !bound_worker
-        || reprompts_used >= MAX_BOUND_STAGE_SUBMIT_REPROMPTS
-        || !tools
-            .iter()
-            .any(|tool| tool.name == "submit_stage_deliverable")
-    {
+    if !bound_worker || reprompts_used >= MAX_BOUND_STAGE_SUBMIT_REPROMPTS {
         return None;
     }
-    Some(
-        "BOUND STAGE SUBMISSION REQUIRED: your previous response ended without calling \
-         submit_stage_deliverable, so the deterministic per-organization gate received nothing. \
-         Do not narrate, restate the manifest, list keys in prose, or stop with a summary. Your \
-         entire next response must be one submit_stage_deliverable tool call. Copy exact \
-         server-provided identities directly into compact structured fields and submit now."
-            .to_string(),
+    let is_company_controller = tools.iter().any(|tool| {
+        tool.name == crate::executor_types::STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME
+    });
+    if is_company_controller {
+        let may_dispatch = tools
+            .iter()
+            .any(|tool| tool.name == crate::STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME);
+        let choices = if may_dispatch {
+            "stage_team_dispatch_workers when exact durable gaps remain, or \
+             stage_team_prepare_final_submission only when the dependency barrier is ready"
+        } else {
+            "stage_team_prepare_final_submission only when the dependency barrier is ready"
+        };
+        return Some(format!(
+            "BOUND COMPANY CONTROLLER COORDINATION REQUIRED: your previous response ended in \
+             prose without returning control to the outer scheduler. Continue the same durable \
+             planning chain and end this coordination round with exactly one trusted coordination \
+             tool: {choices}. Do not call submit_stage_deliverable directly; the outer scheduler \
+             owns the sole final submission path."
+        ));
+    }
+    if tools
+        .iter()
+        .any(|tool| tool.name == crate::TARGET_INTEL_RECORD_REVIEW_VERDICT)
+    {
+        return Some(format!(
+            "BOUND TARGET INTEL REVIEW VERDICT REQUIRED: your previous response ended with analysis \
+             but did not record the terminal verdict. Do not repeat, narrate, or extend the analysis. \
+             Your entire next response must be one {} tool call using only the frozen sections you \
+             already read. Submit PASS, REWORK, or NEEDS_HUMAN now.",
+            crate::TARGET_INTEL_RECORD_REVIEW_VERDICT
+        ));
+    }
+    if let Some(output_schema) = stage_team_output_schema.filter(|_| {
+        tools
+            .iter()
+            .any(|tool| tool.name == crate::executor_types::BARRIER_TOOL_NAME)
+    }) {
+        return Some(format!(
+            "BOUND STAGE RESULT REQUIRED: your previous response ended without calling \
+             submit_result, so the deterministic host received no {output_schema} result. Do not \
+             narrate, restate the manifest, call submit_stage_deliverable, or stop with a summary. \
+             Your entire next response must be one submit_result tool call whose result field is \
+             the exact object described by the visible tool schema. Submit now."
+        ));
+    }
+    if tools
+        .iter()
+        .any(|tool| tool.name == "submit_stage_deliverable")
+    {
+        return Some(
+            "BOUND STAGE SUBMISSION REQUIRED: your previous response ended without calling \
+             submit_stage_deliverable, so the deterministic per-organization gate received nothing. \
+             Do not narrate, restate the manifest, list keys in prose, or stop with a summary. Your \
+             entire next response must be one submit_stage_deliverable tool call. Copy exact \
+             server-provided identities directly into compact structured fields and submit now."
+                .to_string(),
+        );
+    }
+    None
+}
+
+fn bound_missing_submit_reprompt(
+    bound_worker: bool,
+    terminal_execution: bool,
+    stage_team_output_schema: Option<&str>,
+    tools: &[rig::completion::ToolDefinition],
+    reprompts_used: usize,
+) -> Option<String> {
+    if terminal_execution {
+        return (reprompts_used < MAX_BOUND_STAGE_SUBMIT_REPROMPTS).then(|| {
+            "BOUND TERMINAL SUBMISSION REQUIRED: your previous response ended without calling \
+             submit_result, so the exact host contract received nothing. Do not narrate, wrap the \
+             result in Markdown, or stop with a summary. Your entire next response must be one \
+             submit_result tool call whose result field is the exact typed object. Submit now."
+                .to_string()
+        });
+    }
+    bound_stage_submit_reprompt(
+        bound_worker,
+        stage_team_output_schema,
+        tools,
+        reprompts_used,
     )
+}
+
+fn terminal_barrier_missing_error() -> String {
+    format!(
+        "{BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED}: terminal worker exhausted its bounded \
+         corrections before calling submit_result"
+    )
+}
+
+fn terminal_tool_choice(
+    terminal_execution: bool,
+    provider_name: &str,
+    model_name: &str,
+    supports_thinking_history: bool,
+) -> Option<ToolChoice> {
+    if !terminal_execution {
+        return None;
+    }
+
+    // DeepSeek thinking models and OpenAI reasoning transports reject native
+    // `tool_choice` at the protocol layer. The bound terminal worker still
+    // fails closed without `submit_result`: the system prompt, bounded
+    // correction loop, result validator, and terminal barrier remain active.
+    // This mirrors the primary-agent request policy instead of burning the
+    // worker's attempt budget on a deterministic provider 400.
+    let native_tool_choice_incompatible = supports_thinking_history
+        && match provider_name {
+            "deepseek" => !model_name.to_ascii_lowercase().ends_with("deepseek-chat"),
+            "openai_reasoning" | "openai_responses" => true,
+            "openai" => golish_llm_providers::is_reasoning_model(model_name),
+            _ => false,
+        };
+
+    (!native_tool_choice_incompatible).then_some(ToolChoice::Required)
 }
 
 /// Classify provider failures that deterministically mean the request history
@@ -186,12 +366,17 @@ where
     } else {
         format!("{}\n\nAdditional context: {}", task, additional_context)
     };
+    let terminal_execution = ctx
+        .bound_worker_chain
+        .as_ref()
+        .and_then(|bound| bound.terminal_execution.as_ref());
+    let emit_text_events = terminal_execution.is_none_or(|contract| contract.emit_text_events);
+    let emit_reasoning_events =
+        terminal_execution.is_none_or(|contract| contract.emit_reasoning_events);
+    let record_reasoning_telemetry =
+        terminal_execution.is_none_or(|contract| contract.record_reasoning_telemetry);
 
-    let input_truncated = if sub_prompt.len() > 1000 {
-        format!("{}...[truncated]", truncate_str(&sub_prompt, 1000))
-    } else {
-        sub_prompt.clone()
-    };
+    let input_truncated = sub_agent_observation_input(task, &sub_prompt, terminal_execution);
     sub_agent_span.record("langfuse.observation.input", &input_truncated);
 
     let _ = ctx.event_tx.send(AiEvent::SubAgentStarted {
@@ -201,18 +386,20 @@ where
         depth: sub_context.depth,
         parent_request_id: parent_request_id.to_string(),
     });
-    if let Some(mode) = initial_submit_repair_mode.as_ref() {
-        let message = format!(
-            "Resuming submit repair: {} Allowed next tools: [{}].",
-            mode.model_instruction(),
-            mode.allowed_tool_names().join(", ")
-        );
-        let _ = ctx.event_tx.send(AiEvent::SubAgentTextDelta {
-            agent_id: agent_id.to_string(),
-            delta: message.clone(),
-            accumulated: message,
-            parent_request_id: parent_request_id.to_string(),
-        });
+    if emit_text_events {
+        if let Some(mode) = initial_submit_repair_mode.as_ref() {
+            let message = format!(
+                "Resuming submit repair: {} Allowed next tools: [{}].",
+                mode.model_instruction(),
+                mode.allowed_tool_names().join(", ")
+            );
+            let _ = ctx.event_tx.send(AiEvent::SubAgentTextDelta {
+                agent_id: agent_id.to_string(),
+                delta: message.clone(),
+                accumulated: message,
+                parent_request_id: parent_request_id.to_string(),
+            });
+        }
     }
 
     let tools = build_tool_definitions(agent_def, &sub_context, &ctx, tool_provider).await;
@@ -237,6 +424,7 @@ where
     }
 
     let mut accumulated_response = String::new();
+    let mut execution_failure: Option<String> = None;
     let mut iteration = 0;
     let mut bound_stage_submit_reprompts = 0;
     // Stage-stall circuit breaker: a weak worker can re-submit the SAME stage
@@ -321,6 +509,21 @@ where
         }
         if iteration > agent_def.max_iterations {
             ensure_bound_worker_lease(&ctx)?;
+            if terminal_execution.is_some() {
+                let error = format!(
+                    "{BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED}: terminal worker exhausted its \
+                     bounded provider turns before calling submit_result"
+                );
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    max_iterations = agent_def.max_iterations,
+                    error_code = BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED,
+                    "terminal worker exhausted iterations before its exact result barrier"
+                );
+                accumulated_response = error.clone();
+                execution_failure = Some(error);
+                break;
+            }
             run_final_summary(
                 agent_def,
                 &chat_history,
@@ -368,7 +571,12 @@ where
             tools: tools.clone(),
             temperature,
             max_tokens: Some(max_tokens),
-            tool_choice: None,
+            tool_choice: terminal_tool_choice(
+                terminal_execution.is_some(),
+                ctx.provider_name,
+                ctx.model_name,
+                caps.supports_thinking_history,
+            ),
             additional_params,
             model: None,
             output_schema: None,
@@ -387,11 +595,12 @@ where
             "langfuse.session.id" = ctx.session_id.unwrap_or(""),
             iteration = iteration,
         );
-        let _llm_guard = llm_span.enter();
-
         // ── Stream LLM response ─────────────────────────────────────────
         if let Some(stats) = ctx.api_request_stats {
-            stats.record_sent(ctx.provider_name).await;
+            stats
+                .record_sent(ctx.provider_name)
+                .instrument(llm_span.clone())
+                .await;
         }
 
         ensure_bound_worker_lease(&ctx)?;
@@ -414,13 +623,16 @@ where
                     chain_id: checkpointed_chain_id.get(),
                 });
             }
-            result = model.stream(request) => result,
+            result = model.stream(request).instrument(llm_span.clone()) => result,
         };
 
         let mut stream = match stream_result {
             Ok(s) => {
                 if let Some(stats) = ctx.api_request_stats {
-                    stats.record_received(ctx.provider_name).await;
+                    stats
+                        .record_received(ctx.provider_name)
+                        .instrument(llm_span.clone())
+                        .await;
                 }
                 s
             }
@@ -471,6 +683,9 @@ where
             ctx.cancelled,
             &llm_span,
             &quirks,
+            emit_text_events,
+            emit_reasoning_events,
+            record_reasoning_telemetry,
         )
         .await;
 
@@ -554,7 +769,7 @@ where
         // on-disk snapshot the *why* behind each tool batch is unrecoverable
         // offline (only `text_chars`/`thinking_chars` counts hit the logs).
         // Bounded per turn so long reasoning can't balloon `transcript.json`.
-        if !sr.thinking_text.is_empty() {
+        if emit_reasoning_events && !sr.thinking_text.is_empty() {
             let snap = truncate_str(&sr.thinking_text, SUBAGENT_PROSE_PERSIST_CAP).to_string();
             persist_subagent_prose(
                 &transcript_writer,
@@ -566,7 +781,7 @@ where
                 },
             );
         }
-        if !sr.text_content.is_empty() {
+        if emit_text_events && !sr.text_content.is_empty() {
             let snap = truncate_str(&sr.text_content, SUBAGENT_PROSE_PERSIST_CAP).to_string();
             persist_subagent_prose(
                 &transcript_writer,
@@ -589,6 +804,31 @@ where
                 &[],
             );
             if assistant_content.is_empty() {
+                if let Some(directive) = bound_missing_submit_reprompt(
+                    ctx.bound_worker_chain.is_some(),
+                    terminal_execution.is_some(),
+                    ctx.bound_worker_chain
+                        .as_ref()
+                        .and_then(|bound| bound.stage_team_output_schema.as_deref()),
+                    &tools,
+                    bound_stage_submit_reprompts,
+                ) {
+                    bound_stage_submit_reprompts += 1;
+                    chat_history.push(Message::User {
+                        content: OneOrMany::one(UserContent::Text(Text { text: directive })),
+                    });
+                    accumulated_response.clear();
+                    let durable_chain_id =
+                        checkpoint_chain(&ctx, chain_id, &chat_history, agent_id).await?;
+                    checkpointed_chain_id.publish(durable_chain_id);
+                    continue;
+                }
+                if terminal_execution.is_some() {
+                    let error = terminal_barrier_missing_error();
+                    accumulated_response = error.clone();
+                    execution_failure = Some(error);
+                    break;
+                }
                 let message = "Provider returned an empty sub-agent completion".to_string();
                 let _ = ctx.event_tx.send(AiEvent::SubAgentError {
                     agent_id: agent_id.to_string(),
@@ -610,8 +850,12 @@ where
                 content: OneOrMany::many(assistant_content)
                     .expect("non-empty assistant content was checked above"),
             });
-            if let Some(directive) = bound_stage_submit_reprompt(
+            if let Some(directive) = bound_missing_submit_reprompt(
                 ctx.bound_worker_chain.is_some(),
+                terminal_execution.is_some(),
+                ctx.bound_worker_chain
+                    .as_ref()
+                    .and_then(|bound| bound.stage_team_output_schema.as_deref()),
                 &tools,
                 bound_stage_submit_reprompts,
             ) {
@@ -627,9 +871,14 @@ where
                     target: "harness::hook",
                     agent_id = %agent_id,
                     reprompt = bound_stage_submit_reprompts,
-                    "bound stage worker returned prose without a StageDeliverable; continuing the same durable chain"
+                    "bound stage worker returned prose without its required terminal tool; continuing the same durable chain"
                 );
                 continue;
+            }
+            if terminal_execution.is_some() {
+                let error = terminal_barrier_missing_error();
+                accumulated_response = error.clone();
+                execution_failure = Some(error);
             }
             break;
         }
@@ -791,25 +1040,35 @@ where
     // (which keeps its tool runs + evidence ids), instead of starting fresh.
     let final_response = append_durable_chain_marker(final_response, durable_chain_id);
 
-    let _ = ctx.event_tx.send(AiEvent::SubAgentCompleted {
-        agent_id: agent_id.to_string(),
-        response: final_response.clone(),
-        duration_ms,
-        parent_request_id: parent_request_id.to_string(),
-    });
-
-    // Persist the worker's conclusion to the sub-agent transcript too (the
-    // `event_tx` send above only reaches the frontend), so a later agent can
-    // read each sub-agent's final answer offline without replaying the UI.
-    persist_subagent_prose(
-        &transcript_writer,
-        AiEvent::SubAgentCompleted {
+    if let Some(error) = execution_failure.as_ref() {
+        let event = AiEvent::SubAgentError {
             agent_id: agent_id.to_string(),
-            response: truncate_str(&final_response, SUBAGENT_PROSE_PERSIST_CAP).to_string(),
+            error: error.clone(),
+            parent_request_id: parent_request_id.to_string(),
+        };
+        let _ = ctx.event_tx.send(event.clone());
+        persist_subagent_prose(&transcript_writer, event);
+    } else {
+        let _ = ctx.event_tx.send(AiEvent::SubAgentCompleted {
+            agent_id: agent_id.to_string(),
+            response: final_response.clone(),
             duration_ms,
             parent_request_id: parent_request_id.to_string(),
-        },
-    );
+        });
+
+        // Persist the worker's conclusion to the sub-agent transcript too (the
+        // `event_tx` send above only reaches the frontend), so a later agent can
+        // read each sub-agent's final answer offline without replaying the UI.
+        persist_subagent_prose(
+            &transcript_writer,
+            AiEvent::SubAgentCompleted {
+                agent_id: agent_id.to_string(),
+                response: truncate_str(&final_response, SUBAGENT_PROSE_PERSIST_CAP).to_string(),
+                duration_ms,
+                parent_request_id: parent_request_id.to_string(),
+            },
+        );
+    }
 
     if !files_modified.is_empty() {
         tracing::info!(
@@ -831,7 +1090,7 @@ where
         agent_id: agent_id.to_string(),
         response: final_response,
         context: sub_context,
-        success: true,
+        success: execution_failure.is_none(),
         duration_ms,
         files_modified,
         chain_id: durable_chain_id,
@@ -872,22 +1131,93 @@ mod tests {
     use rig::completion::{
         self, CompletionError, CompletionRequest, CompletionResponse, GetTokenUsage, Usage,
     };
+    use rig::message::ToolChoice;
     use rig::streaming::{RawStreamingChoice, RawStreamingToolCall, StreamingCompletionResponse};
     use serde::{Deserialize, Serialize};
     use tokio::sync::{mpsc, RwLock};
     use uuid::Uuid;
 
     use super::{
-        bound_stage_submit_reprompt, is_provider_context_limit_error,
-        MAX_BOUND_STAGE_SUBMIT_REPROMPTS,
+        bound_missing_submit_reprompt, bound_stage_submit_reprompt,
+        is_provider_context_limit_error, sub_agent_observation_input,
+        terminal_barrier_missing_error, terminal_tool_choice,
+        BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED, MAX_BOUND_STAGE_SUBMIT_REPROMPTS,
     };
     use crate::definition::{SubAgentContext, SubAgentDefinition};
     use crate::executor_types::{
-        BoundWorkerChainContext, SubAgentChainPersistence, SubAgentExecutorContext, ToolProvider,
+        BoundTerminalExecutionContract, BoundWorkerChainContext, SubAgentChainPersistence,
+        SubAgentExecutorContext, ToolProvider,
     };
     use golish_core::events::AiEvent;
     use golish_tools::ToolRegistry;
     use rig::completion::request::ToolDefinition;
+
+    #[test]
+    fn terminal_observation_input_excludes_the_frozen_context_payload() {
+        let contract = BoundTerminalExecutionContract {
+            result_schema: serde_json::json!({
+                "type": "object",
+                "required": ["organization_id", "projection_hash", "summary"],
+                "properties": {
+                    "organization_id": {"type": "string", "const": "org-safe-id"},
+                    "projection_hash": {"type": "string", "const": "sha256:safe-identity"},
+                    "summary": {"type": "string"}
+                }
+            }),
+            completion_instruction: "Submit exactly once.".to_string(),
+            result_validator: None,
+            inject_workspace_skills: false,
+            emit_reasoning_events: false,
+            emit_text_events: false,
+            record_reasoning_telemetry: false,
+        };
+        let frozen_payload = "SUPER_SECRET_FROZEN_APPLICATION_PAYLOAD";
+        let full_prompt = format!(
+            "Model one frozen shard.\n\nAdditional context: {{\"input\":\"{frozen_payload}\"}}"
+        );
+
+        let observed =
+            sub_agent_observation_input("Model one frozen shard.", &full_prompt, Some(&contract));
+
+        assert!(observed.contains("Model one frozen shard."));
+        assert!(observed.contains("organization_id"));
+        assert!(observed.contains("org-safe-id"));
+        assert!(observed.contains("sha256:safe-identity"));
+        assert!(!observed.contains(frozen_payload));
+        assert!(!observed.contains("Additional context"));
+        assert!(observed.len() <= 1000);
+    }
+
+    #[test]
+    fn terminal_execution_requires_submit_result_and_fails_closed_after_bounded_corrections() {
+        let tools = vec![ToolDefinition {
+            name: "submit_result".to_string(),
+            description: "submit exact result".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+
+        assert!(matches!(
+            terminal_tool_choice(true, "openai", "gpt-4o", false),
+            Some(ToolChoice::Required)
+        ));
+        assert!(terminal_tool_choice(false, "openai", "gpt-4o", false).is_none());
+        assert!(terminal_tool_choice(true, "deepseek", "deepseek-v4-flash", true).is_none());
+        assert!(terminal_tool_choice(true, "openai_reasoning", "o3", true).is_none());
+        let directive = bound_missing_submit_reprompt(true, true, None, &tools, 0)
+            .expect("terminal prose must receive one same-chain correction");
+        assert!(directive.contains("submit_result"));
+        assert!(bound_missing_submit_reprompt(
+            true,
+            true,
+            None,
+            &tools,
+            MAX_BOUND_STAGE_SUBMIT_REPROMPTS
+        )
+        .is_none());
+        assert!(
+            terminal_barrier_missing_error().contains(BOUND_TERMINAL_EXECUTION_BARRIER_REQUIRED)
+        );
+    }
 
     #[test]
     fn bound_stage_worker_gets_a_bounded_submit_reprompt_only_when_the_tool_is_visible() {
@@ -897,15 +1227,88 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
         }];
 
-        let directive = bound_stage_submit_reprompt(true, &tools, 0)
+        let directive = bound_stage_submit_reprompt(true, None, &tools, 0)
             .expect("bound stage worker must not terminate on prose before submission");
         assert!(directive.contains("entire next response"));
         assert!(directive.contains("submit_stage_deliverable"));
-        assert!(bound_stage_submit_reprompt(false, &tools, 0).is_none());
-        assert!(bound_stage_submit_reprompt(true, &[], 0).is_none());
+        assert!(bound_stage_submit_reprompt(false, None, &tools, 0).is_none());
+        assert!(bound_stage_submit_reprompt(true, None, &[], 0).is_none());
         assert!(
-            bound_stage_submit_reprompt(true, &tools, MAX_BOUND_STAGE_SUBMIT_REPROMPTS).is_none()
+            bound_stage_submit_reprompt(true, None, &tools, MAX_BOUND_STAGE_SUBMIT_REPROMPTS)
+                .is_none()
         );
+    }
+
+    #[test]
+    fn bound_investigation_primary_reprompt_prefers_typed_result_over_stage_deliverable() {
+        let tools = vec![
+            ToolDefinition {
+                name: "submit_result".to_string(),
+                description: "submit exact result".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "submit_stage_deliverable".to_string(),
+                description: "submit stage deliverable".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let directive = bound_stage_submit_reprompt(
+            true,
+            Some(crate::executor_types::INVESTIGATION_TASK_PLAN_RESULT_SCHEMA),
+            &tools,
+            0,
+        )
+        .expect("a typed Primary must return through submit_result");
+        assert!(directive.contains("submit_result"));
+        assert!(directive.contains(crate::executor_types::INVESTIGATION_TASK_PLAN_RESULT_SCHEMA));
+        assert!(directive.contains("Do not"));
+        assert!(!directive.contains("entire next response must be one submit_stage_deliverable"));
+    }
+
+    #[test]
+    fn bound_company_controller_is_reprompted_to_coordinate_instead_of_submit() {
+        let tools = vec![
+            ToolDefinition {
+                name: "submit_stage_deliverable".to_string(),
+                description: "submit".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: crate::STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME.to_string(),
+                description: "dispatch".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: crate::executor_types::STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME
+                    .to_string(),
+                description: "prepare".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+
+        let directive = bound_stage_submit_reprompt(true, None, &tools, 0)
+            .expect("bound Company Controller must return control through coordination");
+        assert!(directive.contains(crate::STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME));
+        assert!(directive
+            .contains(crate::executor_types::STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME));
+        assert!(directive.contains("Do not call submit_stage_deliverable directly"));
+    }
+
+    #[test]
+    fn bound_target_intel_reviewer_gets_a_bounded_terminal_verdict_reprompt() {
+        let tools = vec![ToolDefinition {
+            name: crate::TARGET_INTEL_RECORD_REVIEW_VERDICT.to_string(),
+            description: "record verdict".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+
+        let directive = bound_stage_submit_reprompt(true, None, &tools, 0)
+            .expect("bound reviewer must not terminate on analysis before its verdict");
+        assert!(directive.contains("entire next response"));
+        assert!(directive.contains(crate::TARGET_INTEL_RECORD_REVIEW_VERDICT));
+        assert!(directive.contains("PASS, REWORK, or NEEDS_HUMAN"));
     }
 
     #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -1325,12 +1728,16 @@ mod tests {
             candidate_submit_only: false,
             return_on_first_durable_stage_submission: false,
             stage_team_leader: None,
+            target_intel_review: None,
+            stage_team_output_schema: None,
+            terminal_execution: None,
             chain_id: Uuid::new_v4(),
             session_id: persistence_session_id,
             agent_type: "test-agent".to_string(),
             runtime_memory_source: None,
             initial_chain: serde_json::json!([]),
             initial_prompt_already_checkpointed: false,
+            reset_provider_history: false,
             checkpoint_version: Arc::new(AtomicI64::new(0)),
             checkpoint_body: Arc::new(std::sync::RwLock::new(serde_json::json!([]))),
             lease_lost: Arc::new(AtomicBool::new(false)),

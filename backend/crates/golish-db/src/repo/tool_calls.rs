@@ -1,6 +1,6 @@
 use crate::{DbError, Result};
 use chrono::{DateTime, Utc};
-use sqlx::{PgConnection, PgPool};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::models::{NewToolCall, ToolCall, ToolcallStatus};
@@ -36,6 +36,110 @@ pub struct RuntimeToolIdentity {
     pub organization_id: Option<Uuid>,
     pub attempt_epoch: Option<i64>,
     pub lease_token: Option<Uuid>,
+}
+
+async fn lock_runtime_tool_identity_for_start(
+    tx: &mut Transaction<'_, Postgres>,
+    identity: &RuntimeToolIdentity,
+) -> Result<()> {
+    let operation = sqlx::query_scalar::<_, Uuid>(
+        "SELECT operation_id FROM operation_state WHERE operation_id = $1 FOR SHARE",
+    )
+    .bind(identity.operation_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if operation.is_none() {
+        return Err(DbError::NotFound(format!(
+            "runtime tool operation {}",
+            identity.operation_id
+        )));
+    }
+
+    if let Some(stage_run_unit_id) = identity.stage_run_unit_id {
+        let organization_id = identity.organization_id.ok_or_else(|| {
+            DbError::Other(anyhow::anyhow!(
+                "runtime tool unit identity requires organization_id"
+            ))
+        })?;
+        let unit = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT id FROM stage_run_units
+               WHERE id = $1 AND operation_id = $2 AND stage_execution_id = $3
+                 AND organization_id = $4
+               FOR SHARE"#,
+        )
+        .bind(stage_run_unit_id)
+        .bind(identity.operation_id)
+        .bind(identity.stage_execution_id)
+        .bind(organization_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if unit.is_none() {
+            return Err(DbError::NotFound(format!(
+                "runtime tool stage unit {stage_run_unit_id}"
+            )));
+        }
+    }
+
+    let stage = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT id FROM stage_runs
+           WHERE id = $1 AND operation_id = $2
+           FOR SHARE"#,
+    )
+    .bind(identity.stage_execution_id)
+    .bind(identity.operation_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if stage.is_none() {
+        return Err(DbError::NotFound(format!(
+            "runtime tool stage execution {}",
+            identity.stage_execution_id
+        )));
+    }
+
+    if let Some(worker_run_id) = identity.worker_run_id {
+        let stage_run_unit_id = identity.stage_run_unit_id.ok_or_else(|| {
+            DbError::Other(anyhow::anyhow!(
+                "runtime worker tool identity requires stage_run_unit_id"
+            ))
+        })?;
+        let organization_id = identity.organization_id.ok_or_else(|| {
+            DbError::Other(anyhow::anyhow!(
+                "runtime worker tool identity requires organization_id"
+            ))
+        })?;
+        let attempt_epoch = identity.attempt_epoch.ok_or_else(|| {
+            DbError::Other(anyhow::anyhow!(
+                "runtime worker tool identity requires attempt_epoch"
+            ))
+        })?;
+        let lease_token = identity.lease_token.ok_or_else(|| {
+            DbError::Other(anyhow::anyhow!(
+                "runtime worker tool identity requires lease_token"
+            ))
+        })?;
+        let worker = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT id FROM stage_worker_runs
+               WHERE id = $1 AND operation_id = $2 AND stage_execution_id = $3
+                 AND stage_run_unit_id = $4 AND organization_id = $5
+                 AND attempt_epoch = $6 AND lease_token = $7
+               FOR SHARE"#,
+        )
+        .bind(worker_run_id)
+        .bind(identity.operation_id)
+        .bind(identity.stage_execution_id)
+        .bind(stage_run_unit_id)
+        .bind(organization_id)
+        .bind(attempt_epoch)
+        .bind(lease_token)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if worker.is_none() {
+            return Err(DbError::NotFound(format!(
+                "runtime tool worker fence {worker_run_id}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -142,6 +246,14 @@ pub async fn record_tracked_start(
     args: &serde_json::Value,
     runtime: Option<&RuntimeToolIdentity>,
 ) -> Result<Uuid> {
+    let mut tx = pool.begin().await?;
+    if let Some(runtime) = runtime {
+        // Match the runtime-memory transaction order before the INSERT's
+        // immediate FKs and worker-fence trigger acquire their own share
+        // locks. This prevents stage->unit / worker->stage lock inversions
+        // against concurrent heartbeat and checkpoint transactions.
+        lock_runtime_tool_identity_for_start(&mut tx, runtime).await?;
+    }
     let record_id = sqlx::query_scalar::<_, Uuid>(RECORD_TRACKED_START_SQL)
         .bind(call_id)
         .bind(session_id)
@@ -156,8 +268,9 @@ pub async fn record_tracked_start(
         .bind(runtime.and_then(|identity| identity.organization_id))
         .bind(runtime.and_then(|identity| identity.attempt_epoch))
         .bind(runtime.and_then(|identity| identity.lease_token))
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(record_id)
 }
 
@@ -287,7 +400,7 @@ fn context_organization_id(args: &serde_json::Value) -> Option<Uuid> {
         .ok()
 }
 
-fn subsidiary_scope_decision(
+pub(crate) fn subsidiary_scope_decision(
     args: &serde_json::Value,
     result: Option<&str>,
     expected_organization_id: Uuid,
@@ -346,6 +459,7 @@ fn subsidiary_scope_decision(
 
     let response = approved_human_response(result)?.to_ascii_lowercase();
     if [
+        "root_only",
         "不纳入子公司",
         "不包含子公司",
         "仅母公司",
@@ -355,6 +469,7 @@ fn subsidiary_scope_decision(
         "exclude subsidiaries",
         "parent company only",
         "root only",
+        "root-only",
     ]
     .iter()
     .any(|marker| response.contains(marker))
@@ -362,6 +477,8 @@ fn subsidiary_scope_decision(
         return Some(true);
     }
     if [
+        "include_51",
+        "include_100",
         "纳入：",
         "纳入:",
         "纳入子公司",
@@ -845,6 +962,26 @@ mod tests {
                 Some("杭州默安科技有限公司")
             ),
             Some(false)
+        );
+        assert_eq!(
+            subsidiary_scope_decision(
+                &args,
+                Some(r#"{"response":"root_only","skipped":false}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            Some(true),
+            "the canonical root_only enum emitted by the Scoping prompt must be accepted"
+        );
+        assert_eq!(
+            subsidiary_scope_decision(
+                &args,
+                Some(r#"{"response":"include_51","skipped":false}"#),
+                organization_id,
+                Some("杭州默安科技有限公司")
+            ),
+            Some(false),
+            "canonical include enums must select the reviewed-unit branch"
         );
         assert_eq!(
             subsidiary_scope_decision(

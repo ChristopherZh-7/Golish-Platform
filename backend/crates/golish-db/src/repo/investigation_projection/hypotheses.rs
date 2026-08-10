@@ -9,10 +9,12 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use super::legacy::{load_legacy_candidate_map_on, unavailable_legacy_projection};
+use super::summary::load_exact_actor_topology_on;
 use super::types::{
     invalid_payload, InvestigationHypothesisDetail, InvestigationHypothesisListItem,
     InvestigationHypothesisListPage, InvestigationHypothesisListQuery,
-    InvestigationHypothesisSortKey, InvestigationProjectionResult,
+    InvestigationHypothesisSortKey, InvestigationPageValidationInput,
+    InvestigationProjectionResult, InvestigationStageRunSelector,
 };
 use super::{apply_expected_page_authority, InvestigationProjectionReadSnapshot};
 
@@ -684,7 +686,31 @@ pub async fn list_investigation_hypotheses(
     operation_id: Uuid,
     query: InvestigationHypothesisListQuery,
 ) -> InvestigationProjectionResult<InvestigationHypothesisListPage> {
-    let mut snapshot = InvestigationProjectionReadSnapshot::begin(pool, operation_id).await?;
+    list_investigation_hypotheses_inner(pool, operation_id, None, query).await
+}
+
+pub async fn list_investigation_hypotheses_for_stage_run(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: &InvestigationStageRunSelector,
+    query: InvestigationHypothesisListQuery,
+) -> InvestigationProjectionResult<InvestigationHypothesisListPage> {
+    list_investigation_hypotheses_inner(pool, operation_id, Some(selector), query).await
+}
+
+async fn list_investigation_hypotheses_inner(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: Option<&InvestigationStageRunSelector>,
+    query: InvestigationHypothesisListQuery,
+) -> InvestigationProjectionResult<InvestigationHypothesisListPage> {
+    let mut snapshot = if let Some(selector) = selector {
+        InvestigationProjectionReadSnapshot::begin_for_stage_run(pool, operation_id, selector)
+            .await?
+            .0
+    } else {
+        InvestigationProjectionReadSnapshot::begin(pool, operation_id).await?
+    };
     if let Some(expected) = &query.expected_page_authority {
         apply_expected_page_authority(&mut snapshot, expected)?;
     }
@@ -808,7 +834,43 @@ pub async fn get_investigation_hypothesis(
     operation_id: Uuid,
     revision_id: Uuid,
 ) -> InvestigationProjectionResult<Option<InvestigationHypothesisDetail>> {
-    let mut snapshot = InvestigationProjectionReadSnapshot::begin(pool, operation_id).await?;
+    get_investigation_hypothesis_inner(pool, operation_id, None, revision_id, None).await
+}
+
+pub async fn get_investigation_hypothesis_for_stage_run(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: &InvestigationStageRunSelector,
+    revision_id: Uuid,
+    expected: &InvestigationPageValidationInput,
+) -> InvestigationProjectionResult<Option<InvestigationHypothesisDetail>> {
+    get_investigation_hypothesis_inner(
+        pool,
+        operation_id,
+        Some(selector),
+        revision_id,
+        Some(expected),
+    )
+    .await
+}
+
+async fn get_investigation_hypothesis_inner(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: Option<&InvestigationStageRunSelector>,
+    revision_id: Uuid,
+    expected: Option<&InvestigationPageValidationInput>,
+) -> InvestigationProjectionResult<Option<InvestigationHypothesisDetail>> {
+    let mut snapshot = if let Some(selector) = selector {
+        InvestigationProjectionReadSnapshot::begin_for_stage_run(pool, operation_id, selector)
+            .await?
+            .0
+    } else {
+        InvestigationProjectionReadSnapshot::begin(pool, operation_id).await?
+    };
+    if let Some(expected) = expected {
+        apply_expected_page_authority(&mut snapshot, expected)?;
+    }
     let head = snapshot.authority.temporal.as_of_change_seq;
     let parsed = load_revision_lineage_on(&mut snapshot.tx, operation_id, head, revision_id)
         .await?
@@ -862,6 +924,15 @@ pub async fn get_investigation_hypothesis(
     let verification_objective_summaries =
         verification_objective_summaries_on(&mut snapshot.tx, operation_id, head, revision_id)
             .await?;
+    let actor_topology = if let Some(selector) = selector {
+        load_exact_actor_topology_on(&mut snapshot.tx, operation_id, selector)
+            .await?
+            .into_iter()
+            .filter(|actor| actor.hypothesis_revision_id == Some(revision_id))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let authority = snapshot.authority.clone();
     let detail = InvestigationHypothesisDetail {
         authority,
@@ -899,6 +970,7 @@ pub async fn get_investigation_hypothesis(
         application_context_ref_ids: source_ref_ids(target, SourceRefKind::ApplicationContext),
         gap_ref_ids: source_ref_ids(target, SourceRefKind::Gap),
         verification_objective_summaries,
+        actor_topology,
         legacy_unavailable_fields: legacy.unavailable_fields,
     };
     snapshot.finish().await?;

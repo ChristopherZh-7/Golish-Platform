@@ -12,13 +12,19 @@ pub mod validation;
 
 pub use citation::{CitationSourceType, ReportCitation};
 pub use report::{
-    canonical_source_set_hash, ReportReadModel, ReportSourceKind, ReportSourceSnapshot,
-    ReportSourceVersion,
+    canonical_source_set_hash, AllFreshToolTruthAuthorityBundleRefV1,
+    HistoricalArtifactReadAuthorityV0, HistoricalAuthorityTimeStatusV0,
+    LegacyCoverageLimitationCode, LegacyReportInputSealV1, ReportAuthorityClass, ReportInputSealV1,
+    ReportReadModel, ReportSourceKind, ReportSourceSnapshot, ReportSourceVersion,
+    ReportToolTruthAuthoritySetRefV1, RevisionAdjudicationAuthorityMemberV1,
+    RevisionAdjudicationAuthoritySetRefV1, RevisionAdjudicationOutcomeV1,
+    RevisionAdjudicationReportInputSealV1, WaveTerminalReceiptRefV1,
 };
 pub use revision::{PublicationStatus, ReportRevision, ValidationStatus};
 pub use section::{
-    OrganizationReportSection, ReportClaim, ReportClaimKind, ReportFinding, ReportResidual,
-    ReportSectionKind, ReportSectionModel,
+    CoverageSufficiencyProjection, OrganizationReportSection, ReportClaim, ReportClaimKind,
+    ReportClaimValue, ReportFinding, ReportResidual, ReportSectionKind, ReportSectionModel,
+    SecurityVerdictAuthority, SecurityVerdictProjection,
 };
 pub use validation::{
     validate_report, CleanupBlockedDecisionTruth, CleanupCloseoutTruth, EvidenceAuditTruth,

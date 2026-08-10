@@ -1,0 +1,33 @@
+{
+  "tool": {
+    "id": "interactsh-client",
+    "pentestPhase": ["vuln_id", "exploit"],
+    "name": "interactsh-client",
+    "description": "Observe blind OAST callbacks; automated use and default external servers are disabled.",
+    "executable": "interactsh-client",
+    "runtime": "native",
+    "launchMode": "cli",
+    "version": "1.3.1",
+    "category": "network",
+    "subcategory": "oast",
+    "tier": "optional",
+    "tags": ["oast", "external-service", "disabled-by-default", "jit-required", "mit"],
+    "install": {
+      "method": "github",
+      "source": "projectdiscovery/interactsh",
+      "macos": {"method": "github", "source": "projectdiscovery/interactsh"},
+      "linux": {"method": "github", "source": "projectdiscovery/interactsh"},
+      "windows": {"method": "github", "source": "projectdiscovery/interactsh"}
+    },
+    "params": [
+      {"label": "Authorized OAST server", "flag": "-server", "type": "string", "required": true, "description": "Exact external service authority; no default server is supplied.", "placeholder": "https://authorized-oast.example"},
+      {"label": "Session credential reference", "flag": "-auth", "type": "string", "required": true, "description": "Host-injected credential reference only.", "placeholder": "credential-ref"},
+      {"label": "JSON output", "flag": "-json", "type": "boolean", "required": true, "description": "Emit raw JSONL interactions."},
+      {"label": "Output file", "flag": "-o", "type": "string", "required": true, "placeholder": "interactsh.jsonl"}
+    ],
+    "skills": [
+      {"id": "local-version", "name": "Local version smoke", "description": "No-network version smoke only; no OAST execution preset is exposed.", "args": "-version", "tags": ["local", "no-target", "no-network"]}
+    ],
+    "output": {"format": "json_lines", "produces": ["oast_interaction", "info"], "patterns": [], "fields": {}, "detect": "interactsh|full-id|protocol"}
+  }
+}

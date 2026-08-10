@@ -174,6 +174,10 @@ impl MemRepo {
                 investigation_contract_version:
                     golish_core::InvestigationContractVersion::LegacyCandidateV1,
                 investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
+                application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
+                stage_topology_contract:
+                    golish_core::StageTopologyContract::LegacyCandidateVerificationV1
+                        .freeze_material(),
                 project_scope_id: None,
                 engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
@@ -441,6 +445,9 @@ impl RuntimeMemoryRepository for MemRepo {
             investigation_contract_version:
                 golish_core::InvestigationContractVersion::LegacyCandidateV1,
             investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
+            stage_topology_contract:
+                golish_core::StageTopologyContract::LegacyCandidateVerificationV1.freeze_material(),
             project_scope_id: Some(input.project_scope.project_scope_id),
             engagement_org_id: None,
             state_blob: serde_json::Value::Null,
@@ -708,6 +715,10 @@ impl DbRepoProvider for MemRepo {
                 investigation_contract_version:
                     golish_core::InvestigationContractVersion::LegacyCandidateV1,
                 investigation_rollout_mode: golish_core::InvestigationRolloutMode::LegacyOnly,
+                application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
+                stage_topology_contract:
+                    golish_core::StageTopologyContract::LegacyCandidateVerificationV1
+                        .freeze_material(),
                 project_scope_id: None,
                 engagement_org_id: None,
                 state_blob: serde_json::Value::Null,
@@ -1017,6 +1028,7 @@ impl DbRepoProvider for MemRepo {
     #[allow(clippy::too_many_arguments)]
     async fn passive_scans_insert(
         &self,
+        _operation_id: Option<Uuid>,
         _target_id: Uuid,
         _project_path: &str,
         _scan_type: &str,
@@ -1853,7 +1865,7 @@ async fn v2_scoping_prebound_org_mismatch_blocks_before_finalize() {
 }
 
 #[tokio::test]
-async fn reporting_stage_builds_and_validates_but_never_auto_finalizes() {
+async fn reporting_stage_builds_and_validates_without_an_agent_or_auto_finalize() {
     let operation_id = Uuid::new_v4();
     let repo = MemRepo::seed(operation_id, "assessment", "reporting");
     let truth = valid_reporting_truth(operation_id);
@@ -1900,7 +1912,11 @@ async fn reporting_stage_builds_and_validates_but_never_auto_finalizes() {
         repo.reporting_gate_reads.load(Ordering::SeqCst) >= 1,
         "stage close must re-read current truth instead of trusting entry state"
     );
-    assert_eq!(executor.execute_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        executor.execute_calls.load(Ordering::SeqCst),
+        0,
+        "the canonical evidence summary closes Reporting without an agent turn"
+    );
     assert_eq!(
         repo.wiki_search_calls.load(Ordering::SeqCst),
         0,
@@ -1951,7 +1967,8 @@ async fn terminal_graph_completion_closes_exact_active_stage_execution_and_task(
         .await
         .expect("terminal Reporting slice completes");
 
-    assert_eq!(report, "Canonical report prepared");
+    assert!(report.contains("Validated evidence summary is ready"));
+    assert!(report.contains("publication remains unpublished"));
     assert!(repo.active_stage_execution_id(operation_id).is_none());
     let completed = repo
         .completed_stage_executions
@@ -1973,7 +1990,7 @@ async fn terminal_graph_completion_closes_exact_active_stage_execution_and_task(
         .cloned()
         .expect("terminal task exists");
     assert_eq!(task.status, TaskStatus::Finished);
-    assert_eq!(task.result.as_deref(), Some("Canonical report prepared"));
+    assert_eq!(task.result.as_deref(), Some(report.as_str()));
 }
 
 #[tokio::test]

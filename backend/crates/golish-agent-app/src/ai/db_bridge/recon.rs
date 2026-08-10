@@ -2,7 +2,7 @@
 //! (inherent `_impl` layer). Bodies moved verbatim from the original
 //! `db_bridge.rs` trait impl; the trait methods in `mod.rs` delegate here.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::IpAddr;
@@ -21,6 +21,17 @@ use golish_app_core::domain::targets::{Target, TargetType};
 use super::GolishDbRepoProvider;
 
 const MAX_TARGET_INTEL_RAW_WITNESS_BYTES: usize = 1_048_576;
+
+fn persisted_url_query_names(url: &str) -> Vec<String> {
+    let Ok(url) = url::Url::parse(url) else {
+        return Vec::new();
+    };
+    url.query_pairs()
+        .map(|(name, _)| name.into_owned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
 
 #[derive(Clone)]
 struct TargetIntelReceiptHostState {
@@ -351,21 +362,23 @@ fn read_or_create_operation_key(key_path: &Path) -> anyhow::Result<[u8; 32]> {
     }
 }
 
-fn seal_provider_witness(
-    state: &TargetIntelReceiptHostState,
+pub(super) fn seal_tool_truth_witness(
+    project_root: &Path,
+    operation_id: Uuid,
+    receipt_id: Uuid,
     bytes: &[u8],
     original_byte_count: i64,
     truncated: bool,
 ) -> anyhow::Result<golish_db::repo::capability_execution_receipts::RawWitnessArtifactInput> {
-    let vault_root = state.project_root.join(".golish").join("tool-truth-vault");
+    let vault_root = project_root.join(".golish").join("tool-truth-vault");
     let key_root = dirs::data_local_dir()
         .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_KEY_ROOT_UNAVAILABLE"))?
         .join("golish")
         .join("tool-truth-keys");
-    let key_path = key_root.join(format!("{}.key", state.operation_id));
+    let key_path = key_root.join(format!("{operation_id}.key"));
     let key = read_or_create_operation_key(&key_path)?;
     let plaintext_sha256 = sha256_prefixed(bytes);
-    let artifact_id = Uuid::new_v5(&state.receipt.id, plaintext_sha256.as_bytes());
+    let artifact_id = Uuid::new_v5(&receipt_id, plaintext_sha256.as_bytes());
     let mut nonce_material = Vec::with_capacity(key.len() + 32);
     nonce_material.extend_from_slice(&key);
     nonce_material.extend_from_slice(artifact_id.as_bytes());
@@ -376,10 +389,7 @@ fn seal_provider_witness(
     let unbound = UnboundKey::new(&AES_256_GCM, &key)
         .map_err(|_| anyhow::anyhow!("TOOL_TRUTH_RAW_WITNESS_KEY_INVALID"))?;
     let sealing_key = LessSafeKey::new(unbound);
-    let aad = format!(
-        "{}:{}:{}",
-        state.operation_id, state.receipt.id, artifact_id
-    );
+    let aad = format!("{}:{}:{}", operation_id, receipt_id, artifact_id);
     let mut ciphertext = bytes.to_vec();
     sealing_key
         .seal_in_place_append_tag(
@@ -419,7 +429,7 @@ fn seal_provider_witness(
     token_material.extend_from_slice(b"object-token:v1");
     let token = Sha256::digest(&token_material).to_vec();
     let operation_key_ref_hash = sha256_prefixed(&key);
-    let retention_policy_id = Uuid::new_v5(&state.operation_id, b"tool-truth-retention:v1");
+    let retention_policy_id = Uuid::new_v5(&operation_id, b"tool-truth-retention:v1");
     let retention_policy_hash = sha256_prefixed(b"tool-truth-retention:v1:operation-lifetime");
     let lowercase = String::from_utf8_lossy(bytes).to_ascii_lowercase();
     let sensitivity_disposition = if [
@@ -731,8 +741,14 @@ impl golish_recon_app::intel_providers::TargetIntelReceiptObserver for TargetInt
                 .all(provider_evidence_executions_complete);
         let (raw_witness, original_byte_count, truncated, raw_witness_tokens) =
             bounded_provider_witness(&artifacts)?;
-        let raw_witness =
-            seal_provider_witness(&state, &raw_witness, original_byte_count, truncated)?;
+        let raw_witness = seal_tool_truth_witness(
+            &state.project_root,
+            state.operation_id,
+            state.receipt.id,
+            &raw_witness,
+            original_byte_count,
+            truncated,
+        )?;
         let (network_hops, request_count, retry_count, wall_clock_ms) =
             observed_execution_metrics(&artifacts)?;
         let response_byte_count = raw_witness.stored_byte_count;
@@ -1000,6 +1016,117 @@ fn build_enumeration_coverage_summary(facts: &[(String, String)]) -> serde_json:
     })
 }
 
+fn enumeration_receipt_dag_unit_sql() -> &'static str {
+    r#"SELECT id,stage_execution_id
+          FROM stage_run_units
+         WHERE operation_id=$1 AND organization_id=$2
+           AND stage_kind='enumeration'
+           -- The lead reads this projection both while the Company
+           -- Controller unit is active and immediately after stage_run
+           -- final-seals it.  Hiding `passed` here makes the same current
+           -- generation look like receipt_dag_unavailable during the
+           -- lead's mandatory pre-submit coverage check, even though the
+           -- exact lane receipts and closure graph were just sealed.
+           AND status IN ('running','gate_blocked','passed')
+         ORDER BY generation DESC,updated_at DESC,id DESC
+         LIMIT 1"#
+}
+
+async fn enumeration_receipt_dag_projection(
+    pool: &sqlx::PgPool,
+    operation_id: Option<Uuid>,
+    organization_id: Uuid,
+) -> anyhow::Result<Value> {
+    let Some(operation_id) = operation_id else {
+        return Ok(json!({
+            "required": true,
+            "available": false,
+            "reason": "enumeration_receipt_dag_operation_missing",
+            "receipts": [],
+        }));
+    };
+    let contract: Option<String> = sqlx::query_scalar(
+        "SELECT enumeration_analysis_contract FROM operation_state WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some(contract) = contract else {
+        return Ok(json!({
+            "required": true,
+            "available": false,
+            "reason": "enumeration_receipt_dag_contract_missing",
+            "receipts": [],
+        }));
+    };
+    anyhow::ensure!(
+        matches!(
+            contract.as_str(),
+            "legacy_v1" | "agent_team_v2_shadow" | "agent_team_v2"
+        ),
+        "Enumeration receipt DAG contract is invalid"
+    );
+    if contract == "legacy_v1" {
+        return Ok(json!({
+            "required": false,
+            "available": true,
+            "contract": contract,
+            "receipts": [],
+        }));
+    }
+    let unit: Option<(Uuid, Uuid)> = sqlx::query_as(enumeration_receipt_dag_unit_sql())
+        .bind(operation_id)
+        .bind(organization_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some((stage_run_unit_id, stage_execution_id)) = unit else {
+        return Ok(json!({
+            "required": contract == "agent_team_v2",
+            "available": false,
+            "contract": contract,
+            "reason": "enumeration_receipt_dag_active_unit_missing",
+            "receipts": [],
+        }));
+    };
+    let rows = sqlx::query_as::<_, (Uuid, Uuid, String, String, String, bool)>(
+        r#"SELECT receipt.id,receipt.target_id,receipt.exact_origin,receipt.lane,
+                  receipt.terminal_disposition,
+                  seal.closure_graph_sha256 IS NOT NULL
+                  AND seal.closure_graph_sha256=
+                      enumeration_compute_lane_closure_graph_sha256(receipt.id)
+                     AS closure_graph_valid
+             FROM enumeration_lane_commit_receipts receipt
+             LEFT JOIN enumeration_lane_closure_graph_seals seal
+               ON seal.lane_receipt_id=receipt.id
+            WHERE receipt.operation_id=$1 AND receipt.organization_id=$2
+              AND receipt.stage_execution_id=$3 AND receipt.stage_run_unit_id=$4
+            ORDER BY receipt.target_id,receipt.exact_origin,receipt.lane,receipt.id"#,
+    )
+    .bind(operation_id)
+    .bind(organization_id)
+    .bind(stage_execution_id)
+    .bind(stage_run_unit_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(json!({
+        "required": contract == "agent_team_v2",
+        "available": true,
+        "contract": contract,
+        "stage_execution_id": stage_execution_id,
+        "stage_run_unit_id": stage_run_unit_id,
+        "receipts": rows.into_iter().map(
+            |(receipt_id, target_id, exact_origin, lane, terminal_disposition, closure_graph_valid)| json!({
+                "receipt_id": receipt_id,
+                "target_id": target_id,
+                "exact_origin": exact_origin,
+                "lane": lane,
+                "terminal_disposition": terminal_disposition,
+                "closure_graph_valid": closure_graph_valid,
+            })
+        ).collect::<Vec<_>>(),
+    }))
+}
+
 impl GolishDbRepoProvider {
     pub(super) async fn vuln_intel_search_impl(
         &self,
@@ -1179,13 +1306,15 @@ impl GolishDbRepoProvider {
 
     pub(super) async fn query_target_data_impl(
         &self,
+        operation_id: Option<Uuid>,
         target_id: Uuid,
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value> {
         let include_all = sections.contains(&"all".to_string());
         let mut data = json!({});
         let needs_target_row = section_requested(include_all, sections, "web_roots")
-            || section_requested(include_all, sections, "coverage");
+            || section_requested(include_all, sections, "coverage")
+            || section_requested(include_all, sections, "endpoints");
         let target_row = if needs_target_row {
             let target_id_str = target_id.to_string();
             self.recon_targets
@@ -1217,8 +1346,74 @@ impl GolishDbRepoProvider {
                 .api_endpoints_list_by_target(target_id)
                 .await
             {
+                let anonymous_access_review = if let Some(origin) = target_row
+                    .as_ref()
+                    .and_then(|target| golish_pentest_domain::canonical_web_origin(&target.value))
+                {
+                    let manifest_endpoints = if let Some(operation_id) = operation_id {
+                        self.recon_scans
+                            .enumeration_list_endpoints_for_operation_target_origin(
+                                operation_id,
+                                target_id,
+                                &origin.key,
+                            )
+                            .await?
+                    } else {
+                        Vec::new()
+                    };
+                    let eligible_endpoint_ids =
+                        golish_pentest_app::pentest_bridge::anonymous_access_eligible_endpoint_ids(
+                            &manifest_endpoints,
+                            &origin.key,
+                        );
+                    let eligible_id_set = eligible_endpoint_ids
+                        .iter()
+                        .copied()
+                        .collect::<BTreeSet<_>>();
+                    let mut eligible_endpoint_query_contracts = manifest_endpoints
+                        .iter()
+                        .filter(|endpoint| eligible_id_set.contains(&endpoint.id))
+                        .map(|endpoint| {
+                            let names = persisted_url_query_names(&endpoint.url);
+                            json!({
+                                "endpoint_id": endpoint.id,
+                                "persisted_url_query_names": names,
+                                "query_values_rule": if names.is_empty() {
+                                    "query_values must be {}"
+                                } else {
+                                    "query_values keys must be a subset of persisted_url_query_names"
+                                },
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    eligible_endpoint_query_contracts.sort_by(|left, right| {
+                        left["endpoint_id"]
+                            .as_str()
+                            .cmp(&right["endpoint_id"].as_str())
+                    });
+                    json!({
+                        "schema": "anonymous_access_review_v1",
+                        "exact_origin": origin.key,
+                        "eligible_count": eligible_endpoint_ids.len(),
+                        "eligible_endpoint_ids": eligible_endpoint_ids,
+                        "eligible_endpoint_query_contracts": eligible_endpoint_query_contracts,
+                        "selected_probes_rule": "choose a bounded sensitive subset only from eligible_endpoint_ids; query_values keys may only come from that endpoint's persisted_url_query_names, and must be {} when the list is empty",
+                        "authority": "operation_manifest_planning_projection_wrapper_reloads_before_send",
+                        "operation_bound": operation_id.is_some(),
+                    })
+                } else {
+                    json!({
+                        "schema": "anonymous_access_review_v1",
+                        "eligible_count": 0,
+                        "eligible_endpoint_ids": [],
+                        "error": "target_has_no_canonical_http_origin",
+                        "authority": "operation_manifest_planning_projection_wrapper_reloads_before_send",
+                        "operation_bound": operation_id.is_some(),
+                    })
+                };
                 data["endpoints"] = serde_json::to_value(&endpoints)?;
                 data["endpoints_count"] = json!(endpoints.len());
+                data["anonymous_access_review"] = anonymous_access_review;
             }
         }
         if section_requested(include_all, sections, "directories") {
@@ -1485,7 +1680,13 @@ impl GolishDbRepoProvider {
             operation_id,
         )
         .await?;
-        Ok(serde_json::to_value(snapshot)?)
+        let mut value = serde_json::to_value(snapshot)?;
+        if stage_kind == golish_agent_kit::harness::StageKind::Enumeration {
+            value["enumeration_receipt_dag"] =
+                enumeration_receipt_dag_projection(&self.pool, operation_id, organization_id)
+                    .await?;
+        }
+        Ok(value)
     }
 
     /// P3 Phase B (2026-06-11): distinct `targets.type` of the in-scope assets,
@@ -1980,13 +2181,15 @@ fn active_recon_scope_review_candidates_sql() -> &'static str {
          AND target.scope::text = 'in'
          AND target.target_type::text IN ('domain', 'ip', 'cidr', 'url', 'wildcard')
          AND lower(COALESCE(target.source, '')) IN
-             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli', 'asset_intel')
+             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli',
+              'asset_intel', 'target_intel_goal')
          AND EXISTS (
              SELECT 1
              FROM targets refreshed
              WHERE refreshed.organization_id = operation.engagement_org_id
                AND refreshed.scope::text = 'in'
-               AND lower(COALESCE(refreshed.source, '')) = 'asset_intel'
+               AND lower(COALESCE(refreshed.source, '')) IN
+                   ('asset_intel', 'target_intel_goal')
                AND refreshed.updated_at >= operation.stage_started_at
          )
        ORDER BY target.created_at ASC, target.id ASC"#
@@ -2003,7 +2206,8 @@ fn active_recon_scope_target_update_sql() -> &'static str {
     r#"UPDATE targets
        SET scope = CASE WHEN $4 THEN 'in'::scope_type ELSE 'out'::scope_type END,
            source = CASE
-               WHEN $4 AND lower(COALESCE(source, '')) = 'asset_intel'
+               WHEN $4 AND lower(COALESCE(source, '')) IN
+                   ('asset_intel', 'target_intel_goal')
                    THEN 'customer_provided'
                ELSE source
            END,
@@ -2013,7 +2217,8 @@ fn active_recon_scope_target_update_sql() -> &'static str {
          AND value = $3
          AND scope::text = 'in'
          AND lower(COALESCE(source, '')) IN
-             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli', 'asset_intel')"#
+             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli',
+              'asset_intel', 'target_intel_goal')"#
 }
 
 fn active_recon_scope_state_update_sql() -> &'static str {
@@ -2100,6 +2305,26 @@ mod tests {
     }
 
     #[test]
+    fn enumeration_receipt_dag_remains_visible_after_current_unit_final_seal() {
+        let sql = enumeration_receipt_dag_unit_sql();
+        assert!(sql.contains("status IN ('running','gate_blocked','passed')"));
+        assert!(sql.contains("ORDER BY generation DESC"));
+        assert!(!sql.contains("status IN ('running','gate_blocked')"));
+    }
+
+    #[test]
+    fn anonymous_access_query_values_only_follow_names_persisted_in_the_url() {
+        assert_eq!(
+            persisted_url_query_names(
+                "https://app.example.test/search?include=owner&z=1&include=team"
+            ),
+            vec!["include".to_string(), "z".to_string()]
+        );
+        assert!(persisted_url_query_names("https://app.example.test/search").is_empty());
+        assert!(persisted_url_query_names("not a url").is_empty());
+    }
+
+    #[test]
     fn scoping_snapshot_trusts_customer_intake_but_not_discovery_sources() {
         let sql = scoping_target_snapshot_sql();
         assert!(sql.contains("'customer_provided'"));
@@ -2115,6 +2340,7 @@ mod tests {
         assert!(sql.contains("operation.current_stage = 'target_intel'"));
         assert!(sql.contains("refreshed.updated_at >= operation.stage_started_at"));
         assert!(sql.contains("'asset_intel'"));
+        assert!(sql.contains("'target_intel_goal'"));
         assert!(!sql.contains("active_discovered"));
     }
 
@@ -2125,6 +2351,7 @@ mod tests {
         assert!(update.contains("target_type::text = $2"));
         assert!(update.contains("value = $3"));
         assert!(update.contains("customer_provided"));
+        assert!(update.contains("'target_intel_goal'"));
         let state = active_recon_scope_state_update_sql();
         assert!(state.contains("active_recon_target_scope"));
         assert!(state.contains("current_stage = 'target_intel'"));

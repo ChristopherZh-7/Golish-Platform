@@ -16,9 +16,10 @@ fn test_create_default_sub_agents_count() {
     let agents = create_default_sub_agents();
     // 13 base + recon (target_intel passive collector) + prober (external_attack_surface
     // active surface-mapper) + enumerator (enumeration active content-mapper)
-    // + vuln_scanner (formulaic vuln-triage worker) + post_exploit_operator —
+    // + vuln_scanner (formulaic vuln-triage worker) + two closed AU modelers,
+    // Investigation cognitive Primary + post_exploit_operator —
     // the stage_run per-org specialists (2026-06-13-stage-run-fanout / C6 P6b).
-    assert_eq!(agents.len(), 23);
+    assert_eq!(agents.len(), 40);
 }
 
 #[test]
@@ -36,11 +37,18 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"prober"));
     assert!(ids.contains(&"enumerator"));
     assert!(ids.contains(&"vuln_scanner"));
+    assert!(ids.contains(&"application_understanding_shard_modeler"));
+    assert!(ids.contains(&"application_understanding_company_synthesizer"));
+    assert!(!ids.contains(&"application_understanding"));
+    assert!(ids.contains(&"investigation"));
     assert!(ids.contains(&"attack_analyst"));
     assert!(ids.contains(&"candidate_hypothesis_controller"));
     assert!(ids.contains(&"candidate_hypothesis_analyst"));
     assert!(ids.contains(&"merge_conflict_critic"));
     assert!(ids.contains(&"candidate_verifier"));
+    assert!(ids.contains(&"verification_lead"));
+    assert!(ids.contains(&"verification_independent_critic"));
+    assert!(ids.contains(&"verification_refiner"));
     assert!(ids.contains(&"post_exploit_operator"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
@@ -52,6 +60,40 @@ fn test_create_default_sub_agents_ids() {
     // js_harvester and js_analyzer merged into pentester
     assert!(!ids.contains(&"js_harvester"));
     assert!(!ids.contains(&"js_analyzer"));
+}
+
+#[test]
+fn unified_topology_agents_declare_only_cognitive_tools() {
+    let agents = create_default_sub_agents();
+    let shard_modeler = agents
+        .iter()
+        .find(|agent| agent.id == "application_understanding_shard_modeler")
+        .expect("AU shard modeler");
+    assert_eq!(shard_modeler.allowed_tools, ["submit_result"]);
+    assert_eq!(shard_modeler.max_tokens, Some(32_768));
+    assert!(shard_modeler.readonly);
+
+    let company_synthesizer = agents
+        .iter()
+        .find(|agent| agent.id == "application_understanding_company_synthesizer")
+        .expect("AU company synthesizer");
+    assert_eq!(company_synthesizer.allowed_tools, ["submit_result"]);
+    assert_eq!(company_synthesizer.max_tokens, Some(32_768));
+    assert!(company_synthesizer.readonly);
+
+    let investigation = agents
+        .iter()
+        .find(|agent| agent.id == "investigation")
+        .expect("Investigation Primary");
+    assert!(has_tool(investigation, "update_plan"));
+    assert!(investigation
+        .delegatable_agents
+        .iter()
+        .any(|agent| agent == "pentester"));
+    assert!(!has_tool(investigation, "web_fetch"));
+    assert!(!has_tool(investigation, "browser_navigate"));
+    assert!(!has_tool(investigation, "pentest_run"));
+    assert!(!has_tool(investigation, "record_finding"));
 }
 
 #[test]
@@ -358,7 +400,9 @@ fn test_enumerator_has_content_enum_tools() {
     assert!(has_tool(enumerator, "browser_collect_js_api"));
     assert!(!has_tool(enumerator, "js_collect"));
     assert!(has_tool(enumerator, "js_extract_apis"));
+    assert!(has_tool(enumerator, "enum_reduce_parameters_v2"));
     assert!(has_tool(enumerator, "route_probe_paths"));
+    assert!(has_tool(enumerator, "enum_review_coverage_v2"));
     assert!(has_tool(enumerator, "stage_worklist_status"));
     assert!(has_tool(enumerator, "stage_worklist_next"));
     assert!(has_tool(enumerator, "list_enumeration_web_roots"));
@@ -381,6 +425,30 @@ fn test_enumerator_has_content_enum_tools() {
 }
 
 #[test]
+fn resolution_worker_has_no_browser_route_or_final_submit_tools() {
+    let agents = create_default_sub_agents();
+    let analyst = agents
+        .iter()
+        .find(|agent| agent.id == "resolution_analyst")
+        .expect("resolution analyst is registered");
+    assert!(analyst.readonly);
+    assert_eq!(
+        analyst.allowed_tools,
+        [
+            "enum_js_get_resolution_cluster",
+            "enum_js_submit_resolution"
+        ]
+    );
+    assert!(analyst.delegatable_agents.is_empty());
+    assert!(!analyst.allowed_tools.iter().any(|tool| {
+        tool.contains("browser") || tool.contains("route") || tool == "submit_stage_deliverable"
+    }));
+    assert!(analyst.system_prompt.contains("parameter_names"));
+    assert!(analyst.system_prompt.contains("source_start_byte"));
+    assert!(analyst.system_prompt.contains("Do not use invented fields"));
+}
+
+#[test]
 fn test_enumerator_prompt_is_content_enum() {
     let prompt = build_enumerator_prompt();
     assert!(prompt.contains("enumeration"));
@@ -390,14 +458,14 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("director"));
     assert!(prompt.contains("param"));
     assert!(prompt.contains("browser_collect_js_api"));
-    assert!(prompt.contains("browser_seed.target_urls"));
-    assert!(prompt
-        .contains("Prefer target_urls=<enum_crawl_same_origin_urls.browser_seed.target_urls>"));
-    assert!(prompt.contains("DB coverage lands against the exact target_id"));
+    assert!(prompt.contains("once per exact {target_id,target_url}"));
+    assert!(prompt.contains("ENUMERATION_V2_SINGLE_EXACT_ORIGIN_REQUIRED"));
+    assert!(prompt.contains("typed lane receipt"));
     assert!(prompt.contains("full root_url"));
     assert!(prompt.contains("do NOT call query_target_data per target"));
-    assert!(prompt.contains("browser closure crawl is the primary collector"));
     assert!(prompt.contains("ai_assist"));
+    assert!(prompt.contains("summary.ai_used"));
+    assert!(prompt.contains("ai_dialogue"));
     assert!(prompt.contains("recipe"));
     assert!(prompt.contains("js_extract_apis"));
     assert!(prompt.contains("route_probe_paths"));
@@ -416,8 +484,8 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("Any HTTP response means reachable"));
     assert!(prompt.contains("non-empty arrays are rejected"));
     assert!(prompt.contains("coverage: []"));
-    assert!(prompt.contains("at most 200 cells across at most 50 distinct exact-origin roots"));
-    assert!(prompt.contains("deduplicate its items by asset"));
+    assert!(prompt.contains("at most 200 cells across at most 50 roots"));
+    assert!(prompt.contains("deduplicate by exact origin"));
     assert!(prompt.contains("work_item_id"));
     assert!(prompt.contains("omit both max_runtime_ms and max_requests"));
     assert!(prompt.contains("also omit batch_max_runtime_ms"));
@@ -443,6 +511,8 @@ fn test_enumerator_prompt_is_content_enum() {
     assert!(prompt.contains("list_enumeration_web_roots"));
     assert!(prompt.contains("enum_crawl_same_origin_urls"));
     assert!(prompt.contains("do NOT call katana or pentest_run directly"));
+    assert!(prompt.contains("ENUMERATION_RESOLUTION_RECEIPTS_REQUIRED"));
+    assert!(prompt.contains("enumeration_resolution.v1"));
     assert!(!prompt.contains("DB cannot derive"));
     assert!(prompt.contains("check_stage_asset_coverage"));
     assert!(prompt.contains("web_root_enumerated"));
@@ -502,6 +572,8 @@ fn test_vuln_scanner_prompt_is_wrapper_based() {
     assert!(prompt.contains("reviewed_endpoint_ids"));
     assert!(prompt.contains("selected_probes"));
     assert!(prompt.contains("query_values"));
+    assert!(prompt.contains("eligible_endpoint_query_contracts"));
+    assert!(prompt.contains("persisted_url_query_names"));
     assert!(prompt.contains("potentially sensitive endpoint"));
     assert!(prompt.contains("Do not blindly probe every endpoint"));
     assert!(
@@ -662,6 +734,38 @@ fn candidate_hypothesis_team_has_exact_tool_free_readonly_surface() {
             analyst.contains(required),
             "missing analyst rule: {required}"
         );
+    }
+}
+
+#[test]
+fn verification_campaign_team_has_exact_closed_tool_surface() {
+    let agents = create_default_sub_agents();
+    let expected = crate::executor::verification_campaign::VERIFICATION_CAMPAIGN_ROLE_IDS;
+    for id in expected {
+        let agent = agents
+            .iter()
+            .find(|candidate| candidate.id == id)
+            .unwrap_or_else(|| panic!("missing Verification Campaign role {id}"));
+        assert!(agent.readonly, "{id} must be read-only");
+        assert_eq!(agent.allowed_tools, ["submit_result"]);
+        assert!(agent.delegatable_agents.is_empty());
+        for forbidden in [
+            "verify_execute_candidate_action",
+            "pentest_run",
+            "record_finding",
+            "web_search",
+            "web_fetch",
+            "browser_collect_js_api",
+            "write_knowledge",
+        ] {
+            assert!(!has_tool(agent, forbidden), "{id} exposes {forbidden}");
+        }
+        for forbidden_text in ["Authorization:", "Cookie:", "curl ", "raw body"] {
+            assert!(
+                !agent.system_prompt.contains(forbidden_text),
+                "{id} prompt contains executable/secret material {forbidden_text}"
+            );
+        }
     }
 }
 

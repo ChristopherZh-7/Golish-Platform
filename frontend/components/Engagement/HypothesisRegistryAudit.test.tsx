@@ -63,6 +63,27 @@ function summary(mode = "registry_authoritative_legacy_projection") {
     closedHypothesisCount: 1,
     contestedHypothesisCount: 1,
     residualCount: 2,
+    generations: [{ generationId: "generation-1", generationOrdinal: 1, state: "active" }],
+    waves: [{ waveId: "wave-1", waveOrdinal: 1, state: "active" }],
+    openObligations: [{ obligationId: "obligation-1", obligationKind: "verification" }],
+    coverageDenominator: {
+      planned: 2,
+      testedComplete: 0,
+      testedDegraded: 0,
+      untested: 2,
+      blocked: 0,
+    },
+    coverageSufficiency: "not_assessed",
+    authorityTimeMembers: [
+      {
+        observedAsOf: "2026-07-29T12:00:00Z",
+        effectiveValidUntil: "2026-07-29T13:00:00Z",
+        authorityEpochHash: "epoch-hash",
+        temporalStatus: "current",
+      },
+    ],
+    controlDecision: "continue",
+    coverageGrade: "partial",
   };
 }
 

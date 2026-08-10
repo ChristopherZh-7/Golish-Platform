@@ -55,6 +55,28 @@ impl ScriptedStreamingModel {
     }
 }
 
+fn run_stage_stack_async_test<F, Fut>(name: &'static str, f: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("provider resilience test runtime");
+            runtime.block_on(f());
+        })
+        .expect("32 MiB provider resilience test thread");
+
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 impl completion::CompletionModel for ScriptedStreamingModel {
     type Response = MockStreamingResponseData;
     type StreamingResponse = MockStreamingResponseData;
@@ -269,4 +291,83 @@ async fn retriable_mid_stream_error_triggers_continuation_then_succeeds() {
         response.contains("Completed analysis: 2 open ports."),
         "final response must contain the recovered completion, got: {response:?}"
     );
+}
+
+#[test]
+fn retriable_empty_stream_error_retries_exact_request_then_succeeds() {
+    run_stage_stack_async_test("retriable-empty-stream-recovery", || async {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.llm.provider_name = "deepseek";
+        ctx.llm.model_name = "deepseek-v4-flash";
+
+        // The HTTP stream starts successfully, but the provider sends a 503 as its
+        // first SSE item. There is no partial assistant turn to preserve: retry the
+        // unchanged request and accept the healthy response.
+        let model = ScriptedStreamingModel::new(
+            vec![
+                vec![ScriptChunk::Err("503 Service Unavailable".to_string())],
+                vec![
+                    ScriptChunk::Text("Recovered and ready to call scope_review.".to_string()),
+                    ScriptChunk::Final,
+                ],
+            ],
+            false,
+        );
+
+        let (response, _reasoning, history, _usage) = run_agentic_loop_generic(
+            &model,
+            "You are a helpful assistant",
+            user_history(),
+            SubAgentContext::default(),
+            &ctx,
+        )
+        .await
+        .expect("empty-stream retry path must not error");
+
+        assert_eq!(model.stream_call_count(), 2);
+        assert!(response.contains("Recovered and ready to call scope_review."));
+        assert_eq!(
+            history.len(),
+            2,
+            "the failed empty stream must not create an assistant or recovery message"
+        );
+    });
+}
+
+#[test]
+fn persistent_retriable_empty_stream_error_stops_after_bounded_budget() {
+    run_stage_stack_async_test("persistent-empty-stream-bounded", || async {
+        let test_ctx = TestContextBuilder::new().build().await;
+        let client = Arc::new(RwLock::new(LlmClient::Mock));
+        let mut ctx = test_ctx.as_agentic_context_with_client(&client);
+        ctx.llm.provider_name = "deepseek";
+        ctx.llm.model_name = "deepseek-v4-flash";
+
+        let model = ScriptedStreamingModel::new(
+            vec![vec![ScriptChunk::Err(
+                "503 Service Unavailable".to_string(),
+            )]],
+            true,
+        );
+
+        let (response, _reasoning, history, _usage) = run_agentic_loop_generic(
+            &model,
+            "You are a helpful assistant",
+            user_history(),
+            SubAgentContext::default(),
+            &ctx,
+        )
+        .await
+        .expect("bounded provider retry exhaustion must terminate cleanly");
+
+        assert_eq!(
+            model.stream_call_count(),
+            3,
+            "initial request plus two bounded exact-request retries"
+        );
+        assert!(response.is_empty());
+        assert_eq!(history.len(), 1, "failed streams must not mutate history");
+    });
 }

@@ -66,3 +66,9 @@ Phase 1 provider-agnostic 资产情报：`run_passive_intel` 调被动 provider�
 ```bash
 cd backend && cargo nextest run -p golish-recon-app asset_intel
 ```
+
+## Target Intel Goal Shadow semantic path（2026-08-02）
+
+- `runtime/native.rs` 的 `fixture_capability_matrix` / `NativePivotPlanner` 把 semantic pivot 映射到显式 native、HTTP、host-public 或 unsupported adapter；不支持项终结为 capability fact，不能 fallback 到 broad site query。
+- `authority.rs` 定义 fixture-only collect → redacted artifact → evidence → server authorization → disposition → immutable audit receipt 顺序。Exact domain 只授权自身，wildcard 只授权 strict child，CIDR 只授权其中 IP；certificate/ASN/ICP/email/GitHub/repository/app/shared-IP 均 candidate-only。
+- `AssetIntelExecutionRequest` 与 fixture authority 类型无 TS derive，`AssetIntelHydrateConfig` generated contract 未改变；production `recon_map_assets` 继续走 legacy path。

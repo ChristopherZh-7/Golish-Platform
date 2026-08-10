@@ -175,12 +175,21 @@ pub(super) async fn maybe_restore_chain(
                 .into());
             }
         };
-        let messages = prepare_bound_loaded_chain(persistence.as_ref(), bound, &json)
+        let mut messages = prepare_bound_loaded_chain(persistence.as_ref(), bound, &json)
             .await
             .map_err(|error| SubAgentChainError::BoundWorkerUnavailable {
                 worker_run_id: bound.worker_lease.worker_run_id,
                 reason: error.to_string(),
             })?;
+        if bound.reset_provider_history {
+            tracing::info!(
+                chain_id = %bound.chain_id,
+                worker_run_id = %bound.worker_lease.worker_run_id,
+                omitted_messages = messages.len(),
+                "starting host-fenced provider phase without replaying prior messages"
+            );
+            messages.clear();
+        }
         tracing::info!(
             chain_id = %bound.chain_id,
             worker_run_id = %bound.worker_lease.worker_run_id,
@@ -986,7 +995,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bound_worker_uses_prebound_chain_and_compound_checkpoint() {
+    async fn bound_worker_phase_reset_keeps_prebound_chain_and_compound_checkpoint() {
         let chain_id = Uuid::new_v4();
         let recording = Arc::new(RecordingChainPersistence::new(Uuid::new_v4()));
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1010,12 +1019,16 @@ mod tests {
             candidate_submit_only: false,
             return_on_first_durable_stage_submission: false,
             stage_team_leader: None,
+            target_intel_review: None,
+            stage_team_output_schema: None,
+            terminal_execution: None,
             chain_id,
             session_id: Uuid::new_v4(),
             agent_type: "enumerator".to_string(),
             runtime_memory_source: None,
-            initial_chain: serde_json::json!([]),
+            initial_chain: serialized_test_history(),
             initial_prompt_already_checkpointed: false,
+            reset_provider_history: true,
             checkpoint_version: Arc::new(AtomicI64::new(7)),
             checkpoint_body: Arc::new(std::sync::RwLock::new(serde_json::json!([]))),
             lease_lost: Arc::new(AtomicBool::new(false)),
@@ -1058,7 +1071,10 @@ mod tests {
                 .await
                 .expect("trusted prebound worker loads without creating a chain");
         assert_eq!(restored_chain_id, Some(chain_id));
-        assert!(prior.is_empty(), "an empty initial checkpoint is valid");
+        assert!(
+            prior.is_empty(),
+            "a host-fenced provider phase must not replay prior messages"
+        );
         checkpoint_chain(&ctx, restored_chain_id, &test_history(), "enumerator")
             .await
             .expect("bound checkpoint uses compound persistence");

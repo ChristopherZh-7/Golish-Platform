@@ -5,6 +5,7 @@ use crate::error::GolishError;
 use serde::{Deserialize, Serialize};
 
 use crate::state::DbState;
+use uuid::Uuid;
 
 /// Raw row shape returned by `repo::conversation_store::list_by_project`
 /// (mirrors the SELECT column order). Aliased to keep the call site readable.
@@ -89,6 +90,31 @@ pub struct TerminalStateRow {
     /// a restart. Nullable; absent on rows saved before this column existed.
     #[serde(default)]
     pub stage_run_json: Option<serde_json::Value>,
+    /// Selector-only Investigation workspace state. Canonical projection data
+    /// is never copied into terminal persistence.
+    #[serde(default)]
+    pub investigation_workspace_json: Option<InvestigationWorkspaceSelectionV1>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InvestigationWorkspaceTabV1 {
+    Hypotheses,
+    Campaigns,
+    Waves,
+    Timeline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InvestigationWorkspaceSelectionV1 {
+    pub operation_id: Uuid,
+    pub default_tab: InvestigationWorkspaceTabV1,
+    #[serde(default)]
+    pub selected_hypothesis_id: Option<Uuid>,
+    #[serde(default)]
+    pub selected_campaign_id: Option<Uuid>,
+    pub refresh_seq: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,8 +395,8 @@ pub async fn conv_save_terminal_state(
     }
 
     sqlx::query(
-        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json, investigation_workspace_json)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            ON CONFLICT (session_id) DO UPDATE SET
              working_directory = EXCLUDED.working_directory,
              scrollback = EXCLUDED.scrollback,
@@ -380,6 +406,7 @@ pub async fn conv_save_terminal_state(
              retired_plans_json = EXCLUDED.retired_plans_json,
              plan_message_id = EXCLUDED.plan_message_id,
              stage_run_json = EXCLUDED.stage_run_json,
+             investigation_workspace_json = EXCLUDED.investigation_workspace_json,
              updated_at = NOW()"#,
     )
     .bind(&terminal.session_id)
@@ -392,6 +419,13 @@ pub async fn conv_save_terminal_state(
     .bind(&terminal.retired_plans_json)
     .bind(&terminal.plan_message_id)
     .bind(&terminal.stage_run_json)
+    .bind(
+        terminal
+            .investigation_workspace_json
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?,
+    )
     .execute(&mut *tx)
     .await
 ?;
@@ -406,8 +440,8 @@ pub async fn conv_load_terminal_states(
     conversation_id: String,
 ) -> Result<Vec<TerminalStateRow>, GolishError> {
     let pool = state.pool_ready().await?;
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>)>(
-        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json
+    let rows = sqlx::query_as::<_, (String, Option<String>, String, String, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>, Option<String>, Option<serde_json::Value>, Option<serde_json::Value>)>(
+        r#"SELECT session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json, investigation_workspace_json
            FROM terminal_state
            WHERE conversation_id = $1"#,
     )
@@ -430,8 +464,12 @@ pub async fn conv_load_terminal_states(
                 retired_plans_json,
                 plan_message_id,
                 stage_run_json,
+                investigation_workspace_json,
             )| {
-                TerminalStateRow {
+                let investigation_workspace_json = investigation_workspace_json
+                    .map(serde_json::from_value)
+                    .transpose()?;
+                Ok(TerminalStateRow {
                     session_id,
                     conversation_id,
                     working_directory,
@@ -442,10 +480,11 @@ pub async fn conv_load_terminal_states(
                     retired_plans_json,
                     plan_message_id,
                     stage_run_json,
-                }
+                    investigation_workspace_json,
+                })
             },
         )
-        .collect())
+        .collect::<Result<Vec<_>, serde_json::Error>>()?)
 }
 
 // ─── Preferences ────────────────────────────────────────────────────────────

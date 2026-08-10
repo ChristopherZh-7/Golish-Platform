@@ -143,7 +143,15 @@ pub fn phase_crossing_requires_approval(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::resources::load_embedded_phase_map;
+    use crate::harness::resources::{load_embedded_phase_map, load_embedded_profile};
+
+    fn legacy_pentest_map() -> PhaseMap {
+        let map = load_embedded_phase_map().expect("embedded phase map");
+        let profile = load_embedded_profile("pentest")
+            .expect("pentest profile parses")
+            .expect("pentest profile exists");
+        map.project(&profile)
+    }
 
     fn passed(stages: &[StageKind]) -> HashSet<StageKind> {
         stages.iter().copied().collect()
@@ -151,7 +159,7 @@ mod tests {
 
     #[test]
     fn stay_in_phase_until_all_members_pass() {
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         // prep = [scoping, target_intel]; 只过了 scoping → 留在 prep.
         let step = decide_phase_step(&map, StageKind::Scoping, &passed(&[StageKind::Scoping]));
         assert_eq!(step, PhaseStep::StayInPhase);
@@ -163,7 +171,7 @@ mod tests {
 
     #[test]
     fn enter_active_recon_requires_active_scan_approval() {
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         // prep 全过 → 跨入 active_recon，需 active_scan 审批.
         let gp = passed(&[StageKind::Scoping, StageKind::TargetIntel]);
         let step = decide_phase_step(&map, StageKind::TargetIntel, &gp);
@@ -182,7 +190,7 @@ mod tests {
 
     #[test]
     fn enter_vuln_requires_exploit_validation_approval() {
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         let gp = passed(&[
             StageKind::Scoping,
             StageKind::TargetIntel,
@@ -201,7 +209,7 @@ mod tests {
 
     #[test]
     fn enter_post_exploit_has_no_phase_entry_approval() {
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         // vuln 全过 → 跨入 post_exploit；post_exploit 无 entry_approval.
         // vuln phase = [vuln_triage, attack_candidate, verification]（设计 2026-07-02），
         // 三个成员全 PASS 才算大阶段跑完。
@@ -226,7 +234,7 @@ mod tests {
 
     #[test]
     fn last_phase_completes_only_when_all_members_pass() {
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         // closeout = [reporting, cleanup]. 两者全过 → Complete.
         let all = passed(&[StageKind::Reporting, StageKind::Cleanup]);
         assert_eq!(
@@ -243,7 +251,7 @@ mod tests {
 
     #[test]
     fn crossing_phase_approval_only_fires_across_phase_boundaries() {
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         // 同 phase 内推进（prep: scoping→target_intel）→ None.
         assert_eq!(
             crossing_phase_approval(&map, StageKind::Scoping, StageKind::TargetIntel),
@@ -282,7 +290,7 @@ mod tests {
     #[test]
     fn phase_crossing_requires_approval_gates_on_profile_policy() {
         use crate::harness::resources::load_embedded_profile;
-        let map = load_embedded_phase_map().unwrap();
+        let map = legacy_pentest_map();
         // pentest profile: approval_policy 打开 + 允许 vuln 阶段.
         let pentest = load_embedded_profile("pentest").unwrap().unwrap();
         // 跨界 active_recon→vuln + policy on → true.

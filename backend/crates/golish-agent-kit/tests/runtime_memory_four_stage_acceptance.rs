@@ -167,6 +167,7 @@ async fn create_stage_fixture(db: &GolishDb, stage: StageKind) -> StageFixture {
             profile: "assessment".to_string(),
             entry_stage: stage.as_str().to_string(),
             project_scope_id: project.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: Some(runtime_memory_tx::CliRuntimeScopeRow {
                 root_organization_id: root.id,
                 include_subsidiaries: true,

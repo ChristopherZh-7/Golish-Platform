@@ -12,7 +12,11 @@ use rig::message::{Text, UserContent};
 use rig::one_or_many::OneOrMany;
 
 use crate::definition::SubAgentDefinition;
-use crate::executor_types::{SubAgentExecutorContext, BARRIER_TOOL_NAME};
+use crate::executor_types::{
+    BoundTerminalExecutionContract, SubAgentExecutorContext, BARRIER_TOOL_NAME,
+    INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA, INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA,
+    INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
+};
 use golish_core::events::AiEvent;
 
 use super::tool_setup::is_closed_candidate_analysis_role;
@@ -30,6 +34,27 @@ where
     M: RigCompletionModel + Sync,
 {
     let agent_id = &agent_def.id;
+
+    if let Some(contract) = ctx
+        .bound_worker_chain
+        .as_ref()
+        .and_then(|bound| bound.terminal_execution.as_ref())
+    {
+        let mut effective =
+            assemble_bound_terminal_prompt(agent_def, ctx.briefing.as_deref(), contract);
+        if contract.inject_workspace_skills {
+            inject_matched_skills(agent_id, task, ctx, &mut effective).await;
+        }
+        tracing::info!(
+            target: "sub_agent::prompt_dump",
+            agent_id = %agent_id,
+            allowed_tools = ?agent_def.allowed_tools,
+            prompt_len = effective.len(),
+            terminal_only = true,
+            "[sub-agent-prompt-dump] assembled terminal system prompt for '{agent_id}':\n{effective}"
+        );
+        return effective;
+    }
 
     let closed_candidate_role = is_closed_candidate_analysis_role(agent_id);
     let mut effective = if closed_candidate_role {
@@ -68,25 +93,13 @@ where
         inject_matched_skills(agent_id, task, ctx, &mut effective).await;
     }
 
-    if ctx
+    if let Some(bound) = ctx
         .bound_worker_chain
         .as_ref()
-        .is_some_and(|bound| bound.is_stage_team_child())
+        .filter(|bound| bound.is_stage_team_child())
     {
-        effective.push_str(&format!(
-            "\n\n## COMPLETION REQUIREMENT\n\n\
-             When your task is complete, you MUST call the `{}` tool. Do NOT end with a plain \
-             text message. Its `result` argument MUST be the stage_worker_output.v1 object itself, \
-             never a JSON string, Markdown report, code fence, or prose wrapper. Include exactly:\n\
-             - `business_disposition`: `found`, `checked_empty`, or `blocked`\n\
-             - `summary`: a concise evidence-grounded summary\n\
-             - `fact_refs`: an array of typed fact-reference objects (or `[]`)\n\
-             - `evidence_ids`: an array of already-booked positive evidence IDs (or `[]`)\n\
-             - `checked_empty_units`: an array of exact checked-empty subunit objects (or `[]`)\n\
-             - `blocker_code`: a stable string for blocked outcomes, otherwise `null`\n\
-             Also set outer `success` and one-line outer `summary`. Do not claim evidence that \
-             was not durably booked.",
-            BARRIER_TOOL_NAME
+        effective.push_str(&stage_team_completion_requirement(
+            bound.stage_team_output_schema.as_deref(),
         ));
     } else {
         effective.push_str(&format!(
@@ -113,6 +126,59 @@ where
         "[sub-agent-prompt-dump] assembled system prompt for '{agent_id}':\n{effective}"
     );
 
+    effective
+}
+
+fn stage_team_completion_requirement(output_schema: Option<&str>) -> String {
+    let result_contract = match output_schema {
+        Some(INVESTIGATION_TASK_PLAN_RESULT_SCHEMA) => format!(
+            "Its `result` argument MUST be the exact {INVESTIGATION_TASK_PLAN_RESULT_SCHEMA} object \
+             shown by the tool schema: `schema_version`, `summary`, and 2-8 ordered `subtasks`."
+        ),
+        Some(INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA) => format!(
+            "Its `result` argument MUST be the exact {INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA} \
+             object shown by the tool schema: preserve the frozen remaining identity set exactly."
+        ),
+        Some(INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA) => format!(
+            "Its `result` argument MUST be the exact \
+             {INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA} object shown by the tool schema, \
+             including every accepted output hash exactly once."
+        ),
+        Some("investigation_cognitive_output.v1") =>
+            "Its `result` argument MUST be the exact investigation_cognitive_output.v1 object \
+             shown by the tool schema. Authority-bearing fact/evidence/checked-empty arrays must \
+             remain empty; return only advisory proposal_signals, action_intents, and residuals."
+                .to_string(),
+        Some(output_schema) => format!(
+            "Its `result` argument MUST be the exact {output_schema} object shown by the tool \
+             schema, including `business_disposition`, `summary`, `fact_refs`, `evidence_ids`, \
+             `checked_empty_units`, and `blocker_code`. Do not claim evidence that was not \
+             durably booked."
+        ),
+        None => "Its `result` argument MUST match the exact object shown by the submit_result \
+                 tool schema."
+            .to_string(),
+    };
+    format!(
+        "\n\n## COMPLETION REQUIREMENT\n\nWhen your task is complete, you MUST call the \
+         `{BARRIER_TOOL_NAME}` tool. Do NOT end with a plain text message. {result_contract} Return \
+         the object itself, never a JSON string, Markdown report, code fence, or prose wrapper. \
+         Also set outer `success` and one-line outer `summary`."
+    )
+}
+
+fn assemble_bound_terminal_prompt(
+    agent_def: &SubAgentDefinition,
+    briefing: Option<&str>,
+    contract: &BoundTerminalExecutionContract,
+) -> String {
+    let mut effective = agent_def.system_prompt.clone();
+    if let Some(briefing) = briefing {
+        effective.push_str("\n\n");
+        effective.push_str(briefing);
+    }
+    effective.push_str("\n\n## TERMINAL COMPLETION CONTRACT\n\n");
+    effective.push_str(&contract.completion_instruction);
     effective
 }
 
@@ -268,6 +334,29 @@ async fn inject_matched_skills(
                 body.len(),
                 reason
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stage_team_completion_requirement;
+    use crate::executor_types::{
+        INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA, INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA,
+        INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
+    };
+
+    #[test]
+    fn investigation_primary_completion_prompts_never_require_worker_output_v1() {
+        for schema in [
+            INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
+            INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA,
+            INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA,
+        ] {
+            let prompt = stage_team_completion_requirement(Some(schema));
+            assert!(prompt.contains(schema));
+            assert!(prompt.contains("submit_result"));
+            assert!(!prompt.contains("stage_worker_output.v1"));
         }
     }
 }

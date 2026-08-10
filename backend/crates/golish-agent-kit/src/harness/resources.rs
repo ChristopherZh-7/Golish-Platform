@@ -12,6 +12,7 @@ use super::profile::{load_profile_from_json, Profile, ProfileLoadError};
 use super::sprint_contract::SprintSkeleton;
 use super::stage_spec::{load_stage_spec_from_json, StageSpec, StageSpecLoadError};
 use super::types::StageKind;
+use super::InvestigationOperatorToolCatalogV1;
 
 macro_rules! stage_json {
     ($p:literal) => {
@@ -33,7 +34,7 @@ macro_rules! stage_methodology_raw {
 
 /// 按 stage kind 取嵌入的 stage spec JSON 原文.
 ///
-/// 13 个 StageKind 全覆盖 (与 `resources/harness/stages/<stage>/spec.json` 一一对应).
+/// 全部 StageKind 全覆盖 (与 `resources/harness/stages/<stage>/spec.json` 一一对应).
 pub fn stage_spec_json(kind: StageKind) -> &'static str {
     match kind {
         StageKind::Scoping => stage_json!("scoping/spec.json"),
@@ -41,6 +42,10 @@ pub fn stage_spec_json(kind: StageKind) -> &'static str {
         StageKind::ExternalAttackSurface => stage_json!("external_attack_surface/spec.json"),
         StageKind::Enumeration => stage_json!("enumeration/spec.json"),
         StageKind::VulnTriage => stage_json!("vuln_triage/spec.json"),
+        StageKind::ApplicationUnderstanding => {
+            stage_json!("application_understanding/spec.json")
+        }
+        StageKind::Investigation => stage_json!("investigation/spec.json"),
         StageKind::AttackCandidate => stage_json!("attack_candidate/spec.json"),
         StageKind::Verification => stage_json!("verification/spec.json"),
         StageKind::AccessValidation => stage_json!("access_validation/spec.json"),
@@ -50,6 +55,17 @@ pub fn stage_spec_json(kind: StageKind) -> &'static str {
         StageKind::Cleanup => stage_json!("cleanup/spec.json"),
         StageKind::Reporting => stage_json!("reporting/spec.json"),
     }
+}
+
+/// Embedded host-owned catalog for Investigation Operator tools. Cognitive
+/// workers never read this resource; only the host admission boundary does.
+pub fn investigation_tool_catalog_json() -> &'static str {
+    stage_json!("investigation/tool_catalog.json")
+}
+
+pub fn load_embedded_investigation_tool_catalog(
+) -> Result<InvestigationOperatorToolCatalogV1, super::InvestigationToolCatalogError> {
+    InvestigationOperatorToolCatalogV1::parse_and_validate(investigation_tool_catalog_json())
 }
 
 /// 所有内嵌 profile 的 id，单一来源（与 [`profile_json`] 的 match 臂一一对应）。
@@ -81,7 +97,25 @@ pub fn profile_json(id: &str) -> Option<&'static str> {
 
 /// 按 kind 加载 + 解析 stage spec.
 pub fn load_embedded_stage_spec(kind: StageKind) -> Result<StageSpec, StageSpecLoadError> {
-    load_stage_spec_from_json(stage_spec_json(kind))
+    let spec = load_stage_spec_from_json(stage_spec_json(kind))?;
+    if kind == StageKind::Investigation {
+        let catalog = load_embedded_investigation_tool_catalog().map_err(|error| {
+            StageSpecLoadError::InvalidContract(format!(
+                "Investigation operator tool catalog is invalid: {error}"
+            ))
+        })?;
+        let reference = spec.operator_tool_catalog.as_ref().ok_or_else(|| {
+            StageSpecLoadError::InvalidContract(
+                "Investigation operator tool catalog reference is missing".to_string(),
+            )
+        })?;
+        if reference.canonical_sha256 != catalog.contract_sha256() {
+            return Err(StageSpecLoadError::InvalidContract(
+                "Investigation operator tool catalog content hash drifted".to_string(),
+            ));
+        }
+    }
+    Ok(spec)
 }
 
 /// 按 stage kind 取嵌入的「阶段方法论 playbook」原文 (`<stage>/methodology.md`).
@@ -106,6 +140,10 @@ pub fn stage_methodology_md(kind: StageKind) -> Option<&'static str> {
         // tools); verification really attacks the approved candidates to a terminal
         // disposition.
         StageKind::VulnTriage => stage_methodology_raw!("vuln_triage/methodology.md"),
+        StageKind::ApplicationUnderstanding => {
+            stage_methodology_raw!("application_understanding/methodology.md")
+        }
+        StageKind::Investigation => stage_methodology_raw!("investigation/methodology.md"),
         StageKind::AttackCandidate => stage_methodology_raw!("attack_candidate/methodology.md"),
         StageKind::Verification => stage_methodology_raw!("verification/methodology.md"),
         StageKind::Reporting => stage_methodology_raw!("reporting/methodology.md"),
@@ -157,22 +195,8 @@ mod tests {
     use crate::harness::gate::rule_engine::GateRule;
 
     #[test]
-    fn all_thirteen_stage_specs_load_and_kind_matches() {
-        for kind in [
-            StageKind::Scoping,
-            StageKind::TargetIntel,
-            StageKind::ExternalAttackSurface,
-            StageKind::Enumeration,
-            StageKind::VulnTriage,
-            StageKind::AttackCandidate,
-            StageKind::Verification,
-            StageKind::AccessValidation,
-            StageKind::InternalDiscovery,
-            StageKind::ObjectivePathing,
-            StageKind::ObjectiveSimulation,
-            StageKind::Cleanup,
-            StageKind::Reporting,
-        ] {
+    fn all_stage_specs_load_and_kind_matches() {
+        for kind in StageKind::ALL {
             let spec = load_embedded_stage_spec(kind)
                 .unwrap_or_else(|e| panic!("load {:?} failed: {}", kind, e));
             assert_eq!(spec.kind, kind, "spec.kind must match requested kind");
@@ -292,5 +316,22 @@ mod tests {
         let vf = stage_methodology_md(StageKind::Verification).expect("verification playbook");
         assert!(vf.to_lowercase().contains("disposition"));
         assert!(vf.to_lowercase().contains("verified"));
+
+        let au = stage_methodology_md(StageKind::ApplicationUnderstanding)
+            .expect("application_understanding playbook");
+        assert!(au.contains("reasoning-only"));
+        assert!(au.contains("do not browse, scan"));
+
+        let investigation =
+            stage_methodology_md(StageKind::Investigation).expect("investigation playbook");
+        assert!(investigation.contains("Main Coordinator"));
+        assert!(investigation.contains("isolated read session"));
+        assert!(investigation.contains("automatic admission"));
+        assert!(investigation.contains("Prepared Action/JIT Operator"));
+        assert!(investigation.contains("Typed Oracle"));
+        assert!(investigation.contains("FactDelta"));
+        assert!(investigation.contains("fixed point"));
+        assert!(investigation.contains("no fixed role rosters or fixed consult lanes"));
+        assert!(investigation.contains("never schedules work"));
     }
 }

@@ -303,6 +303,7 @@ impl CaptureContext {
             | AiEvent::TaskResumed { .. }
             | AiEvent::EnricherResult { .. }
             | AiEvent::ToolBackgroundCompleted { .. }
+            | AiEvent::InvestigationProjectionChanged { .. }
             | AiEvent::HarnessTrace { .. } => {
                 // These events are not captured (ToolOutputChunk is streaming output)
             }

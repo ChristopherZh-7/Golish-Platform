@@ -1,0 +1,33 @@
+{
+  "tool": {
+    "id": "kiterunner",
+    "pentestPhase": ["enum", "vuln_id"],
+    "name": "Kiterunner",
+    "description": "Discover API routes and methods from a bounded route wordlist.",
+    "executable": "kiterunner/kr",
+    "runtime": "native",
+    "launchMode": "cli",
+    "version": "1.0.2",
+    "category": "web",
+    "subcategory": "api",
+    "tier": "recommended",
+    "tags": ["api", "route", "active", "jit-required", "agpl-3.0-only"],
+    "install": {
+      "method": "github",
+      "source": "assetnote/kiterunner",
+      "macos": {"method": "github", "source": "assetnote/kiterunner"},
+      "linux": {"method": "github", "source": "assetnote/kiterunner"},
+      "windows": {"method": "github", "source": "assetnote/kiterunner"}
+    },
+    "params": [
+      {"label": "Exact origin", "flag": "", "type": "string", "required": true, "description": "Exact authorized web origin passed to the scan subcommand.", "placeholder": "https://target.example"},
+      {"label": "Route wordlist", "flag": "-w", "type": "string", "required": true, "description": "Locally approved .kite wordlist.", "placeholder": "routes-small.kite"},
+      {"label": "Concurrency", "flag": "-x", "type": "string", "description": "Bounded concurrency selected by the host budget.", "default": "5"},
+      {"label": "JSON output", "flag": "--json", "type": "boolean", "description": "Prefer machine-readable raw output when supported by the audited version."}
+    ],
+    "skills": [
+      {"id": "local-version", "name": "Local version smoke", "description": "No-target executable smoke only.", "args": "version", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "text", "produces": ["endpoint", "method", "info"], "patterns": [], "fields": {}, "detect": "Kiterunner|^\\s*(GET|POST|PUT|PATCH|DELETE|OPTIONS)\\s+"}
+  }
+}

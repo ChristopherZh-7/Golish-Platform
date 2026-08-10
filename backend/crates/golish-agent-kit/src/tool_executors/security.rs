@@ -1,7 +1,7 @@
 use super::common::{error_result, extract_string_param, ToolResult};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn in_scope_rows_own_target(rows: &[Value], target_id: uuid::Uuid) -> bool {
     rows.iter().any(|row| {
@@ -423,12 +423,13 @@ pub async fn execute_security_analysis_tool(
             });
             match repo
                 .passive_scans_insert(
+                    harness_operation_id,
                     target_id,
                     project_path.unwrap_or(""),
                     &test_type,
                     &tool_used,
                     &findings,
-                    Some(&evidence),
+                    Some(evidence.as_str()),
                     &severity,
                 )
                 .await
@@ -489,7 +490,10 @@ pub async fn execute_security_analysis_tool(
                         .collect()
                 })
                 .unwrap_or_else(|| vec!["all".to_string()]);
-            let data = match repo.query_target_data(target_id, &sections).await {
+            let data = match repo
+                .query_target_data_for_operation(harness_operation_id, target_id, &sections)
+                .await
+            {
                 Ok(d) => d,
                 Err(e) => return Some(error_result(format!("Failed to query target data: {}", e))),
             };
@@ -819,7 +823,21 @@ pub async fn execute_security_analysis_tool(
                 .and_then(|v| v.as_u64())
                 .map(|n| n.clamp(1, 200) as i64)
                 .unwrap_or(25);
-            let rows = match repo.recent_evidence_detailed(session_id, limit).await {
+            let worker_scope = golish_core::current_agent_tool_context().and_then(|context| {
+                context.worker_lease.and_then(|worker| {
+                    context
+                        .operation_id
+                        .map(|operation_id| (operation_id, worker.worker_run_id))
+                })
+            });
+            let rows_result = match worker_scope {
+                Some((operation_id, worker_run_id)) => {
+                    repo.recent_evidence_detailed_for_worker(operation_id, worker_run_id, limit)
+                        .await
+                }
+                None => repo.recent_evidence_detailed(session_id, limit).await,
+            };
+            let rows = match rows_result {
                 Ok(rows) => rows,
                 Err(e) => {
                     return Some(error_result(format!("Failed to list recent evidence: {e}")))
@@ -830,7 +848,8 @@ pub async fn execute_security_analysis_tool(
                 json!({
                     "recent_evidence": rows,
                     "count": count,
-                    "contract": "These are this run's REAL evidence-ledger ids (newest first). Put the evidence_id values whose tool/asset/technique backs each claim into that claim's evidence_ids and the top-level evidence_refs. Never invent ids, copy placeholders (1,2,3), or use submit_stage_deliverable to discover missing ids. Interpret outcome literally: blocked means the check did not complete; it is not a negative result and does not prove WAF, rate limiting, or target resistance. Name a blocker cause only when trusted evidence explicitly provides that exact cause.",
+                    "scope": if worker_scope.is_some() { "exact_worker" } else { "chat_session" },
+                    "contract": "These are the current producer's REAL evidence-ledger ids (newest first). In a bound stage WorkItem this list is restricted to the exact operation and worker; it excludes inherited and sibling-worker evidence. Put only evidence_id values whose tool/asset/technique backs each claim into that claim's evidence_ids and the top-level evidence_refs. Never invent ids, copy placeholders (1,2,3), or use submit_stage_deliverable to discover missing ids. Interpret outcome literally: blocked means the check did not complete; it is not a negative result and does not prove WAF, rate limiting, or target resistance. Name a blocker cause only when trusted evidence explicitly provides that exact cause.",
                 }),
                 true,
             ))
@@ -1196,6 +1215,189 @@ fn exact_enumeration_root_from_asset(asset: &Value) -> Option<(String, String, O
     ))
 }
 
+fn enumeration_receipt_dag_status(snapshot: &Value) -> Value {
+    let metadata = snapshot.get("enumeration_receipt_dag");
+    let required = metadata
+        .and_then(|value| value.get("required"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let available = metadata
+        .and_then(|value| value.get("available"))
+        .and_then(Value::as_bool)
+        .unwrap_or(!required);
+    let mut receipts = BTreeMap::<(String, String, String), Vec<bool>>::new();
+    for receipt in metadata
+        .and_then(|value| value.get("receipts"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(target_id) = receipt.get("target_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(exact_origin) = receipt
+            .get("exact_origin")
+            .and_then(Value::as_str)
+            .and_then(golish_pentest_domain::canonical_web_origin)
+            .map(|origin| origin.key)
+        else {
+            continue;
+        };
+        let Some(lane) = receipt.get("lane").and_then(Value::as_str) else {
+            continue;
+        };
+        let valid = receipt
+            .get("closure_graph_valid")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            && matches!(
+                receipt.get("terminal_disposition").and_then(Value::as_str),
+                Some("found" | "checked_empty" | "terminal_with_residual")
+            );
+        receipts
+            .entry((target_id.to_string(), exact_origin, lane.to_string()))
+            .or_default()
+            .push(valid);
+    }
+
+    let mut missing_receipts = Vec::new();
+    let mut subject_count = 0usize;
+    for asset in snapshot
+        .get("assets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if asset.get("exact_web_origin").and_then(Value::as_bool) != Some(true)
+            || asset
+                .get("coverage")
+                .and_then(Value::as_array)
+                .is_some_and(|coverage| {
+                    coverage.iter().any(|cell| {
+                        cell.get("state").and_then(Value::as_str) == Some("next_wave_pending")
+                    })
+                })
+        {
+            continue;
+        }
+        let Some(target_id) = asset.get("target_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(exact_origin) = asset.get("value").and_then(Value::as_str) else {
+            continue;
+        };
+        subject_count += 1;
+        if !required {
+            continue;
+        }
+        for lane in ["browser", "js_api", "parameter", "coverage"] {
+            let rows = receipts
+                .get(&(
+                    target_id.to_string(),
+                    exact_origin.to_string(),
+                    lane.to_string(),
+                ))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if !available || rows.len() != 1 || !rows[0] {
+                missing_receipts.push(json!({
+                    "target_id": target_id,
+                    "exact_origin": exact_origin,
+                    "lane": lane,
+                    "reason": if !available {
+                        "receipt_dag_unavailable"
+                    } else if rows.is_empty() {
+                        "receipt_missing"
+                    } else if rows.len() != 1 {
+                        "receipt_not_unique"
+                    } else {
+                        "closure_graph_invalid"
+                    },
+                }));
+            }
+        }
+    }
+    let next_lane = ["browser", "js_api", "parameter", "coverage"]
+        .into_iter()
+        .find(|lane| {
+            missing_receipts
+                .iter()
+                .any(|receipt| receipt.get("lane").and_then(Value::as_str) == Some(*lane))
+        });
+    let ready_to_submit =
+        !required || subject_count == 0 || (available && missing_receipts.is_empty());
+    json!({
+        "required": required,
+        "available": available,
+        "contract": metadata.and_then(|value| value.get("contract")).cloned().unwrap_or(Value::Null),
+        "stage_execution_id": metadata.and_then(|value| value.get("stage_execution_id")).cloned().unwrap_or(Value::Null),
+        "stage_run_unit_id": metadata.and_then(|value| value.get("stage_run_unit_id")).cloned().unwrap_or(Value::Null),
+        "subject_count": subject_count,
+        "missing_receipt_count": missing_receipts.len(),
+        "missing_receipts": missing_receipts,
+        "next_lane": next_lane,
+        "ready_to_submit": ready_to_submit,
+    })
+}
+
+fn apply_enumeration_receipt_dag_gaps(snapshot: &mut Value, status: &Value) {
+    if status.get("required").and_then(Value::as_bool) != Some(true) {
+        return;
+    }
+    let missing = status
+        .get("missing_receipts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let Some(assets) = snapshot.get_mut("assets").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for gap in missing {
+        let Some(technique) = gap
+            .get("lane")
+            .and_then(Value::as_str)
+            .and_then(|lane| match lane {
+                "browser" => Some("GOLISH-ENUM-JS"),
+                "js_api" => Some("GOLISH-ENUM-JSAPI"),
+                "parameter" => Some("GOLISH-ENUM-PARAM"),
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        let target_id = gap.get("target_id").and_then(Value::as_str);
+        let exact_origin = gap.get("exact_origin").and_then(Value::as_str);
+        let lane = gap.get("lane").and_then(Value::as_str).unwrap_or("");
+        let reason = gap.get("reason").and_then(Value::as_str).unwrap_or("");
+        let Some(cell) = assets
+            .iter_mut()
+            .find(|asset| {
+                asset.get("target_id").and_then(Value::as_str) == target_id
+                    && asset.get("value").and_then(Value::as_str) == exact_origin
+            })
+            .and_then(|asset| asset.get_mut("coverage"))
+            .and_then(Value::as_array_mut)
+            .and_then(|coverage| {
+                coverage
+                    .iter_mut()
+                    .find(|cell| cell.get("technique").and_then(Value::as_str) == Some(technique))
+            })
+        else {
+            continue;
+        };
+        if !matches!(
+            cell.get("state").and_then(Value::as_str),
+            Some("pending" | "partial" | "error")
+        ) {
+            cell["state"] = json!("partial");
+        }
+        cell["source"] = json!("enumeration_receipt_dag");
+        cell["note"] = json!(format!(
+            "typed {lane} lane receipt is not current and unique ({reason}); technique outcome alone cannot close this axis"
+        ));
+    }
+}
+
 fn normalize_enumeration_snapshot(mut snapshot: Value) -> Value {
     if snapshot.get("stage").and_then(Value::as_str) != Some("enumeration") {
         return snapshot;
@@ -1222,6 +1424,16 @@ fn normalize_enumeration_snapshot(mut snapshot: Value) -> Value {
         assets.push(asset);
     }
 
+    snapshot["assets"] = Value::Array(assets);
+    let receipt_dag_status = enumeration_receipt_dag_status(&snapshot);
+    apply_enumeration_receipt_dag_gaps(&mut snapshot, &receipt_dag_status);
+    snapshot["enumeration_receipt_dag_status"] = receipt_dag_status;
+
+    let assets = snapshot
+        .get("assets")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let mut total_assets = 0usize;
     let mut seed_assets = 0usize;
     let mut new_assets = 0usize;
@@ -1530,19 +1742,8 @@ fn eas_web_cell_has_missing_exact_origins(stage: &str, cell: &Value) -> bool {
             .is_some_and(|origins| !origins.is_empty())
 }
 
-fn target_intel_organization_asset_key(stage: &str, asset_row: &Value) -> Option<String> {
-    if stage != "target_intel" {
-        return None;
-    }
-    crate::harness::org_gate::target_intel_organization_asset_key(
-        asset_row.get("target_type").and_then(Value::as_str),
-        asset_row.get("target_id").and_then(Value::as_str),
-    )
-}
-
-fn terminal_exception_asset_matches(stage: &str, asset_row: &Value, asset: &str) -> bool {
+fn terminal_exception_asset_matches(_stage: &str, asset_row: &Value, asset: &str) -> bool {
     asset_row.get("value").and_then(Value::as_str) == Some(asset)
-        || target_intel_organization_asset_key(stage, asset_row).as_deref() == Some(asset)
 }
 
 fn refresh_preview_asset_summary(snapshot: &mut Value) {
@@ -1589,11 +1790,10 @@ fn refresh_preview_asset_summary(snapshot: &mut Value) {
     }
 }
 
-/// Preview honest terminal coverage against the current authoritative asset ×
-/// technique matrix. This never writes DB truth: it only lets Target Intel / EAS
-/// use the same exact terminal cells for preflight and final submission. Found is
-/// intentionally impossible here; only producers/DB truth may create it.
-/// Enumeration stays stricter and rejects all model-authored terminal cells.
+/// Preview honest terminal coverage against the current authoritative EAS asset ×
+/// technique matrix. This never writes DB truth. Found is intentionally impossible
+/// here; only producers/DB truth may create it. Target Intel is Goal-owned and has
+/// no legacy coverage matrix, while Enumeration rejects all model-authored cells.
 fn preview_terminal_exceptions(
     snapshot: Value,
     raw_exceptions: Option<&Value>,
@@ -1616,9 +1816,9 @@ fn preview_terminal_exceptions(
     if stage == "enumeration" {
         return Err("terminal_exceptions is disabled for Enumeration; blocked is backend-authored by enum_preflight_web_origins or bounded route/browser recovery, and submit coverage=[]".to_string());
     }
-    if !matches!(stage.as_str(), "target_intel" | "external_attack_surface") {
+    if stage != "external_attack_surface" {
         return Err(format!(
-            "terminal_exceptions preview is supported only for target_intel and external_attack_surface, not '{stage}'"
+            "terminal_exceptions preview is supported only for external_attack_surface, not '{stage}'"
         ));
     }
 
@@ -1716,8 +1916,7 @@ fn preview_terminal_exceptions(
                     "terminal_exceptions[{index}] asset '{asset}' is not in the authoritative current worklist"
                 )
             })?;
-        let submission_asset = target_intel_organization_asset_key(&stage, asset_row)
-            .unwrap_or_else(|| asset.to_string());
+        let submission_asset = asset.to_string();
         if !seen.insert((submission_asset.clone(), technique.to_string())) {
             return Err(format!(
                 "terminal_exceptions contains duplicate cell ({submission_asset}, {technique})"
@@ -1833,6 +2032,14 @@ fn stage_worklist_status(snapshot: Value) -> Value {
         .unwrap_or(false)
     {
         json!("submit_stage_deliverable")
+    } else if is_enumeration
+        && out
+            .get("enumeration_receipt_dag")
+            .and_then(|value| value.get("next_lane"))
+            .and_then(Value::as_str)
+            == Some("coverage")
+    {
+        json!("enum_review_coverage_v2")
     } else {
         json!("stage_worklist_next")
     };
@@ -1961,10 +2168,19 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
 
     let (authoritative_zero_input, missing_vuln_triage_denominator) =
         vuln_triage_denominator_state(&snapshot, total_cells);
+    let enumeration_receipt_dag = snapshot
+        .get("enumeration_receipt_dag_status")
+        .cloned()
+        .unwrap_or_else(|| enumeration_receipt_dag_status(&snapshot));
+    let enumeration_receipts_ready = enumeration_receipt_dag
+        .get("ready_to_submit")
+        .and_then(Value::as_bool)
+        .unwrap_or(!is_enumeration);
     let ready_to_submit = !missing_vuln_triage_denominator
         && pending_cells == 0
         && error_cells == 0
-        && partial_cells == 0;
+        && partial_cells == 0
+        && (!is_enumeration || enumeration_receipts_ready);
     let omitted_item_count = matching_cells.saturating_sub(items.len());
     let omitted_root_count = matching_roots.len().saturating_sub(selected_roots.len());
     json!({
@@ -1977,6 +2193,7 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
         "ready_to_submit": ready_to_submit,
         "coverage_denominator_missing": missing_vuln_triage_denominator,
         "authoritative_zero_input": authoritative_zero_input,
+        "enumeration_receipt_dag": is_enumeration.then_some(enumeration_receipt_dag),
         "summary": snapshot.get("summary").cloned().unwrap_or_else(|| json!({})),
         "cell_summary": {
             "total_cells": total_cells,
@@ -2003,6 +2220,13 @@ fn stage_worklist_next(snapshot: Value, limit: usize, preferred_states: &[String
             "Do not submit: vuln_triage returned zero cells without an explicit authoritative total_assets=0 plus assets=[]. Refresh the operation-scoped stage coverage snapshot; missing or malformed denominator state must fail closed."
         } else if authoritative_zero_input {
             "The final-sealed Enumeration surface is authoritatively empty. Submit findings: [] and coverage: []; the server seals an explicit zero-input Vuln handoff without fabricated scan cells or evidence."
+        } else if is_enumeration
+            && !enumeration_receipts_ready
+            && pending_cells == 0
+            && error_cells == 0
+            && partial_cells == 0
+        {
+            "Do not submit: all four business axes are terminal, but the typed receipt DAG is not closed. Call enum_review_coverage_v2 when next_lane=coverage; otherwise close the named producer/reducer lane, refresh this worklist, and submit only after its exact current-Unit receipt is present."
         } else if ready_to_submit && is_enumeration {
             "No pending/error/partial Enumeration work items remain. Submit summary claims, findings: [], and coverage: []; current-run producer/preflight/recovery evidence and trusted context own every terminal cell."
         } else if ready_to_submit {
@@ -2108,14 +2332,30 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
     let omitted_gap_count = omitted_gap_count.saturating_sub(gaps.len());
     let (authoritative_zero_input, missing_vuln_triage_denominator) =
         vuln_triage_denominator_state(&snapshot, total_cells);
+    let enumeration_receipt_dag = snapshot
+        .get("enumeration_receipt_dag_status")
+        .cloned()
+        .unwrap_or_else(|| enumeration_receipt_dag_status(&snapshot));
+    let enumeration_receipts_ready = enumeration_receipt_dag
+        .get("ready_to_submit")
+        .and_then(Value::as_bool)
+        .unwrap_or(!is_enumeration);
     let ready_to_submit = !missing_vuln_triage_denominator
         && pending_cells == 0
         && error_cells == 0
-        && partial_cells == 0;
+        && partial_cells == 0
+        && (!is_enumeration || enumeration_receipts_ready);
     let next_action = if missing_vuln_triage_denominator {
         "Do not submit: vuln_triage returned zero cells without an explicit authoritative total_assets=0 plus assets=[]. Refresh the operation-scoped stage coverage snapshot; missing or malformed denominator state must fail closed."
     } else if authoritative_zero_input {
         "The final-sealed Enumeration surface is authoritatively empty. Submit findings: [] and coverage: []; the server seals an explicit zero-input Vuln handoff without fabricated scan cells or evidence."
+    } else if is_enumeration
+        && !enumeration_receipts_ready
+        && pending_cells == 0
+        && error_cells == 0
+        && partial_cells == 0
+    {
+        "Enumeration business outcomes are terminal, but the typed receipt DAG is incomplete. If next_lane is coverage, call enum_review_coverage_v2 with the exact Browser, JS API, and Parameter receipts. Otherwise close the named producer/reducer lane, refresh, and do not submit yet."
     } else if ready_to_submit {
         if next_wave_cells > 0 {
             if is_enumeration {
@@ -2139,6 +2379,7 @@ fn compact_stage_asset_coverage(snapshot: Value, max_gaps: usize, include_assets
         "ready_to_submit": ready_to_submit,
         "coverage_denominator_missing": missing_vuln_triage_denominator,
         "authoritative_zero_input": authoritative_zero_input,
+        "enumeration_receipt_dag": is_enumeration.then_some(enumeration_receipt_dag),
         "stage": snapshot.get("stage").cloned().unwrap_or(Value::Null),
         "organization_id": snapshot.get("organization_id").cloned().unwrap_or(Value::Null),
         "session_id": snapshot.get("session_id").cloned().unwrap_or(Value::Null),
@@ -2346,312 +2587,21 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_terminal_preview_closes_only_exact_authoritative_cells() {
+    fn target_intel_terminal_preview_is_retired() {
         let snapshot = json!({
             "stage": "target_intel",
-            "organization_id": "org-current",
-            "session_id": "run-current",
-            "summary": {
-                "total_assets": 1,
-                "seed_assets": 1,
-                "new_assets": 0,
-                "done_assets": 0,
-                "pending_assets": 1,
-                "blocked_assets": 0
-            },
-            "assets": [{
-                "target_id": "target-moresec",
-                "value": "moresec.cn",
-                "target_type": "domain",
-                "coverage": [
-                    {"technique": "GOLISH-INTEL-ASN", "state": "pending"},
-                    {"technique": "GOLISH-INTEL-CT", "state": "pending"},
-                    {"technique": "GOLISH-INTEL-OSINT", "state": "pending", "evidence_refs": [4]}
-                ]
-            }]
-        });
-        let exceptions = json!([
-            {
-                "asset": "moresec.cn",
-                "technique": "GOLISH-INTEL-ASN",
-                "status": "blocked",
-                "note": "No configured provider declares ASN capability",
-                "reason_kind": "provider_missing"
-            },
-            {
-                "asset": "moresec.cn",
-                "technique": "GOLISH-INTEL-CT",
-                "status": "not_applicable",
-                "note": "The selected provider does not expose certificate transparency data",
-                "reason_kind": "not_applicable"
-            },
-            {
-                "asset": "moresec.cn",
-                "technique": "GOLISH-INTEL-OSINT",
-                "status": "checked_empty",
-                "evidence_refs": [4]
-            }
-        ]);
-
-        let (projected, preview) =
-            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
-        let compact = compact_stage_asset_coverage(projected.clone(), 25, false);
-
-        assert_eq!(preview["provided_cells"], 3);
-        assert_eq!(preview["accepted_cells"], 3);
-        assert_eq!(preview["blocked_cells"], 1);
-        assert_eq!(preview["not_applicable_cells"], 1);
-        assert_eq!(preview["coverage_to_submit"], exceptions);
-        assert_eq!(projected["summary"]["blocked_assets"], 1);
-        assert_eq!(compact["ready_to_submit"], true);
-        assert_eq!(compact["cell_summary"]["pending_cells"], 0);
-    }
-
-    #[test]
-    fn target_intel_terminal_preview_rejects_unknown_deliverable_reason_kind() {
-        let snapshot = json!({
-            "stage": "target_intel",
-            "organization_id": "org-current",
-            "session_id": "run-current",
-            "summary": {
-                "total_assets": 1,
-                "done_assets": 0,
-                "pending_assets": 1,
-                "blocked_assets": 0
-            },
-            "assets": [{
-                "target_id": "target-moresec",
-                "value": "moresec.cn",
-                "target_type": "domain",
-                "coverage": [{
-                    "technique": "GOLISH-INTEL-OSINT",
-                    "state": "pending"
-                }]
-            }]
+            "assets": []
         });
         let exceptions = json!([{
-            "asset": "moresec.cn",
-            "technique": "GOLISH-INTEL-OSINT",
-            "status": "blocked",
-            "note": "The provider is unavailable from the current environment",
-            "reason_kind": "env_unavailable"
-        }]);
-
-        let (projected, preview) =
-            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
-        let compact = compact_stage_asset_coverage(projected.clone(), 25, false);
-
-        assert_eq!(preview["provided_cells"], 1);
-        assert_eq!(preview["accepted_cells"], 0);
-        assert_eq!(preview["rejected_cells"], 1);
-        assert_eq!(preview["coverage_to_submit"], json!([]));
-        assert_eq!(
-            preview["rejected_terminal_exceptions"][0]["reason_kind"],
-            "env_unavailable"
-        );
-        assert!(preview["rejected_terminal_exceptions"][0]["reason"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("StageDeliverable reason_kind"));
-        assert_eq!(projected["assets"][0]["coverage"][0]["state"], "pending");
-        assert_eq!(compact["ready_to_submit"], false);
-    }
-
-    #[test]
-    fn target_intel_terminal_preview_preserves_credential_missing_for_quake_401() {
-        let snapshot = json!({
-            "stage": "target_intel",
-            "organization_id": "org-current",
-            "session_id": "run-current",
-            "summary": {
-                "total_assets": 1,
-                "done_assets": 0,
-                "pending_assets": 1,
-                "blocked_assets": 0
-            },
-            "assets": [{
-                "target_id": "target-moresec",
-                "value": "moresec.cn",
-                "target_type": "domain",
-                "coverage": [{
-                    "technique": "GOLISH-INTEL-OSINT",
-                    "state": "error"
-                }]
-            }]
-        });
-        let exceptions = json!([{
-            "asset": "moresec.cn",
-            "technique": "GOLISH-INTEL-OSINT",
-            "status": "blocked",
-            "note": "Quake returned HTTP 401 for the configured credential",
-            "reason_kind": "credential_missing"
-        }]);
-
-        let (projected, preview) =
-            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
-        let compact = compact_stage_asset_coverage(projected, 25, false);
-
-        assert_eq!(preview["accepted_cells"], 1);
-        assert_eq!(preview["rejected_cells"], 0);
-        assert_eq!(preview["coverage_to_submit"], exceptions);
-        assert_eq!(compact["ready_to_submit"], true);
-    }
-
-    #[test]
-    fn target_intel_organization_preview_returns_final_gate_asset_key() {
-        let organization_id = "84e789bf-3dcf-4580-9861-b3849c0d9474";
-        let organization_key = format!("organization:{organization_id}");
-        let snapshot = json!({
-            "stage": "target_intel",
-            "assets": [{
-                "target_id": organization_id,
-                "value": "广州有创网络科技有限公司",
-                "target_type": "organization",
-                "coverage": [
-                    {"technique": "GOLISH-INTEL-ASN", "state": "pending"},
-                    {"technique": "GOLISH-INTEL-OSINT", "state": "error", "evidence_refs": [27784]}
-                ]
-            }]
-        });
-        let exceptions = json!([
-            {
-                "asset": "广州有创网络科技有限公司",
-                "technique": "GOLISH-INTEL-ASN",
-                "status": "blocked",
-                "note": "No configured source declares an ASN capability",
-                "reason_kind": "provider_missing"
-            },
-            {
-                "asset": organization_key,
-                "technique": "GOLISH-INTEL-OSINT",
-                "status": "blocked",
-                "note": "The configured provider set is incomplete because Quake returned 401",
-                "reason_kind": "provider_missing"
-            }
-        ]);
-
-        let (projected, preview) =
-            preview_terminal_exceptions(snapshot, Some(&exceptions)).unwrap();
-
-        assert_eq!(preview["accepted_cells"], 2);
-        assert_eq!(
-            preview["coverage_to_submit"][0]["asset"],
-            json!(organization_key)
-        );
-        assert_eq!(
-            preview["coverage_to_submit"][1]["asset"],
-            json!(organization_key)
-        );
-        assert!(stage_worklist_status(projected)["ready_to_submit"]
-            .as_bool()
-            .unwrap_or(false));
-    }
-
-    #[test]
-    fn target_intel_checked_empty_preview_requires_evidence_and_known_cell() {
-        let snapshot = json!({
-            "stage": "target_intel",
-            "assets": [{
-                "value": "moresec.cn",
-                "coverage": [{"technique": "GOLISH-INTEL-OSINT", "state": "pending"}]
-            }]
-        });
-        let no_evidence = json!([{
-            "asset": "moresec.cn",
-            "technique": "GOLISH-INTEL-OSINT",
-            "status": "checked_empty"
-        }]);
-        assert!(
-            preview_terminal_exceptions(snapshot.clone(), Some(&no_evidence))
-                .unwrap_err()
-                .contains("requires exact-technique evidence_refs")
-        );
-
-        let foreign_asset = json!([{
-            "asset": "www.moresec.cn",
-            "technique": "GOLISH-INTEL-OSINT",
-            "status": "blocked",
-            "note": "No provider"
-        }]);
-        assert!(preview_terminal_exceptions(snapshot, Some(&foreign_asset))
-            .unwrap_err()
-            .contains("not in the authoritative current worklist"));
-    }
-
-    #[test]
-    fn target_intel_checked_empty_preview_requires_current_exact_empty_truth() {
-        let pending = json!({
-            "stage": "target_intel",
-            "assets": [{
-                "value": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
-                "coverage": [{
-                    "technique": "GOLISH-INTEL-ASN",
-                    "state": "pending",
-                    "evidence_refs": []
-                }]
-            }]
-        });
-        let checked_empty = json!([{
-            "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
-            "technique": "GOLISH-INTEL-ASN",
-            "status": "checked_empty",
-            "evidence_refs": [27784]
-        }]);
-        assert!(preview_terminal_exceptions(pending, Some(&checked_empty))
-            .unwrap_err()
-            .contains("exact-technique Empty truth"));
-
-        let errored = json!({
-            "stage": "target_intel",
-            "assets": [{
-                "value": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
-                "coverage": [{
-                    "technique": "GOLISH-INTEL-OSINT",
-                    "state": "error",
-                    "evidence_refs": [27784]
-                }]
-            }]
-        });
-        let checked_empty = json!([{
             "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
             "technique": "GOLISH-INTEL-OSINT",
-            "status": "checked_empty",
-            "evidence_refs": [27784]
+            "status": "blocked",
+            "note": "legacy coverage must not be accepted"
         }]);
-        assert!(preview_terminal_exceptions(errored, Some(&checked_empty))
-            .unwrap_err()
-            .contains("non-terminal error"));
 
-        let unresolved = json!({
-            "stage": "target_intel",
-            "assets": [{
-                "value": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
-                "coverage": [
-                    {"technique": "GOLISH-INTEL-ASN", "state": "pending", "evidence_refs": []},
-                    {"technique": "GOLISH-INTEL-OSINT", "state": "error", "evidence_refs": [27784]}
-                ]
-            }]
-        });
-        let honest_blocks = json!([
-            {
-                "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
-                "technique": "GOLISH-INTEL-ASN",
-                "status": "blocked",
-                "note": "No configured source declares an ASN capability"
-            },
-            {
-                "asset": "organization:84e789bf-3dcf-4580-9861-b3849c0d9474",
-                "technique": "GOLISH-INTEL-OSINT",
-                "status": "blocked",
-                "note": "The configured provider set is incomplete because Quake returned 401"
-            }
-        ]);
-        let (projected, preview) =
-            preview_terminal_exceptions(unresolved, Some(&honest_blocks)).unwrap();
-        assert_eq!(preview["coverage_to_submit"], honest_blocks);
-        assert!(stage_worklist_status(projected)["ready_to_submit"]
-            .as_bool()
-            .unwrap_or(false));
+        let error = preview_terminal_exceptions(snapshot, Some(&exceptions))
+            .expect_err("Target Intel completion is owned by Goal review/finalization");
+        assert!(error.contains("supported only for external_attack_surface"));
     }
 
     #[test]
@@ -3830,6 +3780,17 @@ mod tests {
             "organization_id": "org-1",
             "session_id": "sess",
             "summary": {"total_assets": 1},
+            "enumeration_receipt_dag": {
+                "required": true,
+                "available": true,
+                "contract": "agent_team_v2",
+                "receipts": [
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "browser", "terminal_disposition": "found", "closure_graph_valid": true},
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "js_api", "terminal_disposition": "found", "closure_graph_valid": true},
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "parameter", "terminal_disposition": "checked_empty", "closure_graph_valid": true},
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "coverage", "terminal_disposition": "found", "closure_graph_valid": true}
+                ]
+            },
             "assets": [{
                 "target_id": "target-1",
                 "value": "https://app.example.com:443",
@@ -3869,6 +3830,91 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("coverage: []"));
+    }
+
+    #[test]
+    fn enumeration_terminal_outcomes_do_not_hide_a_missing_js_api_receipt() {
+        let worklist = stage_worklist_next(
+            json!({
+                "stage": "enumeration",
+                "organization_id": "org-1",
+                "session_id": "sess",
+                "summary": {"total_assets": 1},
+                "enumeration_receipt_dag": {
+                    "required": true,
+                    "available": true,
+                    "contract": "agent_team_v2",
+                    "receipts": [
+                        {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "browser", "terminal_disposition": "found", "closure_graph_valid": true}
+                    ]
+                },
+                "assets": [{
+                    "target_id": "target-1",
+                    "value": "https://app.example.com:443",
+                    "target_type": "url",
+                    "exact_web_origin": true,
+                    "coverage": [
+                        {"technique": "GOLISH-ENUM-JS", "label": "JS", "state": "found"},
+                        {"technique": "GOLISH-ENUM-JSAPI", "label": "API", "state": "found"},
+                        {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "checked_empty"},
+                        {"technique": "GOLISH-ENUM-PARAM", "label": "Parameters", "state": "found"}
+                    ]
+                }]
+            }),
+            10,
+            &["pending".to_string(), "partial".to_string()],
+        );
+
+        assert_eq!(worklist["ready_to_submit"], false);
+        assert_eq!(worklist["enumeration_receipt_dag"]["next_lane"], "js_api");
+        assert!(worklist["items"].as_array().unwrap().iter().any(|item| {
+            item["technique"] == "GOLISH-ENUM-JSAPI"
+                && item["state"] == "partial"
+                && item["source"] == "enumeration_receipt_dag"
+        }));
+        assert!(worklist["items"].as_array().unwrap().iter().any(|item| {
+            item["technique"] == "GOLISH-ENUM-PARAM" && item["state"] == "partial"
+        }));
+    }
+
+    #[test]
+    fn enumeration_requires_coverage_receipt_after_all_business_axes_are_terminal() {
+        let status = stage_worklist_status(json!({
+            "stage": "enumeration",
+            "organization_id": "org-1",
+            "session_id": "sess",
+            "summary": {"total_assets": 1},
+            "enumeration_receipt_dag": {
+                "required": true,
+                "available": true,
+                "contract": "agent_team_v2",
+                "receipts": [
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "browser", "terminal_disposition": "found", "closure_graph_valid": true},
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "js_api", "terminal_disposition": "found", "closure_graph_valid": true},
+                    {"target_id": "target-1", "exact_origin": "https://app.example.com:443", "lane": "parameter", "terminal_disposition": "checked_empty", "closure_graph_valid": true}
+                ]
+            },
+            "assets": [{
+                "target_id": "target-1",
+                "value": "https://app.example.com:443",
+                "target_type": "url",
+                "exact_web_origin": true,
+                "coverage": [
+                    {"technique": "GOLISH-ENUM-JS", "label": "JS", "state": "found"},
+                    {"technique": "GOLISH-ENUM-JSAPI", "label": "API", "state": "found"},
+                    {"technique": "GOLISH-ENUM-DIR", "label": "Directory", "state": "checked_empty"},
+                    {"technique": "GOLISH-ENUM-PARAM", "label": "Parameters", "state": "checked_empty"}
+                ]
+            }]
+        }));
+
+        assert_eq!(status["ready_to_submit"], false);
+        assert_eq!(status["enumeration_receipt_dag"]["next_lane"], "coverage");
+        assert_eq!(status["next_tool"], "enum_review_coverage_v2");
+        assert!(status["next_action"]
+            .as_str()
+            .unwrap()
+            .contains("typed receipt DAG is incomplete"));
     }
 
     #[test]
@@ -3947,6 +3993,14 @@ mod tests {
         let guard = ["in_scope_rows", "_own_target"].concat();
         assert!(source.contains(&rejection));
         assert!(source.contains(&guard));
+    }
+
+    #[test]
+    fn query_target_data_forwards_the_bound_operation_to_the_planning_projection() {
+        let source = include_str!("security.rs");
+        assert!(source.contains(
+            "query_target_data_for_operation(harness_operation_id, target_id, &sections)"
+        ));
     }
 
     #[test]

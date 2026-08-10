@@ -312,10 +312,24 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         stage_kind != StageKind::VulnTriage || operation_id.is_some(),
         "vuln_triage coverage requires a trusted operation id for the final-sealed Enumeration surface and operation-scoped outcomes"
     );
-    let mut assets = list_stage_targets(pool, org_id, stage_kind).await?;
     if stage_kind == StageKind::TargetIntel {
-        assets = target_intel_stage_input_assets(assets, run_start);
+        return Ok(StageAssetCoverageSnapshot {
+            stage: stage_kind.as_str().to_string(),
+            organization_id: org_id.to_string(),
+            session_id: session_id.map(str::to_string),
+            summary: StageAssetCoverageSummary {
+                total_assets: 0,
+                seed_assets: 0,
+                new_assets: 0,
+                done_assets: 0,
+                pending_assets: 0,
+                blocked_assets: 0,
+            },
+            assets: Vec::new(),
+            eas_transport_excluded_origins: Vec::new(),
+        });
     }
+    let mut assets = list_stage_targets(pool, org_id, stage_kind).await?;
     let current_wave =
         explicit_current_wave_membership(current_wave_target_ids, current_wave_asset_values)?;
     ensure_current_wave_targets_present(&assets, current_wave.as_ref())?;
@@ -453,9 +467,6 @@ pub(crate) async fn stage_asset_coverage_snapshot(
         }
         None => golish_pentest_domain::tool_truth::ToolTruthContract::LegacyV1,
     };
-    let receipt_authoritative_target_intel = stage_kind == StageKind::TargetIntel
-        && tool_truth_contract == golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1;
-
     let business_found: BTreeSet<(String, String)> =
         golish_db::repo::coverage_truth::coverage_truth_facts(
             pool,
@@ -476,12 +487,11 @@ pub(crate) async fn stage_asset_coverage_snapshot(
     // EAS business truth corroborates a strict guarded found outcome but cannot
     // terminalise a cell by itself. Enumeration and Vuln Triage likewise use
     // exact-origin outcomes only. Other stages retain direct DB-found rendering.
-    let found =
-        if business_truth_closes_stage_cells(stage_kind) && !receipt_authoritative_target_intel {
-            business_found.clone()
-        } else {
-            BTreeSet::new()
-        };
+    let found = if business_truth_closes_stage_cells(stage_kind) {
+        business_found.clone()
+    } else {
+        BTreeSet::new()
+    };
     // EAS SERVICE is strict per confirmed-open port: once a port exists, it must
     // have a port-level fingerprint attempt/result or an explicit terminal
     // outcome. The DNS/53-only helper remains for Enumeration content axes, but
@@ -857,45 +867,8 @@ async fn list_stage_targets(
     organization_id: Uuid,
     stage: StageKind,
 ) -> anyhow::Result<Vec<TargetCoverageRow>> {
-    let mut rows = Vec::new();
-    if matches!(stage, StageKind::TargetIntel) {
-        if let Some(org_row) = get_organization_row(pool, organization_id).await? {
-            rows.push(org_row);
-        }
-    }
-    rows.extend(list_org_targets(pool, organization_id).await?);
-    Ok(rows)
-}
-
-fn target_intel_anchor_only_assets(assets: Vec<TargetCoverageRow>) -> Vec<TargetCoverageRow> {
-    let anchors: Vec<(Uuid, String)> = assets
-        .iter()
-        .filter(|asset| matches!(asset.target_type.as_str(), "domain" | "wildcard"))
-        .map(|asset| (asset.id, asset.value.clone()))
-        .collect();
-    assets
-        .into_iter()
-        .filter(|asset| {
-            asset.target_type != "domain"
-                || !anchors.iter().any(|(parent_id, parent)| {
-                    *parent_id != asset.id
-                        && golish_agent_kit::harness::technique_resolver::target_intel_anchor_covers_child(
-                            parent,
-                            &asset.value,
-                        )
-                })
-        })
-        .collect()
-}
-
-fn target_intel_stage_input_assets(
-    mut assets: Vec<TargetCoverageRow>,
-    stage_started_at: Option<DateTime<Utc>>,
-) -> Vec<TargetCoverageRow> {
-    if let Some(stage_started_at) = stage_started_at {
-        assets.retain(|asset| asset.created_at <= stage_started_at);
-    }
-    target_intel_anchor_only_assets(assets)
+    let _ = stage;
+    list_org_targets(pool, organization_id).await
 }
 
 async fn filter_enumeration_assets_by_eas_worklist(
@@ -1091,6 +1064,7 @@ fn expand_exact_web_origin_rows_for_wave_excluding(
     rows
 }
 
+#[allow(dead_code)]
 async fn get_organization_row(
     pool: &sqlx::PgPool,
     organization_id: Uuid,
@@ -1142,16 +1116,9 @@ async fn stage_outcomes(
     organization_asset_values: &[String],
     business_found: &BTreeSet<(String, String)>,
     allow_latest_fallback: bool,
-    operation_id: Option<Uuid>,
-    tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract,
+    _operation_id: Option<Uuid>,
+    _tool_truth_contract: golish_pentest_domain::tool_truth::ToolTruthContract,
 ) -> anyhow::Result<BTreeMap<(String, String), OutcomeProjection>> {
-    if stage == StageKind::TargetIntel
-        && tool_truth_contract == golish_pentest_domain::tool_truth::ToolTruthContract::ReceiptV1
-    {
-        let operation_id = operation_id
-            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_TARGET_INTEL_OPERATION_MISSING"))?;
-        return target_intel_receipt_outcomes(pool, operation_id, organization_id).await;
-    }
     let mut out = BTreeMap::new();
     if !stage_accepts_outcome_projection(stage, run_start.is_some()) {
         return Ok(out);
@@ -1314,6 +1281,7 @@ async fn stage_outcomes(
     Ok(out)
 }
 
+#[allow(dead_code)]
 async fn target_intel_receipt_outcomes(
     pool: &sqlx::PgPool,
     operation_id: Uuid,
@@ -1597,7 +1565,10 @@ fn merge_stage_technique_outcome_row(
 fn business_truth_closes_stage_cells(stage: StageKind) -> bool {
     !matches!(
         stage,
-        StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
+        StageKind::TargetIntel
+            | StageKind::ExternalAttackSurface
+            | StageKind::Enumeration
+            | StageKind::VulnTriage
     )
 }
 
@@ -1649,7 +1620,7 @@ fn source_query_projection_keys(
     asset_values: &[String],
     stage_techniques: &BTreeSet<String>,
     row: &SourceQueryProjectionRow,
-    organization_asset_values: &[String],
+    _organization_asset_values: &[String],
 ) -> Vec<(String, String)> {
     let Some(technique) = row.technique.as_deref() else {
         return Vec::new();
@@ -1673,17 +1644,6 @@ fn source_query_projection_keys(
         return target_keys
             .into_iter()
             .map(|target_key| (target_key, technique.to_string()))
-            .collect();
-    }
-    if target_intel_source_technique(technique) {
-        return organization_asset_values
-            .iter()
-            .map(|asset| {
-                (
-                    coverage_lookup_asset(asset, technique),
-                    technique.to_string(),
-                )
-            })
             .collect();
     }
     Vec::new()
@@ -1750,15 +1710,6 @@ fn merge_source_query_row_with_authoritative_sources(
             merge_source_outcome(out, key, projection.clone());
         }
     }
-}
-
-fn target_intel_source_technique(technique: &str) -> bool {
-    matches!(
-        technique,
-        golish_db::repo::coverage_truth::TECH_WHOIS
-            | golish_db::repo::coverage_truth::TECH_ASN
-            | golish_db::repo::coverage_truth::TECH_OSINT
-    )
 }
 
 fn matching_stage_asset_key(
@@ -1910,23 +1861,6 @@ fn coverage_cells_with_eas_parent_ips(
             }
             let asset_key = coverage_lookup_asset(&asset.value, technique);
             let outcome = outcomes.get(&(asset_key.clone(), technique.to_string()));
-            // Target Intel may persist real partial records (for example A
-            // succeeded while CNAME/MX/TXT transport failed). The current-run
-            // retry marker must remain visible even though the business table
-            // now contains a positive row; otherwise preflight says ready while
-            // the final deterministic gate correctly blocks.
-            if stage == StageKind::TargetIntel
-                && outcome.is_some_and(|outcome| matches!(outcome.state.as_str(), "partial" | "error"))
-            {
-                let outcome = outcome.expect("checked above");
-                return cell(
-                    technique,
-                    &outcome.state,
-                    outcome.source.clone(),
-                    outcome.evidence_refs.clone(),
-                    None,
-                );
-            }
             if found.contains(&(asset_key.clone(), technique.to_string())) {
                 return cell(technique, "found", None, Vec::new(), None);
             }
@@ -2276,14 +2210,7 @@ fn coverage_asset_class(
 
 fn techniques_for_stage(stage: StageKind) -> Vec<&'static str> {
     match stage {
-        StageKind::TargetIntel => vec![
-            golish_db::repo::coverage_truth::TECH_DNS,
-            golish_db::repo::coverage_truth::TECH_WHOIS,
-            golish_db::repo::coverage_truth::TECH_ASN,
-            golish_db::repo::coverage_truth::TECH_CT,
-            golish_db::repo::coverage_truth::TECH_SUBDOMAIN,
-            golish_db::repo::coverage_truth::TECH_OSINT,
-        ],
+        StageKind::TargetIntel => vec![],
         StageKind::ExternalAttackSurface => vec![
             golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
             golish_db::repo::coverage_truth::TECH_EAS_PORT,
@@ -2555,27 +2482,8 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_coverage_excludes_targets_created_by_the_current_stage() {
-        let stage_started_at = Utc::now();
-        let mut seed = target("seed.moresec.cn", "domain");
-        seed.created_at = stage_started_at - chrono::Duration::seconds(1);
-        let mut discovered = target("api.moresec.cn", "domain");
-        discovered.created_at = stage_started_at + chrono::Duration::seconds(1);
-        let mut organization = target("organization:test", "organization");
-        organization.created_at = stage_started_at - chrono::Duration::seconds(1);
-
-        let filtered = target_intel_stage_input_assets(
-            vec![organization, seed, discovered],
-            Some(stage_started_at),
-        );
-
-        assert_eq!(
-            filtered
-                .iter()
-                .map(|asset| asset.value.as_str())
-                .collect::<Vec<_>>(),
-            vec!["organization:test", "seed.moresec.cn"]
-        );
+    fn target_intel_exposes_no_legacy_coverage_techniques() {
+        assert!(techniques_for_stage(StageKind::TargetIntel).is_empty());
     }
 
     #[test]
@@ -3318,7 +3226,7 @@ mod tests {
         assert!(!business_truth_closes_stage_cells(
             StageKind::ExternalAttackSurface
         ));
-        assert!(business_truth_closes_stage_cells(StageKind::TargetIntel));
+        assert!(!business_truth_closes_stage_cells(StageKind::TargetIntel));
     }
 
     #[test]
@@ -4034,7 +3942,7 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_scope_pattern_has_only_passive_intel_child_expansion_work() {
+    fn wildcard_scope_pattern_has_no_target_intel_coverage_work() {
         let asset = target("*.moresec.cn", "wildcard");
         let intel = coverage_cells(
             StageKind::TargetIntel,
@@ -4042,15 +3950,7 @@ mod tests {
             &BTreeSet::new(),
             &BTreeMap::new(),
         );
-        assert_eq!(
-            intel
-                .iter()
-                .filter(|cell| cell.state != "not_applicable")
-                .map(|cell| (cell.technique.as_str(), cell.state.as_str()))
-                .collect::<Vec<_>>(),
-            vec![(golish_db::repo::coverage_truth::TECH_SUBDOMAIN, "pending")],
-            "wildcard Target Intel must expose exactly one passive expansion responsibility"
-        );
+        assert!(intel.is_empty());
 
         let eas = coverage_cells(
             StageKind::ExternalAttackSurface,
@@ -4061,37 +3961,6 @@ mod tests {
         assert!(
             eas.iter().all(|cell| cell.state == "not_applicable"),
             "wildcard is never an executable EAS work item: {eas:?}"
-        );
-    }
-
-    #[test]
-    fn target_intel_preflight_anchor_filters_promoted_wildcard_child_only() {
-        let wildcard = target("*.moresec.cn", "wildcard");
-        let child = target("app.moresec.cn", "domain");
-        let values = |rows: Vec<TargetCoverageRow>| {
-            target_intel_anchor_only_assets(rows)
-                .into_iter()
-                .map(|row| row.value)
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(
-            values(vec![wildcard.clone(), child.clone()]),
-            vec!["*.moresec.cn".to_string()]
-        );
-        assert_eq!(
-            values(vec![wildcard.clone(), target("moresec.cn", "domain")]),
-            vec!["*.moresec.cn".to_string(), "moresec.cn".to_string()],
-            "wildcard must not absorb its apex"
-        );
-        assert_eq!(
-            values(vec![wildcard.clone(), target("app.vendor.net", "domain")]),
-            vec!["*.moresec.cn".to_string(), "app.vendor.net".to_string()]
-        );
-        assert_eq!(
-            values(vec![target("moresec.cn", "organization"), child.clone()]),
-            vec!["moresec.cn".to_string(), "app.moresec.cn".to_string()],
-            "dotted organization display names are never coverage anchors"
         );
     }
 
@@ -4748,7 +4617,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_partial_outcome_overrides_business_found_in_preflight() {
+    fn target_intel_has_no_partial_coverage_axis_in_read_model() {
         let asset = target("partial.example.com", "domain");
         let technique = golish_db::repo::coverage_truth::TECH_DNS;
         let found = BTreeSet::from([(asset.value.clone(), technique.to_string())]);
@@ -4762,12 +4631,7 @@ mod tests {
         )]);
 
         let cells = coverage_cells(StageKind::TargetIntel, &asset, &found, &outcomes);
-        let dns = cells
-            .iter()
-            .find(|cell| cell.technique == technique)
-            .expect("DNS cell");
-        assert_eq!(dns.state, "partial");
-        assert_eq!(dns.source.as_deref(), Some("resolver"));
+        assert!(cells.is_empty());
     }
 
     #[test]
@@ -4895,7 +4759,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_org_row_only_requires_org_context_dimensions() {
+    fn target_intel_organization_row_has_no_legacy_dimensions() {
         let asset = target("Acme Root", "organization");
 
         let cells = coverage_cells(
@@ -4905,30 +4769,7 @@ mod tests {
             &BTreeMap::new(),
         );
 
-        assert_eq!(
-            cells
-                .iter()
-                .map(|cell| cell.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["DNS", "WHOIS", "ASN", "CT", "Subdomain", "OSINT"]
-        );
-        assert_eq!(cells[0].state, "not_applicable");
-        assert_eq!(cells[1].state, "pending");
-        assert_eq!(cells[2].state, "pending");
-        assert_eq!(cells[3].state, "not_applicable");
-        assert_eq!(cells[4].state, "not_applicable");
-        assert_eq!(cells[5].state, "pending");
-        assert!(cells[0].suggested_tools.is_empty());
-        assert!(cells[3].suggested_tools.is_empty());
-        assert!(cells[4].suggested_tools.is_empty());
-        assert_eq!(
-            cells[1].suggested_tools,
-            vec!["recon_lookup_whois".to_string()]
-        );
-        assert_eq!(
-            cells[5].suggested_tools,
-            vec!["recon_map_assets".to_string()]
-        );
+        assert!(cells.is_empty());
     }
 
     #[test]
@@ -5189,7 +5030,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_sibling_provider_found_preserves_business_found_projection() {
+    fn target_intel_provider_rows_never_recreate_a_read_model_axis() {
         let asset = target("广州有创网络科技有限公司", "organization");
         let asset_values = vec![asset.value.clone()];
         let organization_asset_values = asset_values.clone();
@@ -5236,11 +5077,7 @@ mod tests {
         );
 
         let cells = coverage_cells(StageKind::TargetIntel, &asset, &business_found, &outcomes);
-        let osint = cells
-            .iter()
-            .find(|cell| cell.technique == technique)
-            .expect("OSINT cell");
-        assert_eq!(osint.state, "found");
+        assert!(cells.is_empty());
     }
 
     #[test]
@@ -5314,7 +5151,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_source_query_with_unmatched_target_rolls_up_to_org_row() {
+    fn unmatched_legacy_intel_source_query_does_not_recreate_org_axis() {
         let organization_asset_values = vec!["大连平安大厦开发有限公司".to_string()];
         let asset_values = organization_asset_values.clone();
         let stage_techniques =
@@ -5335,16 +5172,7 @@ mod tests {
             &organization_asset_values,
         );
 
-        let key = (
-            organization_asset_values[0].clone(),
-            golish_db::repo::coverage_truth::TECH_WHOIS.to_string(),
-        );
-        let outcome = outcomes
-            .get(&key)
-            .expect("unmatched target_intel source query rolls up to organization row");
-        assert_eq!(outcome.state, "checked_empty");
-        assert_eq!(outcome.source.as_deref(), Some("crt.sh"));
-        assert_eq!(outcome.evidence_refs, vec![21]);
+        assert!(outcomes.is_empty());
     }
 
     #[test]

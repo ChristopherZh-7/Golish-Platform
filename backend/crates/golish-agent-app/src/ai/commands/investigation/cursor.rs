@@ -180,6 +180,17 @@ pub(crate) fn clamp_investigation_page_size(requested: u32) -> u32 {
     requested.clamp(1, 100)
 }
 
+pub(crate) fn canonical_filter_digest<T: Serialize>(value: &T) -> String {
+    let bytes = serde_json::to_vec(value).expect("canonical filter value is serializable");
+    let digest = Sha256::digest(bytes);
+    let mut result = String::with_capacity("sha256:".len() + digest.len() * 2);
+    result.push_str("sha256:");
+    for byte in digest {
+        write!(result, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    result
+}
+
 pub(crate) fn issue_current_cursor(
     cursor: &InvestigationCursorV2,
     cursor_salt: &[u8; HMAC_SHA256_BYTES],
@@ -299,14 +310,7 @@ pub(crate) struct CanonicalInvestigationFilters {
 
 impl CanonicalInvestigationFilters {
     pub(crate) fn digest(&self) -> String {
-        let bytes = serde_json::to_vec(self).expect("canonical filter struct is serializable");
-        let digest = Sha256::digest(bytes);
-        let mut result = String::with_capacity("sha256:".len() + digest.len() * 2);
-        result.push_str("sha256:");
-        for byte in digest {
-            write!(result, "{byte:02x}").expect("writing to String cannot fail");
-        }
-        result
+        canonical_filter_digest(self)
     }
 
     pub(crate) fn organization_ids(&self) -> &[Uuid] {

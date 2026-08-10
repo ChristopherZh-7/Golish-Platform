@@ -86,6 +86,327 @@ export function isExactOriginUrl(value, exactOrigin) {
   }
 }
 
+const CAPTURE_SECRET_NAME = /(?:authorization|cookie|set-cookie|password|passwd|token|secret|api[-_]?key|session|credential)/i;
+const CAPTURE_MAX_PARAMETER_FACTS = 256;
+const CAPTURE_MAX_PARAMETER_DEPTH = 8;
+
+export function redactCaptureValue(name, value) {
+  if (CAPTURE_SECRET_NAME.test(String(name ?? ""))) return "{redacted}";
+  if (value == null) return null;
+  return "{value}";
+}
+
+export function sanitizeCaptureUrl(value, base) {
+  try {
+    const url = base ? new URL(value, base) : new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.username = "";
+    url.password = "";
+    url.hash = "";
+    const names = [...url.searchParams.keys()];
+    url.search = "";
+    for (const name of names) url.searchParams.append(name.slice(0, 256), "{value}");
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+function countValueBearingCheckpointCursors(pendingPages, pendingScripts, recoveryFailures) {
+  const cursors = new Set();
+  const inspect = (value) => {
+    try {
+      const url = new URL(value);
+      if (url.searchParams.size > 0) cursors.add(url.href);
+    } catch {
+      // Invalid cursors are already rejected by the exact-origin checkpoint
+      // validator; they do not need a second classification here.
+    }
+  };
+  for (const value of pendingPages) inspect(value);
+  for (const entry of pendingScripts) inspect(entry?.url ?? entry);
+  for (const failure of recoveryFailures) inspect(failure?.url);
+  return cursors.size;
+}
+
+function parameterType(value) {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  switch (typeof value) {
+    case "boolean": return "boolean";
+    case "number": return "number";
+    case "string": return "string";
+    case "object": return "object";
+    default: return "unknown";
+  }
+}
+
+function collectValueFreeJsonFields(value, facts, pathParts = [], depth = 0, state = {}) {
+  if (facts.length >= CAPTURE_MAX_PARAMETER_FACTS || depth > CAPTURE_MAX_PARAMETER_DEPTH) {
+    state.truncated = true;
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.slice(0, CAPTURE_MAX_PARAMETER_FACTS).forEach((item) =>
+      collectValueFreeJsonFields(item, facts, [...pathParts, "[]"], depth + 1, state));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [name, child] of Object.entries(value)) {
+    if (facts.length >= CAPTURE_MAX_PARAMETER_FACTS) {
+      state.truncated = true;
+      break;
+    }
+    const safeName = String(name).slice(0, 256);
+    const path = [...pathParts, safeName].join(".");
+    facts.push({ name: path, location: "body", value_type: parameterType(child) });
+    collectValueFreeJsonFields(child, facts, [...pathParts, safeName], depth + 1, state);
+  }
+}
+
+export function extractRequestParameterFacts(request = {}) {
+  const facts = [];
+  const state = { truncated: false };
+  const sanitizedUrl = sanitizeCaptureUrl(request.url ?? "", request.base_url);
+  if (sanitizedUrl) {
+    const url = new URL(sanitizedUrl);
+    for (const name of url.searchParams.keys()) {
+      facts.push({ name: name.slice(0, 256), location: "query", value_type: "unknown" });
+    }
+  }
+  const contentType = String(request.content_type ?? request.headers?.["content-type"] ?? "").toLowerCase();
+  const body = request.post_data ?? request.body;
+  if (typeof body === "string" && body.length > 0) {
+    if (contentType.includes("json")) {
+      try { collectValueFreeJsonFields(JSON.parse(body), facts, [], 0, state); }
+      catch { state.parse_error = "invalid_json"; }
+    } else if (contentType.includes("x-www-form-urlencoded")) {
+      for (const name of new URLSearchParams(body).keys()) {
+        facts.push({ name: name.slice(0, 256), location: "form", value_type: "string" });
+      }
+    } else if (contentType.includes("multipart/form-data")) {
+      const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType)?.slice(1).find(Boolean);
+      if (boundary) {
+        const pattern = /content-disposition:[^\r\n]*\bname="([^"]+)"/gi;
+        for (const match of body.matchAll(pattern)) {
+          facts.push({ name: match[1].slice(0, 256), location: "form", value_type: "unknown" });
+        }
+      } else state.parse_error = "multipart_boundary_missing";
+    }
+  }
+  const deduped = [...new Map(facts.slice(0, CAPTURE_MAX_PARAMETER_FACTS).map((fact) =>
+    [`${fact.location}:${fact.name}:${fact.value_type}`, fact])).values()];
+  return { facts: deduped, truncated: state.truncated || facts.length > CAPTURE_MAX_PARAMETER_FACTS, parse_error: state.parse_error ?? null };
+}
+
+export function runtimeOccurrenceKey(input = {}) {
+  const material = JSON.stringify({
+    collection_key: String(input.collection_key ?? ""),
+    page_identity: sanitizeCaptureUrl(input.page_url ?? "") ?? "unknown",
+    initiator_fingerprint: String(input.initiator_fingerprint ?? "unknown"),
+    method: String(input.method ?? "GET").toUpperCase(),
+    request_url: sanitizeCaptureUrl(input.request_url ?? "") ?? "unknown",
+    parameter_shape: Array.isArray(input.parameter_facts)
+      ? input.parameter_facts.map(({ name, location, value_type }) => ({ name, location, value_type }))
+      : [],
+    duplicate_ordinal: Number.isInteger(input.duplicate_ordinal) ? input.duplicate_ordinal : 0,
+  });
+  return `runtime-occurrence-v3:${sha256Hex(material)}`;
+}
+
+export function normalizeCaptureOccurrenceV3(entry = {}, collectionKey = "legacy") {
+  const url = sanitizeCaptureUrl(entry.url ?? entry.request?.url ?? "");
+  const method = String(entry.method ?? entry.request?.method ?? "GET").toUpperCase();
+  const parameterFacts = Array.isArray(entry.parameter_facts)
+    ? entry.parameter_facts.map(({ name, location, value_type }) => ({
+        name: String(name ?? "").slice(0, 256),
+        location: String(location ?? "unknown"),
+        value_type: String(value_type ?? "unknown"),
+      }))
+    : [];
+  const pageUrl = sanitizeCaptureUrl(entry.page_url ?? "");
+  const logicalKey = typeof entry.logical_key === "string" && entry.logical_key
+    ? entry.logical_key
+    : runtimeOccurrenceKey({
+        collection_key: collectionKey,
+        page_url: pageUrl ?? "",
+        initiator_fingerprint: "legacy_unknown",
+        method,
+        request_url: url ?? "",
+        parameter_facts: parameterFacts,
+        duplicate_ordinal: Number.isInteger(entry.duplicate_ordinal) ? entry.duplicate_ordinal : 0,
+      });
+  return {
+    schema: "browser_js_api_runtime_occurrence_v3",
+    logical_key: logicalKey,
+    capture_event_id: typeof entry.capture_event_id === "string" ? entry.capture_event_id : null,
+    duplicate_ordinal: Number.isInteger(entry.duplicate_ordinal) ? entry.duplicate_ordinal : 0,
+    url,
+    method,
+    resource_type: String(entry.resource_type ?? entry.request?.resource_type ?? "unknown"),
+    status: Number.isInteger(entry.status) ? entry.status : null,
+    page_url: pageUrl,
+    document_base: sanitizeCaptureUrl(entry.document_base ?? ""),
+    request_header_names: Array.isArray(entry.request_header_names)
+      ? entry.request_header_names.map(String).map((name) => name.toLowerCase()).sort()
+      : [],
+    parameter_facts: parameterFacts,
+    parameter_facts_truncated: entry.parameter_facts_truncated === true,
+    parameter_parse_error: entry.parameter_parse_error ?? null,
+    cdp_request_id: typeof entry.cdp_request_id === "string" ? entry.cdp_request_id : null,
+    cdp_monotonic_timestamp: Number.isFinite(entry.cdp_monotonic_timestamp)
+      ? entry.cdp_monotonic_timestamp
+      : null,
+    initiator: entry.initiator && typeof entry.initiator === "object" ? entry.initiator : null,
+    initiator_status: typeof entry.initiator_status === "string"
+      ? entry.initiator_status
+      : "legacy_unknown",
+    sent: typeof entry.sent === "boolean" ? entry.sent : null,
+    read_only_blocked: entry.read_only_blocked === true,
+    read_only_block_reason: entry.read_only_block_reason ?? null,
+    capture_path: typeof entry.capture_path === "string" ? entry.capture_path : null,
+  };
+}
+
+export async function observeDocumentForms(page, exactOrigin) {
+  const observation = await page.evaluate(() => ({
+    page_url: window.location.href,
+    document_base: document.baseURI,
+    forms: [...document.forms].map((form, ordinal) => ({
+      ordinal,
+      action: form.getAttribute("action") ?? "",
+      method: (form.getAttribute("method") ?? "get").toUpperCase(),
+      fields: [...form.elements].map((field) => ({
+        name: field.getAttribute?.("name") ?? "",
+        type: field.getAttribute?.("type") ?? field.tagName?.toLowerCase?.() ?? "unknown",
+        required: Boolean(field.required),
+      })),
+    })),
+  }));
+  const rawForms = Array.isArray(observation) ? observation : observation.forms ?? [];
+  const pageUrl = sanitizeCaptureUrl(observation?.page_url ?? page.url());
+  const documentBase = sanitizeCaptureUrl(observation?.document_base ?? pageUrl, pageUrl) ?? pageUrl;
+  return rawForms.slice(0, 256).map((form) => {
+    const action = sanitizeCaptureUrl(form.action || documentBase, documentBase);
+    return {
+      schema: "browser_js_api_form_observation_v3",
+      page_url: pageUrl,
+      document_base: documentBase,
+      ordinal: form.ordinal,
+      action,
+      method: form.method,
+      scope_decision: action && new URL(action).origin === exactOrigin ? "in_scope" : "scope_excluded",
+      sent: false,
+      fields: form.fields
+        .filter((field) => typeof field.name === "string" && field.name.trim())
+        .slice(0, CAPTURE_MAX_PARAMETER_FACTS)
+        .map((field) => ({
+          name: field.name.trim().slice(0, 256),
+          location: "form",
+          value_type: String(field.type ?? "unknown").slice(0, 64),
+          requirement: field.required ? "required" : "unknown",
+        })),
+    };
+  });
+}
+
+async function observeDocumentMetadata(page) {
+  const observation = await page.evaluate(() => ({
+    page_url: location.href,
+    document_base: document.baseURI || location.href,
+  }));
+  const pageUrl = sanitizeCaptureUrl(observation?.page_url ?? page.url());
+  const documentBase = sanitizeCaptureUrl(
+    observation?.document_base ?? pageUrl,
+    pageUrl,
+  );
+  return {
+    page_url: pageUrl,
+    document_base: documentBase ?? pageUrl,
+  };
+}
+
+export async function attachCdpNetworkLedger(context, page, identity = {}) {
+  if (typeof context?.newCDPSession !== "function") {
+    return { status: "unsupported_cdp", correlate: () => null, close: async () => {} };
+  }
+  try {
+    const session = await context.newCDPSession(page);
+    const buckets = new Map();
+    const ordinals = new Map();
+    const pageKey = String(identity.page_key ?? `page:${crypto.randomUUID()}`);
+    const contextKey = String(identity.context_key ?? `context:${crypto.randomUUID()}`);
+    session.on("Network.requestWillBeSent", (event) => {
+      const sanitizedUrl = sanitizeCaptureUrl(event?.request?.url ?? "");
+      if (!sanitizedUrl) return;
+      const method = String(event?.request?.method ?? "GET").toUpperCase();
+      const fingerprint = `${method} ${sanitizedUrl}`;
+      const ordinal = ordinals.get(fingerprint) ?? 0;
+      ordinals.set(fingerprint, ordinal + 1);
+      const callFrames = event?.initiator?.stack?.callFrames;
+      const frame = Array.isArray(callFrames) && callFrames.length > 0 ? callFrames[0] : null;
+      const record = {
+        request_id: String(event.requestId ?? ""),
+        monotonic_timestamp: Number.isFinite(event.timestamp) ? event.timestamp : null,
+        observed_at_ms: performance.now(),
+        ordinal,
+        page_key: pageKey,
+        context_key: contextKey,
+        page_url: sanitizeCaptureUrl(page?.url?.() ?? ""),
+        initiator: frame
+          ? {
+              script_url: sanitizeCaptureUrl(frame.url ?? ""),
+              line_number: Number.isInteger(frame.lineNumber) ? frame.lineNumber : null,
+              column_number: Number.isInteger(frame.columnNumber) ? frame.columnNumber : null,
+              function_name: String(frame.functionName ?? "").slice(0, 256),
+            }
+          : null,
+        initiator_status: frame ? "matched" : "unmatched",
+      };
+      const bucket = buckets.get(fingerprint) ?? [];
+      bucket.push(record);
+      buckets.set(fingerprint, bucket);
+    });
+    await session.send("Network.enable");
+    return {
+      status: "enabled",
+      page_key: pageKey,
+      context_key: contextKey,
+      correlate(input, legacyUrl) {
+        const query = input && typeof input === "object"
+          ? input
+          : { method: input, url: legacyUrl };
+        const sanitizedUrl = sanitizeCaptureUrl(query.url);
+        if (!sanitizedUrl) return null;
+        const fingerprint = `${String(query.method ?? "GET").toUpperCase()} ${sanitizedUrl}`;
+        const bucket = buckets.get(fingerprint);
+        if (!bucket?.length) return null;
+        const queryPageUrl = sanitizeCaptureUrl(query.page_url ?? "");
+        const observedAtMs = Number.isFinite(query.observed_at_ms)
+          ? query.observed_at_ms
+          : performance.now();
+        const candidates = bucket
+          .map((record, index) => ({ record, index }))
+          .filter(({ record }) =>
+            (query.page_key == null || query.page_key === record.page_key) &&
+            (query.context_key == null || query.context_key === record.context_key) &&
+            (!queryPageUrl || !record.page_url || queryPageUrl === record.page_url) &&
+            (!Number.isInteger(query.ordinal) || query.ordinal === record.ordinal) &&
+            Math.abs(observedAtMs - record.observed_at_ms) <= 2_000);
+        if (candidates.length !== 1) return null;
+        const [{ record, index }] = candidates;
+        bucket.splice(index, 1);
+        return record;
+      },
+      async close() {
+        await session.detach().catch(() => {});
+      },
+    };
+  } catch {
+    return { status: "unsupported_cdp", correlate: () => null, close: async () => {} };
+  }
+}
+
 export function isExactOriginWebSocketUrl(value, targetUrl) {
   try {
     const parsed = new URL(value);
@@ -133,6 +454,7 @@ export function classifyCollectionCompletion(input = {}) {
   const pendingBodyTimeouts = count(input.pending_body_timeouts);
   const recoveryPending = count(input.recovery_pending);
   const recoveryExhausted = count(input.recovery_exhausted);
+  const valueBearingCursors = count(input.value_bearing_checkpoint_cursors);
   const reasons = [];
 
   if (navigationAttempts > 0 && successfulPages === 0) {
@@ -141,6 +463,7 @@ export function classifyCollectionCompletion(input = {}) {
     reasons.push("navigation_errors");
   }
   if (pageQueueRemaining > 0) reasons.push("page_queue_remaining");
+  if (valueBearingCursors > 0) reasons.push("value_bearing_checkpoint_unresumable");
   if (pageCandidatesDropped > 0) reasons.push("page_budget_truncated");
   if (recursiveQueueRemaining > 0) reasons.push("recursive_queue_remaining");
   if (input.recursive_limit_hit) reasons.push("max_recursive_scripts_hit");
@@ -850,26 +1173,24 @@ async function saveApiResponseCapture(
   const fullPath = path.join(dir, outputFilenameForApiCapture(entry.method, entry.url));
   const contentType = headers["content-type"] ?? "";
   const bodyBuffer = Buffer.isBuffer(body) ? body : null;
-  const requestBody = typeof entry.request_body === "string" ? entry.request_body : null;
   const payload = {
-    version: 2,
+    version: 3,
+    schema: "browser_js_api_capture_v3",
     captured_at: new Date().toISOString(),
     request: {
       method: entry.method,
-      url: entry.url,
+      url: sanitizeCaptureUrl(entry.url),
       resource_type: entry.resource_type,
-      headers: entry.request_headers ?? {},
-      body: requestBody && requestBody.length <= 64_000 ? requestBody : null,
-      body_truncated: Boolean(requestBody && requestBody.length > 64_000),
+      header_names: entry.request_header_names ?? [],
+      parameter_facts: entry.parameter_facts ?? [],
+      parameter_facts_truncated: entry.parameter_facts_truncated === true,
     },
     response: {
       status: entry.status,
-      headers,
+      header_names: Object.keys(headers).map((name) => name.toLowerCase()).sort(),
       content_type: contentType,
       body_len: bodyBuffer?.length ?? 0,
       body_sha256: bodyBuffer ? sha256Hex(bodyBuffer) : null,
-      body_text_sample: textualBodySample(contentType, bodyBuffer),
-      body_base64: bodyBuffer ? bodyBuffer.toString("base64") : null,
       ...extra,
     },
   };
@@ -1300,8 +1621,20 @@ async function writeScriptManifest(
   const rows = scripts
     .filter((script) => script.path && script.url)
     .map((script) => ({
-      url: script.url,
-      canonical_url: canonicalScriptUrl(script.url),
+      url: sanitizeCaptureUrl(script.url),
+      canonical_url: sanitizeCaptureUrl(canonicalScriptUrl(script.url)),
+      source_urls: [...new Set([
+        sanitizeCaptureUrl(script.url),
+        ...(Array.isArray(script.source_urls)
+          ? script.source_urls.map((value) => sanitizeCaptureUrl(value))
+          : []),
+      ].filter(Boolean))].slice(0, 64),
+      discovered_from: (Array.isArray(script.discovered_from)
+        ? script.discovered_from.map((value) => sanitizeCaptureUrl(value))
+        : []).filter(Boolean).slice(0, 64),
+      document_bases: (Array.isArray(script.document_bases)
+        ? script.document_bases.map((value) => sanitizeCaptureUrl(value))
+        : []).filter(Boolean).slice(0, 32),
       path: script.path,
       size: script.size ?? null,
       status: script.status ?? null,
@@ -1310,23 +1643,44 @@ async function writeScriptManifest(
       discovered_by: script.discovered_by ?? null,
       duplicate_of: script.duplicate_of ?? null,
     }))
-    .sort((a, b) => a.canonical_url.localeCompare(b.canonical_url));
+    .sort((a, b) => String(a.canonical_url ?? "").localeCompare(String(b.canonical_url ?? "")));
   const capturedAt = new Date().toISOString();
   const payload = {
-    version: 2,
+    version: 3,
+    schema: "browser_js_api_capture_v3",
     updated_at: capturedAt,
     captured_at: capturedAt,
     producer_run_id: provenance.run_id || null,
     producer_session_id: provenance.session_id || null,
     producer_operation_id: provenance.operation_id || null,
     producer_stage_started_at: provenance.stage_started_at || null,
-    visited_pages: checkpoint.visited_pages,
-    pending_pages: checkpoint.pending_pages,
-    pending_recursive_scripts: checkpoint.pending_recursive_scripts,
-    api_requests: checkpoint.api_requests,
+    visited_pages: checkpoint.visited_pages
+      .map((value) => sanitizeCaptureUrl(value))
+      .filter(Boolean),
+    pending_pages: checkpoint.pending_pages
+      .map((value) => sanitizeCaptureUrl(value))
+      .filter(Boolean),
+    pending_recursive_scripts: checkpoint.pending_recursive_scripts
+      .map((entry) => ({
+        url: sanitizeCaptureUrl(entry?.url ?? entry),
+        source: sanitizeCaptureUrl(entry?.source ?? ""),
+      }))
+      .filter((entry) => entry.url),
+    api_requests: checkpoint.api_requests
+      .map((entry) => normalizeCaptureOccurrenceV3(entry, provenance.operation_id ?? "collection"))
+      .filter((entry) => entry.url),
+    forms: Array.isArray(checkpoint.forms) ? checkpoint.forms : [],
     page_resume_count: checkpoint.page_resume_count,
     checkpoint_resume_count: checkpoint.checkpoint_resume_count,
-    recovery_failures: checkpoint.recovery_failures,
+    value_bearing_checkpoint_cursor_count:
+      checkpoint.value_bearing_checkpoint_cursor_count,
+    recovery_failures: checkpoint.recovery_failures.map((failure) => ({
+      signature: failure.signature,
+      kind: failure.kind,
+      url: sanitizeCaptureUrl(failure.url),
+      count: failure.count,
+      reason_code: captureFailureReasonCode(failure.reason),
+    })),
     recovery_exhausted: checkpoint.recovery_exhausted,
     automatic_retry_allowed: checkpoint.automatic_retry_allowed,
     recovery_instruction: checkpoint.recovery_exhausted
@@ -1359,11 +1713,26 @@ function summarizeRecursiveErrors(errors, sampleLimit = 20) {
     byStatus.set(status, (byStatus.get(status) ?? 0) + 1);
   }
   return {
-    sample: errors.slice(0, sampleLimit),
+    sample: errors.slice(0, sampleLimit).map((error) => ({
+      url: sanitizeCaptureUrl(error?.url ?? ""),
+      status: error?.status ?? null,
+      reason_code: captureFailureReasonCode(error?.reason),
+    })),
     by_status: [...byStatus.entries()]
       .map(([status, count]) => ({ status, count }))
       .sort((a, b) => b.count - a.count || a.status.localeCompare(b.status)),
   };
+}
+
+function captureFailureReasonCode(reason) {
+  const value = String(reason ?? "").toLowerCase();
+  if (value.includes("timeout")) return "timeout";
+  if (value.includes("exact-origin")) return "scope_excluded";
+  if (value.includes("read-only")) return "read_only_blocked";
+  if (value.includes("not-javascript")) return "not_javascript";
+  if (/http\s+[45]\d\d/.test(value)) return "http_error";
+  if (value.includes("network") || value.includes("fetch")) return "network_error";
+  return "collection_error";
 }
 
 function resolveSameOriginUrl(value, targetUrl) {
@@ -1701,6 +2070,10 @@ async function main() {
     typeof args.stage_started_at === "string" && args.stage_started_at.trim()
       ? args.stage_started_at.trim()
       : null;
+  const producerCollectionKey =
+    typeof args.collection_key === "string" && args.collection_key.trim()
+      ? args.collection_key.trim().slice(0, 512)
+      : producerOperationId ?? `fixture:${targetUrl.origin}`;
   const recipe = parseRecipe(args.recipe_json);
   const blockedReadOnlyRouteUrls = new Set();
   if (isDangerousNavigationUrl(targetUrl)) {
@@ -1777,22 +2150,111 @@ async function main() {
   const blockedReadOnlyRequests = new Set();
   const terminalCrossOriginRedirects = new Map();
   const apiRequestsByKey = new Map();
+  const formObservations = [];
+  const apiRequestKeyByObject = new WeakMap();
+  const apiDuplicateOrdinals = new Map();
+  const apiCdpOrdinals = new Map();
+  const documentBaseByPage = new Map();
+  let cdpNetworkLedger = null;
   let apiTraceCount = 0;
 
-  const observeApiRequest = (request, blockedReadOnly = false, force = false) => {
+  const applyCdpRecord = (entry, record) => {
+    if (!record) return;
+    entry.cdp_request_id = record.request_id ?? null;
+    entry.cdp_monotonic_timestamp = record.monotonic_timestamp ?? null;
+    entry.initiator = record.initiator ?? null;
+    entry.initiator_status = record.initiator_status ?? "unmatched";
+  };
+
+  const observeApiRequest = (
+    request,
+    blockedReadOnly = false,
+    force = false,
+    allowCrossOriginBlocked = false,
+  ) => {
     const type = request.resourceType();
     if (!force && type !== "xhr" && type !== "fetch") return null;
     const url = request.url();
-    if (!isExactOriginUrl(url, targetUrl.origin)) return null;
-    const key = `${request.method()} ${url}`;
+    if (
+      !isExactOriginUrl(url, targetUrl.origin) &&
+      !(allowCrossOriginBlocked && blockedReadOnly)
+    ) return null;
+    const existingKey = apiRequestKeyByObject.get(request);
+    if (existingKey) {
+      const existing = apiRequestsByKey.get(existingKey);
+      if (blockedReadOnly && existing) {
+        existing.read_only_blocked = true;
+        existing.sent = false;
+      }
+      return existing ?? null;
+    }
+    const headers = request.headers();
+    const parameterReceipt = extractRequestParameterFacts({
+      url,
+      headers,
+      content_type: headers["content-type"],
+      post_data: request.postData() ?? null,
+    });
+    const sanitizedUrl = sanitizeCaptureUrl(url);
+    if (!sanitizedUrl) return null;
+    const shapeKey = JSON.stringify(parameterReceipt.facts);
+    const duplicateBase = `${request.method()} ${sanitizedUrl} ${shapeKey}`;
+    const duplicateOrdinal = apiDuplicateOrdinals.get(duplicateBase) ?? 0;
+    apiDuplicateOrdinals.set(duplicateBase, duplicateOrdinal + 1);
+    let rawPageUrl = targetUrl.href;
+    try { rawPageUrl = request.frame()?.url?.() ?? rawPageUrl; } catch { /* service-worker request */ }
+    const pageUrl = sanitizeCaptureUrl(rawPageUrl) ?? sanitizeCaptureUrl(targetUrl.href);
+    const cdpFingerprint = `${request.method().toUpperCase()} ${sanitizedUrl}`;
+    const cdpOrdinal = apiCdpOrdinals.get(cdpFingerprint) ?? 0;
+    apiCdpOrdinals.set(cdpFingerprint, cdpOrdinal + 1);
+    const cdpCorrelation = {
+      method: request.method(),
+      url,
+      page_key: cdpNetworkLedger?.page_key,
+      context_key: cdpNetworkLedger?.context_key,
+      page_url: pageUrl,
+      ordinal: cdpOrdinal,
+      observed_at_ms: performance.now(),
+    };
+    const cdpRecord = cdpNetworkLedger?.correlate?.(cdpCorrelation) ?? null;
+    const cdpFallbackStatus = cdpNetworkLedger?.status === "enabled"
+      ? "unmatched"
+      : "unsupported_cdp";
+    const logicalKey = runtimeOccurrenceKey({
+      collection_key: producerCollectionKey,
+      page_url: pageUrl,
+      initiator_fingerprint: cdpRecord?.initiator
+        ? JSON.stringify(cdpRecord.initiator)
+        : cdpRecord?.initiator_status ?? cdpFallbackStatus,
+      method: request.method(),
+      request_url: sanitizedUrl,
+      parameter_facts: parameterReceipt.facts,
+      duplicate_ordinal: duplicateOrdinal,
+    });
+    const key = `${logicalKey}:${crypto.randomUUID()}`;
+    apiRequestKeyByObject.set(request, key);
     if (!apiRequestsByKey.has(key)) {
       apiRequestsByKey.set(key, {
-        url,
+        schema: "browser_js_api_runtime_occurrence_v3",
+        logical_key: logicalKey,
+        capture_event_id: key.slice(logicalKey.length + 1),
+        duplicate_ordinal: duplicateOrdinal,
+        url: sanitizedUrl,
         method: request.method(),
         resource_type: type,
         status: null,
-        request_headers: request.headers(),
-        request_body: request.postData() ?? null,
+        page_url: pageUrl,
+        document_base: documentBaseByPage.get(pageUrl) ?? null,
+        request_header_names: Object.keys(headers).map((name) => name.toLowerCase()).sort(),
+        parameter_facts: parameterReceipt.facts,
+        parameter_facts_truncated: parameterReceipt.truncated,
+        parameter_parse_error: parameterReceipt.parse_error,
+        cdp_request_id: cdpRecord?.request_id ?? null,
+        cdp_monotonic_timestamp: cdpRecord?.monotonic_timestamp ?? null,
+        initiator: cdpRecord?.initiator ?? null,
+        initiator_status: cdpRecord?.initiator_status ?? cdpFallbackStatus,
+        cdp_correlation: cdpCorrelation,
+        sent: blockedReadOnly ? false : null,
         read_only_blocked: blockedReadOnly,
       });
       if (apiTraceCount < 80) {
@@ -1824,6 +2286,15 @@ async function main() {
       (parsedRequestUrl.protocol === "http:" || parsedRequestUrl.protocol === "https:") &&
       parsedRequestUrl.origin !== targetUrl.origin
     ) {
+      // Preserve the attempted request as an unsent occurrence before the
+      // exact-origin route guard aborts it. Rust later classifies the observed
+      // destination against the operation's frozen EAS scope; this collector
+      // never visits it and never guesses that it is authorized.
+      const observedApi = observeApiRequest(request, true, true, true);
+      if (observedApi) {
+        observedApi.read_only_block_reason = "cross_origin_scope";
+        observedApi.sent = false;
+      }
       if (request.isNavigationRequest()) blockedNavigationUrls.add(url);
       else blockedSubresourceUrls.add(url);
       await route.abort("blockedbyclient").catch(() => {});
@@ -1837,8 +2308,7 @@ async function main() {
       unsafeMethod,
     );
     if (unsafeMethod || dangerousRoute) {
-      const key = `${request.method()} ${url}`;
-      blockedReadOnlyRequests.add(key);
+      blockedReadOnlyRequests.add(`${request.method()} ${sanitizeCaptureUrl(url) ?? "invalid"}`);
       if (dangerousRoute) blockedReadOnlyRouteUrls.add(url);
       if (observedApi) observedApi.read_only_block_reason = unsafeMethod
         ? "method_not_read_only"
@@ -1881,7 +2351,11 @@ async function main() {
       await route.abort().catch(() => {});
       return;
     }
-    await route.continue().catch(() => {});
+    await route.continue().then(() => {
+      if (observedApi) observedApi.sent = true;
+    }).catch(() => {
+      if (observedApi) observedApi.sent = false;
+    });
   });
   await context.routeWebSocket(/.*/, async (webSocketRoute) => {
     const url = webSocketRoute.url();
@@ -1894,6 +2368,7 @@ async function main() {
     await webSocketRoute.close({ code: 1008, reason }).catch(() => {});
   });
   const page = await context.newPage();
+  cdpNetworkLedger = await attachCdpNetworkLedger(context, page);
   progress("browser_ready", {
     block_noise: blockNoise,
     same_origin: restrictApisToSameOrigin,
@@ -1906,6 +2381,7 @@ async function main() {
   const recursiveQueue = [];
   const queuedRecursiveUrls = new Set();
   const scriptPathByHash = new Map();
+  const scriptCapturePromiseByHash = new Map();
   const scannedScriptHashes = new Set();
   const pending = new Set();
   const navigationErrors = [];
@@ -1924,6 +2400,36 @@ async function main() {
   let duplicateContentHits = 0;
   let scriptTraceCount = 0;
   let recursiveTraceCount = 0;
+
+  const storeScriptBodyOnce = async (sha, url, body) => {
+    const existingPath = scriptPathByHash.get(sha);
+    if (existingPath) {
+      duplicateContentHits += 1;
+      return { path_on_disk: existingPath, duplicate_of: existingPath };
+    }
+    const inFlight = scriptCapturePromiseByHash.get(sha);
+    if (inFlight) {
+      const pathOnDisk = await inFlight;
+      duplicateContentHits += 1;
+      return { path_on_disk: pathOnDisk, duplicate_of: pathOnDisk };
+    }
+    const capture = saveScriptCapture(
+      workspace,
+      targetHost,
+      targetPort,
+      targetScheme,
+      url,
+      body,
+    );
+    scriptCapturePromiseByHash.set(sha, capture);
+    try {
+      const pathOnDisk = await capture;
+      scriptPathByHash.set(sha, pathOnDisk);
+      return { path_on_disk: pathOnDisk, duplicate_of: null };
+    } finally {
+      scriptCapturePromiseByHash.delete(sha);
+    }
+  };
 
   const recordRecursiveError = (url, status, reason) => {
     if (recursiveErrors.length >= 100) return;
@@ -2047,7 +2553,9 @@ async function main() {
       cachedScriptsPreloaded += 1;
     }
     for (const request of checkpointResume.api_requests) {
-      apiRequestsByKey.set(`${request.method} ${request.url}`, request);
+      const normalized = normalizeCaptureOccurrenceV3(request, producerCollectionKey);
+      if (!normalized.url) continue;
+      apiRequestsByKey.set(`${normalized.logical_key}:checkpoint`, normalized);
     }
     progress("resume_collection_checkpoint", {
       visited_pages: checkpointResume.visited_pages.length,
@@ -2284,14 +2792,13 @@ async function main() {
     const headers = response.headers();
     const type = request.resourceType();
 
-    if ((type === "xhr" || type === "fetch") && apiRequestsByKey.has(`${request.method()} ${url}`)) {
-      const entry = apiRequestsByKey.get(`${request.method()} ${url}`);
+    const requestCaptureKey = apiRequestKeyByObject.get(request);
+    if ((type === "xhr" || type === "fetch") && requestCaptureKey && apiRequestsByKey.has(requestCaptureKey)) {
+      const entry = apiRequestsByKey.get(requestCaptureKey);
       entry.status = response.status();
-      entry.headers = headers;
+      entry.response_header_names = Object.keys(headers).map((name) => name.toLowerCase()).sort();
       entry.content_type = headers["content-type"] ?? "";
-      // capture v2: persist the request side so the Inspector can show it.
-      entry.request_headers = request.headers();
-      entry.request_body = request.postData() ?? null;
+      entry.sent = true;
       const contentLength = Number.parseInt(headers["content-length"] ?? "0", 10);
       const task = (async () => {
         try {
@@ -2390,22 +2897,9 @@ async function main() {
           return;
         }
         const sha = sha256Hex(body);
-        let pathOnDisk = scriptPathByHash.get(sha);
-        let duplicateOf = null;
-        if (pathOnDisk) {
-          duplicateContentHits += 1;
-          duplicateOf = pathOnDisk;
-        } else {
-          pathOnDisk = await saveScriptCapture(
-            workspace,
-            targetHost,
-            targetPort,
-            targetScheme,
-            url,
-            body,
-          );
-          scriptPathByHash.set(sha, pathOnDisk);
-        }
+        const stored = await storeScriptBodyOnce(sha, url, body);
+        const pathOnDisk = stored.path_on_disk;
+        const duplicateOf = stored.duplicate_of;
         enqueueRefsFromScript(url, body);
         scriptsByUrl.set(scriptKey, {
           url,
@@ -2503,6 +2997,12 @@ async function main() {
           .waitForLoadState("domcontentloaded", { timeout: Math.max(1, domTimeout) })
           .catch(() => {});
       }
+      const documentMetadata = await observeDocumentMetadata(page).catch(() => null);
+      if (documentMetadata?.page_url && documentMetadata?.document_base) {
+        documentBaseByPage.set(documentMetadata.page_url, documentMetadata.document_base);
+      }
+      const forms = await observeDocumentForms(page, targetUrl.origin).catch(() => []);
+      formObservations.push(...forms);
     } catch (error) {
       const message = String(error?.message ?? error).slice(0, 500);
       navigationErrors.push({
@@ -2714,22 +3214,9 @@ async function main() {
         continue;
       }
       const sha = sha256Hex(body);
-      let pathOnDisk = scriptPathByHash.get(sha);
-      let duplicateOf = null;
-      if (pathOnDisk) {
-        duplicateContentHits += 1;
-        duplicateOf = pathOnDisk;
-      } else {
-        pathOnDisk = await saveScriptCapture(
-          workspace,
-          targetHost,
-          targetPort,
-          targetScheme,
-          response.url,
-          body,
-        );
-        scriptPathByHash.set(sha, pathOnDisk);
-      }
+      const stored = await storeScriptBodyOnce(sha, response.url, body);
+      const pathOnDisk = stored.path_on_disk;
+      const duplicateOf = stored.duplicate_of;
       scriptsByUrl.set(responseKey, {
         url: response.url,
         path: pathOnDisk,
@@ -2781,12 +3268,42 @@ async function main() {
     hardDeadlineHit = true;
   }
 
+  for (const entry of apiRequestsByKey.values()) {
+    if (entry.page_url && documentBaseByPage.has(entry.page_url)) {
+      entry.document_base = documentBaseByPage.get(entry.page_url);
+    }
+    if (entry.cdp_correlation && !entry.cdp_request_id) {
+      applyCdpRecord(entry, cdpNetworkLedger?.correlate?.(entry.cdp_correlation) ?? null);
+      if (!entry.cdp_request_id) {
+        entry.initiator = null;
+        entry.initiator_status = cdpNetworkLedger?.status === "enabled"
+          ? "unmatched"
+          : "unsupported_cdp";
+      }
+    }
+    if (entry.cdp_correlation) {
+      entry.logical_key = runtimeOccurrenceKey({
+        collection_key: producerCollectionKey,
+        page_url: entry.page_url,
+        initiator_fingerprint: entry.initiator
+          ? JSON.stringify(entry.initiator)
+          : entry.initiator_status,
+        method: entry.method,
+        request_url: entry.url,
+        parameter_facts: entry.parameter_facts,
+        duplicate_ordinal: entry.duplicate_ordinal,
+      });
+      delete entry.cdp_correlation;
+    }
+  }
+
   progress("close_browser", {
     scripts_seen: scriptsByUrl.size,
     recursive_downloaded: recursiveScriptsDownloaded,
     api_seen: apiRequestsByKey.size,
     deadline_hit: hardDeadlineHit,
   });
+  await cdpNetworkLedger?.close?.();
   contextCloseTimedOut = await closeContextHard(context);
   browserCloseTimedOut = await closeBrowserHard(browser);
 
@@ -2794,8 +3311,34 @@ async function main() {
     a.url.localeCompare(b.url),
   );
   const apiRequests = [...apiRequestsByKey.values()].sort((a, b) =>
-    a.url.localeCompare(b.url),
+    String(a.url ?? "").localeCompare(String(b.url ?? "")),
   );
+  const publicApiRequests = apiRequests
+    .map((entry) => normalizeCaptureOccurrenceV3(entry, producerCollectionKey))
+    .filter((entry) => entry.url);
+  const publicScripts = scripts.map((script) => ({
+    url: sanitizeCaptureUrl(script.url),
+    path: script.path ?? null,
+    size: script.size ?? null,
+    status: script.status ?? null,
+    content_type: script.content_type ?? "",
+    sha256: script.sha256 ?? null,
+    cached: script.cached === true,
+    resumed_from_checkpoint: script.resumed_from_checkpoint === true,
+    discovered_by: script.discovered_by ?? null,
+    duplicate_of: script.duplicate_of ?? null,
+    skipped: script.skipped === true,
+    reason_code: script.reason ? captureFailureReasonCode(script.reason) : null,
+    source_urls: Array.isArray(script.source_urls)
+      ? script.source_urls.map((value) => sanitizeCaptureUrl(value)).filter(Boolean)
+      : [],
+    discovered_from: Array.isArray(script.discovered_from)
+      ? script.discovered_from.map((value) => sanitizeCaptureUrl(value)).filter(Boolean)
+      : [],
+    document_bases: Array.isArray(script.document_bases)
+      ? script.document_bases.map((value) => sanitizeCaptureUrl(value)).filter(Boolean)
+      : [],
+  }));
   const scriptsWithPath = scripts.filter((s) => s.path);
   const uniqueScriptPaths = new Set(scriptsWithPath.map((s) => s.path));
   const scriptsObserved = scripts.length;
@@ -2803,9 +3346,30 @@ async function main() {
   const scriptsSaved = uniqueScriptPaths.size;
   const scriptObservations = [...scriptInsightsByUrl.values()]
     .sort((a, b) => b.size - a.size)
-    .slice(0, 8);
+    .slice(0, 8)
+    .map((observation) => ({
+      url: sanitizeCaptureUrl(observation.url),
+      size: observation.size,
+      public_path_detected: sanitizeCaptureUrl(
+        observation.public_path_detected ?? "",
+        observation.url,
+      ),
+      reference_count:
+        (observation.refs_sample?.length ?? 0) +
+        (observation.ai_review_refs_sample?.length ?? 0),
+      chunk_candidate_count:
+        (observation.chunk_urls_sample?.length ?? 0) +
+        (observation.runtime_chunk_urls_sample?.length ?? 0) +
+        (observation.vite_chunk_urls_sample?.length ?? 0),
+      snippet_count: observation.snippets?.length ?? 0,
+    }));
   const recursiveErrorSummary = summarizeRecursiveErrors(recursiveErrors);
-  const aiReviewRefs = [...aiReviewRefsByKey.values()].slice(0, 100);
+  const aiReviewRefs = [...aiReviewRefsByKey.values()].slice(0, 100).map((entry) => ({
+    reference_hash: sha256Hex(String(entry.ref ?? "")),
+    source_url: sanitizeCaptureUrl(entry.source_url ?? ""),
+    resolved_candidate: sanitizeCaptureUrl(entry.resolved_candidate ?? ""),
+    reason: entry.reason,
+  }));
   const aiAssistReasons = [];
   for (const pendingPage of [...pendingRecoveryPages, ...blockedCheckpointPages]) {
     if (
@@ -2822,6 +3386,17 @@ async function main() {
     }
   }
   const checkpointRecoveryFailures = recoveryFailureList();
+  const publicRecoveryFailures = checkpointRecoveryFailures.map((failure) => ({
+    signature: failure.signature,
+    kind: failure.kind,
+    url: sanitizeCaptureUrl(failure.url),
+    count: failure.count,
+    reason_code: captureFailureReasonCode(failure.reason),
+  }));
+  const publicNavigationErrors = navigationErrors.map((error) => ({
+    url: sanitizeCaptureUrl(error?.url ?? ""),
+    error_code: captureFailureReasonCode(error?.error),
+  }));
   const recoveryExhaustedCount = checkpointRecoveryFailures.filter(
     (failure) => failure.count >= MAX_RECOVERY_FAILURES,
   ).length;
@@ -2871,6 +3446,11 @@ async function main() {
     blockedReadOnlyRequests.size +
     blockedReadOnlyRouteUrls.size +
     terminalCrossOriginRedirects.size;
+  const valueBearingCheckpointCursorCount = countValueBearingCheckpointCursors(
+    queue,
+    recursiveQueue,
+    checkpointRecoveryFailures,
+  );
   const completion = classifyCollectionCompletion({
     navigation_attempts: pagesVisitedThisRun.length,
     successful_pages: successfulPages,
@@ -2888,6 +3468,7 @@ async function main() {
     scope_violations: scopeViolationCount,
     recovery_pending: checkpointRecoveryFailures.length,
     recovery_exhausted: recoveryExhaustedCount,
+    value_bearing_checkpoint_cursors: valueBearingCheckpointCursorCount,
   });
   const closureIncompleteReasons = completion.reasons;
   const closureComplete = completion.closure_complete;
@@ -2912,9 +3493,11 @@ async function main() {
         url,
         source,
       })),
-      api_requests: apiRequests,
+      api_requests: publicApiRequests,
+      forms: formObservations,
       page_resume_count: checkpointResume?.page_resume_count ?? 0,
       checkpoint_resume_count: checkpointResume?.checkpoint_resume_count ?? 0,
+      value_bearing_checkpoint_cursor_count: valueBearingCheckpointCursorCount,
       recovery_failures: checkpointRecoveryFailures,
       recovery_exhausted: recoveryExhausted,
       automatic_retry_allowed: automaticRetryAllowed,
@@ -2972,10 +3555,10 @@ async function main() {
           },
           recursive_errors_sample: recursiveErrorSummary.sample,
           script_observations: scriptObservations,
-          api_requests_sample: apiRequests.slice(0, 20),
+          api_requests_sample: publicApiRequests.slice(0, 20),
           ai_review_refs_sample: aiReviewRefs.slice(0, 30),
           console_errors_sample: consoleErrors.slice(0, 10),
-          navigation_errors_sample: navigationErrors.slice(0, 10),
+          navigation_errors_sample: publicNavigationErrors.slice(0, 10),
         },
       }
     : null;
@@ -2985,27 +3568,30 @@ async function main() {
     scripts_saved: scriptsSaved,
     scripts_observed: scriptsObserved,
     script_manifest_entries: scriptManifestEntries,
-    api_requests: apiRequests.length,
+    api_requests: publicApiRequests.length,
+    forms: formObservations.length,
     recursive_errors: recursiveErrors.length,
     closure_complete: closureComplete,
     completion_state: completion.completion_state,
   });
 
   await writeJsonAndExit({
+        schema: "browser_js_api_capture_v3",
         status,
         completion_state: completion.completion_state,
-        target_url: targetUrl.href,
+        target_url: sanitizeCaptureUrl(targetUrl.href),
         producer_run_id: producerRunId,
         producer_session_id: producerSessionId,
         producer_operation_id: producerOperationId,
         producer_stage_started_at: producerStageStartedAt,
-        checkpoint_version: 2,
+        checkpoint_version: 3,
         checkpoint_resume_applied: Boolean(checkpointResume),
         checkpoint_resume_count: checkpointResume?.checkpoint_resume_count ?? 0,
+        value_bearing_checkpoint_cursor_count: valueBearingCheckpointCursorCount,
         automatic_retry_allowed: automaticRetryAllowed,
         recovery_exhausted: recoveryExhausted,
         recovery_instruction: recoveryInstruction,
-        recovery_failures: checkpointRecoveryFailures,
+        recovery_failures: publicRecoveryFailures,
         crawl_mode: crawlMode,
         hard_timeout_ms: limitForJson(hardTimeoutMs),
         hard_deadline_hit: hardDeadlineHit,
@@ -3018,10 +3604,23 @@ async function main() {
         same_origin: restrictApisToSameOrigin,
         requested_same_origin: requestedSameOrigin,
         blocked_resource_requests: blockedResourceRequests,
-        blocked_navigation_urls: [...blockedNavigationUrls].slice(0, 20),
-        terminal_cross_origin_redirects: [...terminalCrossOriginRedirects.values()].slice(0, 20),
-        blocked_subresource_urls: [...blockedSubresourceUrls].slice(0, 40),
-        blocked_websocket_urls: [...blockedWebSocketUrls].slice(0, 20),
+        blocked_navigation_urls: [...blockedNavigationUrls]
+          .map((value) => sanitizeCaptureUrl(value))
+          .filter(Boolean)
+          .slice(0, 20),
+        terminal_cross_origin_redirects: [...terminalCrossOriginRedirects.values()].slice(0, 20).map((entry) => ({
+          ...entry,
+          from: sanitizeCaptureUrl(entry.from),
+          to: sanitizeCaptureUrl(entry.to),
+        })),
+        blocked_subresource_urls: [...blockedSubresourceUrls]
+          .map((value) => sanitizeCaptureUrl(value))
+          .filter(Boolean)
+          .slice(0, 40),
+        // WebSocket URLs can carry opaque credential/query material. Counts
+        // remain auditable, but ordinary output never carries the raw URL.
+        blocked_websocket_urls: [],
+        blocked_websocket_count: blockedWebSocketUrls.size,
         service_workers: "block",
         read_only_enumeration: true,
         interactive_actions_authorized: false,
@@ -3031,11 +3630,18 @@ async function main() {
         disabled_recipe_manifest_paths: disabledRecipeManifestPaths,
         disabled_recipe_script_urls: disabledRecipeScriptUrls,
         blocked_read_only_requests: [...blockedReadOnlyRequests].slice(0, 40),
-        blocked_read_only_routes: [...blockedReadOnlyRouteUrls].slice(0, 40),
+        blocked_read_only_routes: [...blockedReadOnlyRouteUrls]
+          .map((value) => sanitizeCaptureUrl(value))
+          .filter(Boolean)
+          .slice(0, 40),
         scope_violations: scopeViolationCount,
         scope_exclusions: scopeExclusionCount,
-        pages_visited: [...seenPages],
-        pages_visited_this_run: pagesVisitedThisRun,
+        pages_visited: [...seenPages]
+          .map((value) => sanitizeCaptureUrl(value))
+          .filter(Boolean),
+        pages_visited_this_run: pagesVisitedThisRun
+          .map((value) => sanitizeCaptureUrl(value))
+          .filter(Boolean),
         page_resume_applied: Boolean(
           checkpointResume &&
             checkpointResume.pending_pages.length > 0 &&
@@ -3082,11 +3688,13 @@ async function main() {
         ai_review_refs: aiReviewRefs,
         recipe_applied: recipeSummary,
         ai_assist: aiAssist,
-        scripts,
+        scripts: publicScripts,
         api_requests_total: apiRequests.length,
-        api_requests: apiRequests,
-        console_errors: consoleErrors.slice(0, 20),
-        navigation_errors: navigationErrors,
+        forms: formObservations,
+        api_requests: publicApiRequests,
+        console_error_count: consoleErrors.length,
+        console_errors: [],
+        navigation_errors: publicNavigationErrors,
         output_dir: captureDirectoryFor(workspace, targetUrl, "js"),
       });
 }

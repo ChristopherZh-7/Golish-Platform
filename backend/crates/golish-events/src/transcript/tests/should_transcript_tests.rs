@@ -409,6 +409,15 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             true,
         ),
         (
+            AiEvent::InvestigationProjectionChanged {
+                operation_id: "op-1".into(),
+                stage_execution_id: "stage-1".into(),
+                stage_run_request_id: "request-1".into(),
+                change_seq: 42,
+            },
+            true,
+        ),
+        (
             AiEvent::HarnessTrace {
                 operation_id: "op-1".into(),
                 stage: "target_intel".into(),
@@ -480,6 +489,7 @@ fn all_variants() -> Vec<(AiEvent, bool)> {
             | AiEvent::SubtaskCreated { .. }
             | AiEvent::SubtaskCompleted { .. }
             | AiEvent::ToolBackgroundCompleted { .. }
+            | AiEvent::InvestigationProjectionChanged { .. }
             | AiEvent::HarnessTrace { .. } => {}
         }
     }

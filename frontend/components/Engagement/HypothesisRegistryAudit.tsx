@@ -1,25 +1,70 @@
 import { AlertTriangle, Database, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  getInvestigationHypothesis,
-  getInvestigationSummary,
-  type InvestigationHypothesisDetailView,
-  type InvestigationHypothesisListView,
-  type InvestigationSummaryView,
-  listInvestigationHypotheses,
-} from "@/lib/api/investigation";
+import type { InvestigationHypothesisListView } from "@/lib/api/investigation";
+import type { InvestigationProjectionEnvelope } from "@/lib/generated/InvestigationProjectionEnvelope";
 import { cn } from "@/lib/utils";
 
 export interface HypothesisRegistryAuditApi {
-  getSummary: typeof getInvestigationSummary;
-  listHypotheses: typeof listInvestigationHypotheses;
-  getHypothesis: typeof getInvestigationHypothesis;
+  getSummary: (request: LegacyRegistryScope) => Promise<LegacyRegistrySummaryView>;
+  listHypotheses: (request: LegacyRegistryListRequest) => Promise<InvestigationHypothesisListView>;
+  getHypothesis: (request: LegacyRegistryDetailRequest) => Promise<LegacyHypothesisDetailView>;
+}
+
+interface LegacyRegistryScope {
+  sessionId: string;
+  operationId: string;
+}
+
+interface LegacyRegistryListRequest extends LegacyRegistryScope {
+  organizationIds: string[];
+  epistemicStates: string[];
+  readinessStates: string[];
+  capabilityStates: string[];
+  sourceKinds: string[];
+  cursor: string | null;
+  expectedChangeSeq: number | null;
+  pageSize: number;
+}
+
+interface LegacyRegistryDetailRequest extends LegacyRegistryScope {
+  revisionId: string;
+}
+
+interface LegacyRegistrySummaryView {
+  envelope: InvestigationProjectionEnvelope;
+  activeGenerationId: string | null;
+  activeGenerationSealHash: string | null;
+  currentHypothesisCount: number;
+  closedHypothesisCount: number;
+  contestedHypothesisCount: number;
+  residualCount: number;
+}
+
+type LegacyHypothesisListItem = InvestigationHypothesisListView["hypotheses"][number];
+
+interface LegacyHypothesisDetailView {
+  envelope: InvestigationProjectionEnvelope;
+  hypothesis: LegacyHypothesisListItem;
+  predecessorRevisionId: string | null;
+  lineageRevisionIds: string[];
+  supportRefIds: string[];
+  contradictionRefIds: string[];
+  applicationContextRefIds: string[];
+  gapRefIds: string[];
+  verificationObjectiveSummaries: string[];
+  legacyUnavailableFields: string[];
+}
+
+function retiredProductionRead(): Promise<never> {
+  return Promise.reject(
+    new Error("The operation-only Registry audit adapter is retired from production routing.")
+  );
 }
 
 const defaultApi: HypothesisRegistryAuditApi = {
-  getSummary: getInvestigationSummary,
-  listHypotheses: listInvestigationHypotheses,
-  getHypothesis: getInvestigationHypothesis,
+  getSummary: retiredProductionRead,
+  listHypotheses: retiredProductionRead,
+  getHypothesis: retiredProductionRead,
 };
 
 export interface HypothesisRegistryAuditProps {
@@ -78,7 +123,7 @@ function ErrorPanel({
   );
 }
 
-function SummaryPanel({ summary }: { summary: InvestigationSummaryView }) {
+function SummaryPanel({ summary }: { summary: LegacyRegistrySummaryView }) {
   const { envelope } = summary;
   const mode = envelope.investigationRolloutMode;
   const empty =
@@ -141,7 +186,7 @@ function SummaryPanel({ summary }: { summary: InvestigationSummaryView }) {
   );
 }
 
-type HypothesisListItem = InvestigationHypothesisListView["hypotheses"][number];
+type HypothesisListItem = LegacyHypothesisListItem;
 
 function HypothesisRow({ item, onOpen }: { item: HypothesisListItem; onOpen: () => void }) {
   const legacyStatus = item.legacyProjectionStatus ?? "legacy_unavailable";
@@ -192,7 +237,7 @@ function HypothesisRow({ item, onOpen }: { item: HypothesisListItem; onOpen: () 
   );
 }
 
-function DetailPanel({ detail }: { detail: InvestigationHypothesisDetailView }) {
+function DetailPanel({ detail }: { detail: LegacyHypothesisDetailView }) {
   const { hypothesis } = detail;
   const references = [
     ["Support refs", detail.supportRefIds],
@@ -262,12 +307,12 @@ export function HypothesisRegistryAudit({
   api = defaultApi,
 }: HypothesisRegistryAuditProps) {
   const scopeKey = `${sessionId}:${operationId}`;
-  const [summaryState, setSummaryState] = useState<ScopedData<InvestigationSummaryView>>(null);
+  const [summaryState, setSummaryState] = useState<ScopedData<LegacyRegistrySummaryView>>(null);
   const [listState, setListState] = useState<ScopedData<InvestigationHypothesisListView>>(null);
   const [detailState, setDetailState] = useState<{
     scopeKey: string;
     revisionId: string;
-    data: InvestigationHypothesisDetailView;
+    data: LegacyHypothesisDetailView;
   } | null>(null);
   const [summaryError, setSummaryError] = useState<ScopedError>(null);
   const [listError, setListError] = useState<ScopedError>(null);

@@ -896,7 +896,6 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     let scope_snapshot_id = Uuid::new_v4();
     let project_path = format!("/tmp/{label}-{}", Uuid::new_v4().simple());
     let stages = [
-        ("ti", "target_intel"),
         ("eas", "external_attack_surface"),
         ("enum", "enumeration"),
         ("vuln", "vuln_triage"),
@@ -1063,12 +1062,12 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     .bind(stable_consumer_request_id)
     .execute(pool)
     .await
-    .expect("insert unsealed four-root authority bundle");
+    .expect("insert unsealed three-root execution authority bundle");
 
     for (ordinal, (((root_family, stage_kind), stage_run_id), hash_nibble)) in stages
         .iter()
         .zip(stage_runs)
-        .zip(['4', '5', '6', '7'])
+        .zip(['5', '6', '7'])
         .enumerate()
     {
         let execution_authority_id = Uuid::new_v4();
@@ -1194,7 +1193,7 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
         .bind(bundle_id)
         .execute(pool)
         .await
-        .expect("seal four-root authority bundle");
+        .expect("seal three-root execution authority bundle");
 
     let snapshot_id = Uuid::new_v4();
     let analysis_attempt_id = Uuid::new_v4();
@@ -1252,7 +1251,7 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     .bind(bundle_id)
     .execute(&mut *candidate_tx)
     .await
-    .expect("copy exact four-root Candidate snapshot members");
+    .expect("copy exact three-root Candidate snapshot members");
     sqlx::query(
         r#"INSERT INTO candidate_analysis_attempts(
                analysis_attempt_id,snapshot_id,operation_id,organization_id,attempt_ordinal,
@@ -1314,7 +1313,7 @@ struct HypothesisCompoundInput<'a> {
 
 #[tokio::test]
 #[serial]
-async fn snapshot_tool_truth_authority_repo_freezes_blocked_feed_census_without_attempt() {
+async fn snapshot_tool_truth_authority_repo_freezes_unavailable_feed_as_residuals() {
     let (db, _data_dir) = fixture("snapshot-blocked-feed").await;
     let authority = seed_candidate_authority_fixture(db.pool(), "snapshot-blocked-feed").await;
     let snapshot = freeze_candidate_snapshot(
@@ -1330,10 +1329,10 @@ async fn snapshot_tool_truth_authority_repo_freezes_blocked_feed_census_without_
     .expect("freeze fail-closed Candidate authority snapshot");
     assert_eq!(
         snapshot.disposition,
-        CandidateSnapshotDispositionRow::BlockedAuthorityBundle
+        CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals
     );
-    assert_eq!(snapshot.tool_truth_authority_root_count, 4);
-    assert_eq!(snapshot.authority_roots.len(), 4);
+    assert_eq!(snapshot.tool_truth_authority_root_count, 3);
+    assert_eq!(snapshot.authority_roots.len(), 3);
     let (attempts, inputs, feed_members, obligations): (i64, i64, i64, i64) = sqlx::query_as(
         r#"SELECT
              (SELECT COUNT(*) FROM candidate_analysis_attempts WHERE snapshot_id=$1),
@@ -1345,7 +1344,7 @@ async fn snapshot_tool_truth_authority_repo_freezes_blocked_feed_census_without_
     .fetch_one(db.pool())
     .await
     .expect("inspect blocked snapshot closure");
-    assert_eq!((attempts, inputs, feed_members, obligations), (0, 0, 5, 5));
+    assert_eq!((attempts, inputs, feed_members, obligations), (1, 4, 5, 5));
 }
 
 #[tokio::test]
@@ -1837,6 +1836,7 @@ async fn legacy_mutation_guard_uses_operation_frozen_mode_not_deployment_default
         "assessment",
         "target_intel",
         &runtime_contract,
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("freeze legacy operation mode");
@@ -1887,6 +1887,7 @@ async fn legacy_mutation_guard_uses_operation_frozen_mode_not_deployment_default
         "assessment",
         "target_intel",
         &runtime_contract,
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("freeze registry-authoritative operation mode");
@@ -1917,6 +1918,7 @@ async fn operation_repository_freezes_and_resumes_complete_joint_pair() {
         "assessment",
         "target_intel",
         &runtime_contract,
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("freeze deployment defaults at operation creation");
@@ -1967,6 +1969,7 @@ async fn operation_repository_concurrent_default_commit_never_freezes_torn_pair(
         "assessment",
         "target_intel",
         &runtime_contract,
+        golish_core::ApplicationModelContract::LegacyNoModel,
     )
     .await
     .expect("freeze the old complete joint pair");
@@ -2024,6 +2027,7 @@ async fn operation_repository_concurrent_default_commit_never_freezes_torn_pair(
             "assessment",
             "target_intel",
             &creator_runtime_contract,
+            golish_core::ApplicationModelContract::LegacyNoModel,
         )
         .await
     });
@@ -2394,6 +2398,18 @@ async fn hypothesis_registry_schema_adoption_is_adjacent_and_append_only() {
 
     let mut tx = db.pool().begin().await.expect("begin adjacent adoption");
     sqlx::query(
+        r#"INSERT INTO operation_state(
+               operation_id,profile,current_stage,runtime_memory_contract,
+               attack_execution_contract,tool_truth_contract,
+               investigation_contract_version,investigation_rollout_mode
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','shadow_v1',
+                    'legacy_candidate_v1','legacy_only')"#,
+    )
+    .bind(target_operation_id)
+    .execute(&mut *tx)
+    .await
+    .expect("insert the exact adopted target pair");
+    sqlx::query(
         r#"INSERT INTO operation_contract_adoptions(
                adoption_id,source_operation_id,target_operation_id,
                source_tool_truth_contract,source_investigation_contract_version,
@@ -2416,18 +2432,6 @@ async fn hypothesis_registry_schema_adoption_is_adjacent_and_append_only() {
     .execute(&mut *tx)
     .await
     .expect("insert adjacent adoption before deferred target");
-    sqlx::query(
-        r#"INSERT INTO operation_state(
-               operation_id,profile,current_stage,runtime_memory_contract,
-               attack_execution_contract,tool_truth_contract,
-               investigation_contract_version,investigation_rollout_mode
-           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','shadow_v1',
-                    'legacy_candidate_v1','legacy_only')"#,
-    )
-    .bind(target_operation_id)
-    .execute(&mut *tx)
-    .await
-    .expect("insert the exact adopted target pair");
     let frozen: (String, String, String) = sqlx::query_as(
         r#"SELECT tool_truth_contract,investigation_contract_version,investigation_rollout_mode
              FROM operation_state WHERE operation_id=$1"#,
@@ -2512,7 +2516,7 @@ async fn hypothesis_registry_schema_stage_team_extensions_are_exact() {
 
 #[tokio::test]
 #[serial]
-async fn hypothesis_registry_schema_owns_plan_b_tables_but_not_plan_c_authority() {
+async fn hypothesis_registry_schema_installs_plan_b_and_follow_on_plan_c_authority() {
     let (mut db, _data_dir) = fixture("plan_boundaries").await;
     for table in [
         "attack_hypotheses",
@@ -2546,9 +2550,10 @@ async fn hypothesis_registry_schema_owns_plan_b_tables_but_not_plan_c_authority(
             .fetch_one(db.pool())
             .await
             .expect("inspect Plan C-owned table");
-        assert!(
-            exists.is_none(),
-            "Plan B must not create Plan C table {table}"
+        assert_eq!(
+            exists.as_deref(),
+            Some(table),
+            "missing follow-on Plan C table {table}"
         );
     }
     db.stop().await;
@@ -2677,10 +2682,10 @@ async fn hypothesis_state_authority_schema_rejects_terminal_forgery() {
     let commit_error = tx
         .commit()
         .await
-        .expect_err("verified revision without Plan C authority must fail at commit");
+        .expect_err("verified revision without adjudication authority must fail at commit");
     assert_database_rejection(
         &commit_error,
-        "PLAN_C_REVISION_ADJUDICATION_AUTHORITY_NOT_INSTALLED",
+        "HYPOTHESIS_REVISION_ADJUDICATION_AUTHORITY_REQUIRED",
     );
 
     let retained: i64 =
@@ -3057,7 +3062,7 @@ async fn projection_plan_b_verification_plan_route_is_exact_one() {
 
 #[tokio::test]
 #[serial]
-async fn projection_plan_c_route_catalog_keeps_future_kinds_without_authority_tables() {
+async fn projection_plan_c_route_catalog_is_backed_by_installed_authority_tables() {
     let (mut db, _data_dir) = fixture("plan_c_routes").await;
     for (entity, change, event) in [
         (
@@ -3096,8 +3101,12 @@ async fn projection_plan_c_route_catalog_keeps_future_kinds_without_authority_ta
             .bind(table)
             .fetch_one(db.pool())
             .await
-            .expect("inspect absent future authority table");
-        assert!(exists.is_none());
+            .expect("inspect installed Plan C authority table");
+        assert_eq!(
+            exists.as_deref(),
+            Some(table),
+            "missing installed authority table for frozen route catalog"
+        );
     }
     db.stop().await;
 }

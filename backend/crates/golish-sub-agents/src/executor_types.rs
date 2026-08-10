@@ -16,6 +16,14 @@ use golish_tools::ToolRegistry;
 /// When a sub-agent calls this tool, the executor terminates the loop and
 /// returns the structured result to the parent agent (PentAGI barrier pattern).
 pub const BARRIER_TOOL_NAME: &str = "submit_result";
+/// Model-visible result contracts selected by the Investigation host for the
+/// three distinct Primary turns. These are deliberately separate from the
+/// persisted WorkItem `output_schema`: one durable Primary WorkItem performs
+/// planning, bounded refinement, and final synthesis on the same fenced chain.
+pub const INVESTIGATION_TASK_PLAN_RESULT_SCHEMA: &str = "investigation_task_plan.v1";
+pub const INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA: &str = "investigation_refiner_patch.v1";
+pub const INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA: &str =
+    "investigation_primary_synthesis.v1";
 /// Host-routed control tool exposed only to a trusted Company Controller.
 pub const STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME: &str = "stage_team_dispatch_workers";
 /// Host-routed control tool used by a trusted Company Controller to close its
@@ -26,6 +34,12 @@ pub const STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME: &str =
 /// bound Company Controller. Unbound orchestrator agents retain their existing
 /// generic `update_plan` path.
 pub const STAGE_TEAM_UPDATE_PLAN_TOOL_NAME: &str = "update_plan";
+/// Host-routed Enumeration result reducer selected by the Main AI after the
+/// exact Browser and JS/API producer receipts exist.
+pub const ENUMERATION_REDUCE_PARAMETERS_TOOL_NAME: &str = "enum_reduce_parameters_v2";
+/// Host-routed read-only DAG reviewer selected by the Main AI after all
+/// required exact-origin receipts have landed.
+pub const ENUMERATION_REVIEW_COVERAGE_TOOL_NAME: &str = "enum_review_coverage_v2";
 /// Exact successful router status that parks the Controller after dispatch.
 pub const STAGE_TEAM_DISPATCH_ACCEPTED_STATUS: &str = "dispatch_accepted";
 /// Exact successful router status that transfers finalization to the scheduler.
@@ -79,12 +93,87 @@ pub enum SubAgentChainError {
 /// lease-loss flag is set by the runtime heartbeat/fencing supervisor and is
 /// checked before subsequent provider/tool work.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageTeamCompiledActionBinding {
+    /// Opaque model-visible selector. Every executable field below is authored
+    /// by the host from current durable authority, never copied from model
+    /// arguments.
+    pub action_id: String,
+    pub dedupe_key: String,
+    pub requested_role: String,
+    pub requested_kind: String,
+    pub objective: String,
+    pub subject_refs: Vec<serde_json::Value>,
+    pub budget_hint: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StageTeamLeaderBinding {
     pub stage_team_plan_id: uuid::Uuid,
     pub leader_work_item_id: uuid::Uuid,
     pub expected_dispatch_epoch: i64,
     pub expected_plan_row_version: i64,
     pub expected_work_item_row_version: i64,
+    /// Optional closed host compiler selected by the frozen TeamPlan. The
+    /// Company Controller may choose among `compiled_actions`, but cannot
+    /// author target, tool arguments, dependencies, receipts, or stable keys.
+    pub controller_action_compiler: Option<String>,
+    pub compiled_actions: Vec<StageTeamCompiledActionBinding>,
+    /// Investigation Task Primary uses the same durable plan checkpoint but
+    /// returns a typed Generator plan through `submit_result`.  It must never
+    /// see the Company Controller dispatch/finalization router.
+    pub planning_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetIntelReviewBinding {
+    pub stage_team_plan_id: uuid::Uuid,
+    pub reviewer_work_item_id: uuid::Uuid,
+    pub review_id: uuid::Uuid,
+    pub bundle_sha256: String,
+}
+
+/// Safe host-authored rejection for a schema-valid terminal result.
+///
+/// These values are correction metadata for the same WorkerRun and must never
+/// contain the submitted payload or frozen business input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundTerminalValidationError {
+    code: String,
+    instruction: String,
+}
+
+impl BoundTerminalValidationError {
+    pub fn new(code: impl Into<String>, instruction: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            instruction: instruction.into(),
+        }
+    }
+
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub fn instruction(&self) -> &str {
+        &self.instruction
+    }
+}
+
+/// Host-only semantic validator for one exact bound terminal result.
+pub trait BoundTerminalResultValidator: Send + Sync + std::fmt::Debug {
+    fn validate(&self, result: &serde_json::Value) -> Result<(), BoundTerminalValidationError>;
+}
+
+/// Host-authored terminal-only execution policy for an exact prebound worker.
+#[derive(Debug, Clone)]
+pub struct BoundTerminalExecutionContract {
+    pub result_schema: serde_json::Value,
+    pub completion_instruction: String,
+    pub result_validator: Option<Arc<dyn BoundTerminalResultValidator>>,
+    pub inject_workspace_skills: bool,
+    pub emit_reasoning_events: bool,
+    pub emit_text_events: bool,
+    pub record_reasoning_telemetry: bool,
 }
 
 #[derive(Clone)]
@@ -110,6 +199,17 @@ pub struct BoundWorkerChainContext {
     /// server-owned Stage Team claim; agent-visible arguments can never create
     /// or widen it. Ordinary workers and legacy Aggregators keep this `None`.
     pub stage_team_leader: Option<StageTeamLeaderBinding>,
+    /// Exact frozen review authority for a read-only Target Intel reviewer.
+    /// It is decoded only from a server-created WorkItem after atomic claim.
+    pub target_intel_review: Option<TargetIntelReviewBinding>,
+    /// Exact output contract frozen on the claimed Stage Team WorkItem.
+    /// `None` for non-Team workers. The sub-agent barrier uses this trusted
+    /// value to expose the Investigation cognitive extension without widening
+    /// ordinary `stage_worker_output.v1` children.
+    pub stage_team_output_schema: Option<String>,
+    /// Exact terminal-only boundary for closed host-authored modelers. This
+    /// takes precedence over ordinary role, catalog, and delegation surfaces.
+    pub terminal_execution: Option<BoundTerminalExecutionContract>,
     pub chain_id: uuid::Uuid,
     pub session_id: uuid::Uuid,
     pub agent_type: String,
@@ -121,6 +221,11 @@ pub struct BoundWorkerChainContext {
     /// the atomic initial chain. Resumed workers append the new objective after
     /// loading their prior checkpoint.
     pub initial_prompt_already_checkpointed: bool,
+    /// Host-owned phase boundary for a bound worker. The durable WorkerRun and
+    /// chain fence remain unchanged, but provider messages from an earlier
+    /// planning phase are not replayed into this invocation. The new phase is
+    /// checkpointed back onto the same fenced chain.
+    pub reset_provider_history: bool,
     pub checkpoint_version: Arc<AtomicI64>,
     pub checkpoint_body: Arc<std::sync::RwLock<serde_json::Value>>,
     pub lease_lost: Arc<AtomicBool>,
@@ -133,6 +238,35 @@ pub struct BoundWorkerChainContext {
     pub tool_lifecycle: Option<Arc<dyn BoundWorkerToolLifecycle>>,
 }
 
+/// Opaque host receipt returned before a prebound worker may delegate to a
+/// nested model executor.
+///
+/// The generic executor carries this value back to the same lifecycle on
+/// completion but never parses it or derives authority from it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundWorkerNestedDispatchToken(pub String);
+
+/// Host-created child binding for one nested delegation.
+///
+/// `child_bound` must name a fresh WorkerRun, lease token and message chain.
+/// The response parser validates those distinctions before any nested provider
+/// request is allowed to start.
+#[derive(Clone)]
+pub struct BegunBoundWorkerNestedDelegation {
+    pub child_bound: BoundWorkerChainContext,
+    pub dispatch_token: BoundWorkerNestedDispatchToken,
+}
+
+/// Exact terminal material handed back to the host-owned nested-dispatch
+/// lifecycle. `result_sha256` hashes the serialized `outcome` bytes used by the
+/// executor, while `success` is the exact model-visible success bit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundWorkerNestedDelegationCompletion {
+    pub success: bool,
+    pub result_sha256: String,
+    pub outcome: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundWorkerRuntimeMemorySource {
     Legacy,
@@ -141,14 +275,18 @@ pub enum BoundWorkerRuntimeMemorySource {
 }
 
 impl BoundWorkerChainContext {
-    /// Whether this binding belongs to an ordinary durable Stage Team child.
+    /// Whether this binding returns a typed result through `submit_result`.
     ///
     /// Candidate verifiers and Company Controllers have their own terminal
-    /// contracts. Only ordinary children must return `stage_worker_output.v1`
-    /// through the generic `submit_result` barrier.
+    /// contracts. Ordinary children and an Investigation planning-only Primary
+    /// use the generic barrier with a host-selected exact result schema.
     pub fn is_stage_team_child(&self) -> bool {
         self.candidate_attempt.is_none()
-            && self.stage_team_leader.is_none()
+            && self
+                .stage_team_leader
+                .as_ref()
+                .is_none_or(|leader| leader.planning_only)
+            && self.target_intel_review.is_none()
             && !self.return_on_first_durable_stage_submission
     }
 
@@ -203,6 +341,38 @@ pub trait BoundWorkerToolLifecycle: Send + Sync {
         success: bool,
         result: &serde_json::Value,
     ) -> anyhow::Result<()>;
+
+    /// Explicit host capability for recursively dispatching a prebound worker.
+    ///
+    /// The default is deliberately unavailable: an ordinary prebound worker
+    /// continues to fail closed instead of sharing its parent lease with a
+    /// nested executor.
+    fn nested_delegation_lifecycle(&self) -> Option<Arc<dyn BoundWorkerNestedDelegationLifecycle>> {
+        None
+    }
+}
+
+/// SQL-free host port for a durable nested-delegation lifecycle.
+///
+/// `begin` must durably dispatch and claim a new worker from the trusted parent
+/// binding plus the exact delegate/tool request before returning. `finish`
+/// must durably land the terminal outcome under the opaque dispatch token.
+/// Neither operation may infer authority from model-visible arguments alone.
+#[async_trait::async_trait]
+pub trait BoundWorkerNestedDelegationLifecycle: Send + Sync {
+    async fn begin(
+        &self,
+        trusted_parent: &BoundWorkerChainContext,
+        delegate_id: &str,
+        nested_tool_request_id: &str,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<BegunBoundWorkerNestedDelegation>;
+
+    async fn finish(
+        &self,
+        dispatch_token: &BoundWorkerNestedDispatchToken,
+        completion: &BoundWorkerNestedDelegationCompletion,
+    ) -> anyhow::Result<()>;
 }
 
 /// Trait for providing tool definitions to the sub-agent executor.
@@ -225,6 +395,21 @@ pub trait ToolProvider: Send + Sync {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> (serde_json::Value, bool);
+
+    /// Fixture/dev-only host-owned public evidence tools. `None` preserves the
+    /// legacy tool surface. A provider that returns definitions here must also
+    /// persist evidence/receipt before returning any result body.
+    fn intel_public_tool_definitions(&self) -> Option<Vec<ToolDefinition>> {
+        None
+    }
+
+    async fn execute_intel_public_tool(
+        &self,
+        _tool_name: &str,
+        _args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        None
+    }
 
     async fn execute_memory_tool(
         &self,
@@ -575,7 +760,6 @@ impl SubmitRepairMode {
         if self.kind == SubmitRepairKind::CoverageGap {
             append_coverage_gap_worklist_tools(&mut tools, &self.coverage_gap_actions);
             if !self.coverage_gap_actions.is_empty() {
-                append_direct_intel_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_enumeration_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_eas_repair_tools(&mut tools, &self.coverage_gap_actions);
                 append_direct_vuln_repair_tools(&mut tools, &self.coverage_gap_actions);
@@ -656,7 +840,9 @@ impl SubmitRepairMode {
                      server-side target_id, one exact target_url, and explicit techniques[] from \
                      the gap list. Anonymous-access calls pass the same exact target binding, the \
                      complete reviewed_endpoint_ids[] witness, and at most 16 selected_probes[] \
-                     entries containing only endpoint_id/query_values/rationale. \
+                     entries containing only endpoint_id/query_values/rationale. Copy query_values \
+                     keys only from anonymous_access_review.eligible_endpoint_query_contracts[].persisted_url_query_names; \
+                     use query_values={} when that endpoint's list is empty. \
                      Do NOT call list_in_scope_targets, list_attack_surface_seeds, \
                      CIDR/range sweeps, targets outside coverage_gap_actions, or broad rediscovery. \
                      When each named gap has a terminal coverage cell, resubmit."
@@ -813,7 +999,9 @@ pub(crate) fn coverage_gap_action_instruction(actions: &[CoverageGapAction]) -> 
          must use vuln_probe_anonymous_access after reviewing the complete eligible endpoint set, \
          and GOLISH-NDAY must use vuln_nuclei_fingerprint_targeted. Nuclei calls pass singular \
          target_id + exact target_url + explicit techniques[]. Anonymous-access calls pass the \
-         complete reviewed_endpoint_ids[] witness plus a bounded selected_probes[] subset; never \
+         complete reviewed_endpoint_ids[] witness plus a bounded selected_probes[] subset; copy \
+         query_values keys only from anonymous_access_review.eligible_endpoint_query_contracts[].persisted_url_query_names \
+         and use query_values={{}} for an empty list; never \
          raw nuclei, manual authorization probes, pentest_run, or background controls. Direct enumeration tools \
          (browser_collect_js_api/js_extract_apis/route_probe_paths/enum_crawl_same_origin_urls) may be called by \
          name when suggested here; directory discovery must use route_probe_paths, not external \
@@ -1021,6 +1209,7 @@ fn utf8_boundary_at_or_before(value: &str, max_bytes: usize) -> usize {
     end
 }
 
+#[allow(dead_code)]
 fn append_direct_intel_repair_tools(tools: &mut Vec<String>, actions: &[CoverageGapAction]) {
     for action in actions
         .iter()
@@ -2122,7 +2311,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_repair_allows_only_the_suggested_recon_tool() {
+    fn legacy_target_intel_coverage_action_cannot_reopen_retired_recon_tools() {
         let mode = SubmitRepairMode {
             kind: SubmitRepairKind::CoverageGap,
             reason: "OSINT is non-terminal".to_string(),
@@ -2140,7 +2329,8 @@ mod tests {
             directive_message: None,
         };
 
-        assert!(mode.allows("recon_map_assets"));
+        assert!(!mode.allows("recon_map_assets"));
+        assert!(!mode.allows("recon_lookup_whois"));
         assert!(!mode.allows("recon_discover_subsidiaries"));
     }
 

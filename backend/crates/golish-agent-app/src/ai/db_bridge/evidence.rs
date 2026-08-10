@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -40,10 +42,367 @@ const EAS_PORT_POLICY_BLOCKED_SOURCE: &str = "eas_discover_ports_policy";
 const EAS_PORT_POLICY_BLOCKED_TOOL: &str = "eas_discover_ports";
 const EAS_PORT_POLICY_BLOCKED_KIND: &str = "eas.port_scan_policy_blocked";
 const VULN_NUCLEI_EVIDENCE_KIND: &str = "vuln.nuclei_observation";
+const VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND: &str = "vuln.nuclei_exhausted_terminalization";
 const VULN_NUCLEI_GENERAL_TOOL: &str = "vuln_nuclei_general";
 const VULN_NUCLEI_TARGETED_TOOL: &str = "vuln_nuclei_fingerprint_targeted";
 const VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND: &str = "vuln.anonymous_access_observation";
 const VULN_ANONYMOUS_ACCESS_TOOL: &str = "vuln_probe_anonymous_access";
+const INTEL_SEMANTIC_RECEIPT_KIND: &str = "intel.semantic_pivot_receipt.v1";
+
+/// Concrete evidence-first receipt store for the explicit fake Target Intel
+/// Goal composition. Its operation/org/session identity is fixed at
+/// construction and never read from model arguments.
+pub struct TargetIntelSemanticReceiptStore {
+    repo: Arc<GolishDbRepoProvider>,
+    operation_id: Uuid,
+    organization_id: Uuid,
+    session_id: Uuid,
+    project_path: Option<String>,
+}
+
+impl TargetIntelSemanticReceiptStore {
+    pub fn new(
+        repo: Arc<GolishDbRepoProvider>,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        project_path: Option<String>,
+    ) -> anyhow::Result<Self> {
+        if operation_id.is_nil() || organization_id.is_nil() || session_id.is_nil() {
+            anyhow::bail!("semantic_intel_receipt_store_identity_invalid");
+        }
+        Ok(Self {
+            repo,
+            operation_id,
+            organization_id,
+            session_id,
+            project_path,
+        })
+    }
+}
+
+#[async_trait]
+impl golish_recon_app::asset_intel::SemanticIntelReceiptStore for TargetIntelSemanticReceiptStore {
+    async fn load_terminal_receipt(
+        &self,
+        stable_query_key: &str,
+    ) -> Result<Option<golish_recon_app::asset_intel::IntelPivotReceiptV1>, String> {
+        self.repo
+            .semantic_intel_terminal_receipt_impl(
+                self.operation_id,
+                self.organization_id,
+                self.session_id,
+                stable_query_key,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("semantic_intel_terminal_receipt_decode:{error}"))
+    }
+
+    async fn save_redacted_artifact(
+        &self,
+        artifact: &golish_recon_app::asset_intel::RedactedIntelArtifact,
+    ) -> Result<(), String> {
+        golish_db::repo::target_intel_semantic_artifacts::put_redacted(
+            &self.repo.pool,
+            &golish_db::repo::target_intel_semantic_artifacts::TargetIntelSemanticArtifactRow {
+                artifact_ref: artifact.artifact_ref.clone(),
+                operation_id: self.operation_id,
+                organization_id: self.organization_id,
+                session_id: self.session_id,
+                artifact_sha256: artifact.sha256.clone(),
+                redacted_payload: artifact.redacted_payload.clone(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+    }
+
+    async fn append_evidence(
+        &self,
+        request: &golish_recon_app::asset_intel::AssetIntelExecutionRequest,
+        artifact: &golish_recon_app::asset_intel::RedactedIntelArtifact,
+        observations: &[golish_recon_app::asset_intel::CollectedIntelObservation],
+    ) -> Result<String, String> {
+        if request.fixture_context.operation_id != self.operation_id
+            || request.fixture_context.organization_id != self.organization_id
+            || request.fixture_context.session_id != self.session_id
+        {
+            return Err("semantic_intel_evidence_identity_mismatch".to_string());
+        }
+        let raw_output = serde_json::to_string(&serde_json::json!({
+            "artifact_ref": artifact.artifact_ref,
+            "artifact_sha256": artifact.sha256,
+            "observations": observations,
+            "redacted": true,
+        }))
+        .map_err(|error| format!("semantic_intel_evidence_encode:{error}"))?;
+        if let Some(evidence_id) = self
+            .repo
+            .semantic_intel_existing_evidence_impl(
+                self.operation_id,
+                self.organization_id,
+                self.session_id,
+                &artifact.artifact_ref,
+                &raw_output,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(format!("audit:{evidence_id}"));
+        }
+        let subject = format!("{}:{}", request.pivot.kind.as_str(), request.pivot.value);
+        let session_id = self.session_id.to_string();
+        match self
+            .repo
+            .evidence_append_for_organization_impl(
+                self.operation_id,
+                self.organization_id,
+                None,
+                Some(&session_id),
+                self.project_path.as_deref(),
+                "recon_search_intel",
+                "target_intel.semantic_pivot",
+                &subject,
+                &raw_output,
+                None,
+            )
+            .await
+        {
+            Ok(evidence_id) => Ok(format!("audit:{evidence_id}")),
+            Err(append_error) => self
+                .repo
+                .semantic_intel_existing_evidence_impl(
+                    self.operation_id,
+                    self.organization_id,
+                    self.session_id,
+                    &artifact.artifact_ref,
+                    &raw_output,
+                )
+                .await
+                .map_err(|lookup_error| {
+                    format!(
+                        "semantic_intel_evidence_append:{append_error}; replay_lookup:{lookup_error}"
+                    )
+                })?
+                .map(|evidence_id| format!("audit:{evidence_id}"))
+                .ok_or_else(|| append_error.to_string()),
+        }
+    }
+
+    async fn append_audit_receipt(
+        &self,
+        receipt: &golish_recon_app::asset_intel::IntelPivotReceiptV1,
+    ) -> Result<(), String> {
+        let receipt = serde_json::to_value(receipt)
+            .map_err(|error| format!("semantic_intel_receipt_encode:{error}"))?;
+        self.repo
+            .semantic_intel_receipt_append_impl(
+                self.operation_id,
+                self.organization_id,
+                self.session_id,
+                self.project_path.as_deref(),
+                &receipt,
+            )
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl GolishDbRepoProvider {
+    async fn semantic_intel_existing_evidence_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        artifact_ref: &str,
+        expected_raw_output: &str,
+    ) -> anyhow::Result<Option<i64>> {
+        let rows = sqlx::query_as::<_, (i64, String)>(
+            r#"SELECT id, detail ->> 'raw_output'
+                 FROM audit_log
+                WHERE audit_role='evidence'
+                  AND source='harness'
+                  AND tool_name='recon_search_intel'
+                  AND run_id=$1
+                  AND session_id=$2
+                  AND detail ->> 'organization_id'=$3
+                  AND detail ->> 'kind'='target_intel.semantic_pivot'
+                  AND ((detail ->> 'raw_output')::jsonb) ->> 'artifact_ref'=$4
+                ORDER BY id
+                LIMIT 2"#,
+        )
+        .bind(operation_id)
+        .bind(session_id.to_string())
+        .bind(organization_id.to_string())
+        .bind(artifact_ref)
+        .fetch_all(&*self.pool)
+        .await?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [(id, raw_output)] if raw_output == expected_raw_output => Ok(Some(*id)),
+            [_, ..] => anyhow::bail!("semantic_intel_evidence_replay_mismatch"),
+        }
+    }
+
+    pub(crate) async fn semantic_intel_receipt_append_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        project_path: Option<&str>,
+        receipt: &serde_json::Value,
+    ) -> anyhow::Result<i64> {
+        validate_semantic_intel_receipt_identity(
+            receipt,
+            operation_id,
+            organization_id,
+            session_id,
+        )?;
+        let status = receipt
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("semantic_intel_receipt_status_missing"))?;
+        if !matches!(status, "succeeded" | "empty" | "blocked" | "unsupported") {
+            anyhow::bail!("semantic_intel_receipt_status_not_terminal");
+        }
+        let _stable_query_key = receipt
+            .get("stable_query_key")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("semantic_intel_receipt_stable_key_missing"))?;
+        let artifact_ref = receipt
+            .get("artifact_ref")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("semantic_intel_receipt_artifact_ref_missing"))?;
+        let artifact_sha256 = receipt
+            .get("artifact_sha256")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("semantic_intel_receipt_artifact_hash_missing"))?;
+        let evidence_id = receipt
+            .get("evidence_ref")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.strip_prefix("audit:"))
+            .and_then(|value| value.parse::<i64>().ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| anyhow::anyhow!("semantic_intel_receipt_evidence_ref_invalid"))?;
+        let closure_valid: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS (
+                   SELECT 1
+                     FROM target_intel_semantic_artifacts artifact
+                     JOIN audit_log evidence ON evidence.id=$1
+                    WHERE artifact.operation_id=$2
+                      AND artifact.organization_id=$3
+                      AND artifact.session_id=$4
+                      AND artifact.artifact_ref=$5
+                      AND artifact.artifact_sha256=$6
+                      AND evidence.audit_role='evidence'
+                      AND evidence.source='harness'
+                      AND evidence.tool_name='recon_search_intel'
+                      AND evidence.run_id=$2
+                      AND evidence.session_id=$4::text
+                      AND evidence.detail ->> 'organization_id'=$3::text
+                      AND evidence.detail ->> 'kind'='target_intel.semantic_pivot'
+                      AND ((evidence.detail ->> 'raw_output')::jsonb) ->> 'artifact_ref'=$5
+                      AND ((evidence.detail ->> 'raw_output')::jsonb) ->> 'artifact_sha256'=$6
+               )"#,
+        )
+        .bind(evidence_id)
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(session_id)
+        .bind(artifact_ref)
+        .bind(artifact_sha256)
+        .fetch_one(&*self.pool)
+        .await?;
+        if !closure_valid {
+            anyhow::bail!("semantic_intel_receipt_evidence_artifact_closure_invalid");
+        }
+        let session_id_string = session_id.to_string();
+        let entry = golish_db::repo::audit::log_operation(
+            &self.pool,
+            "Target Intel semantic pivot receipt",
+            "target_intel",
+            INTEL_SEMANTIC_RECEIPT_KIND,
+            project_path,
+            "target_intel_goal_shadow",
+            None,
+            Some(&session_id_string),
+            Some("recon_search_intel"),
+            status,
+            receipt,
+        )
+        .await?;
+        Ok(entry.id)
+    }
+
+    pub(crate) async fn semantic_intel_terminal_receipt_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        stable_query_key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        if stable_query_key.trim().is_empty() {
+            anyhow::bail!("semantic_intel_stable_query_key_missing");
+        }
+        let rows =
+            golish_db::repo::audit::list_by_session(&self.pool, &session_id.to_string(), 1_000)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row.details == INTEL_SEMANTIC_RECEIPT_KIND
+                    && row.source == "target_intel_goal_shadow"
+                    && matches!(
+                        row.status.as_str(),
+                        "succeeded" | "empty" | "blocked" | "unsupported"
+                    )
+            })
+            .map(|row| row.detail)
+            .find(|detail| {
+                validate_semantic_intel_receipt_identity(
+                    detail,
+                    operation_id,
+                    organization_id,
+                    session_id,
+                )
+                .is_ok()
+                    && detail
+                        .get("stable_query_key")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(stable_query_key)
+            }))
+    }
+}
+
+fn validate_semantic_intel_receipt_identity(
+    receipt: &serde_json::Value,
+    operation_id: Uuid,
+    organization_id: Uuid,
+    session_id: Uuid,
+) -> anyhow::Result<()> {
+    let exact_uuid = |field: &str, expected: Uuid| {
+        receipt
+            .get(field)
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.parse::<Uuid>().ok())
+            .filter(|value| *value == expected)
+            .ok_or_else(|| anyhow::anyhow!("semantic_intel_receipt_{field}_mismatch"))
+    };
+    if receipt.get("kind").and_then(serde_json::Value::as_str) != Some(INTEL_SEMANTIC_RECEIPT_KIND)
+    {
+        anyhow::bail!("semantic_intel_receipt_kind_mismatch");
+    }
+    exact_uuid("operation_id", operation_id)?;
+    exact_uuid("organization_id", organization_id)?;
+    exact_uuid("session_id", session_id)?;
+    Ok(())
+}
 
 fn is_vuln_technique(technique: &str) -> bool {
     FORMULAIC_TECHNIQUES.contains(&technique)
@@ -80,12 +439,13 @@ fn vuln_terminal_evidence_kind_is_authoritative(
     if !is_vuln_terminal_outcome(technique, outcome) {
         return true;
     }
+    let nuclei_kind_is_authoritative = evidence_kind == Some(VULN_NUCLEI_EVIDENCE_KIND)
+        || (matches!(outcome, "found" | "blocked")
+            && evidence_kind == Some(VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND));
     match technique {
         WSTG_ANONYMOUS_ACCESS => evidence_kind == Some(VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND),
-        GOLISH_NDAY => evidence_kind == Some(VULN_NUCLEI_EVIDENCE_KIND),
-        technique if GENERAL_NUCLEI_TECHNIQUES.contains(&technique) => {
-            evidence_kind == Some(VULN_NUCLEI_EVIDENCE_KIND)
-        }
+        GOLISH_NDAY => nuclei_kind_is_authoritative,
+        technique if GENERAL_NUCLEI_TECHNIQUES.contains(&technique) => nuclei_kind_is_authoritative,
         _ => false,
     }
 }
@@ -1228,6 +1588,7 @@ impl GolishDbRepoProvider {
             subject,
             raw_output,
             tool_name,
+            producer_tool_name: None,
             operation_id,
             stage_run_id,
             project_path,
@@ -1682,6 +2043,23 @@ impl GolishDbRepoProvider {
         Ok(rows)
     }
 
+    pub(crate) async fn recent_evidence_ids_for_stage_attempt_impl(
+        &self,
+        session_id: &str,
+        stage_execution_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        Ok(
+            golish_db::repo::audit::recent_evidence_ids_for_stage_attempt(
+                &self.pool,
+                session_id,
+                stage_execution_id,
+                limit,
+            )
+            .await?,
+        )
+    }
+
     /// `list_recent_evidence` backing read (设计 2026-07-02-eas-worker-evidence): the
     /// session's recent real evidence rows as compact JSON, each with the context a
     /// worker needs to cite the right id (tool / subject / technique / asset /
@@ -1694,6 +2072,53 @@ impl GolishDbRepoProvider {
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let rows = golish_db::repo::audit::recent_evidence_detailed_for_session(
             &self.pool, session_id, limit,
+        )
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let mut obj = serde_json::Map::new();
+                obj.insert("evidence_id".to_string(), serde_json::json!(r.id));
+                if let Some(tool) = r.tool_name.filter(|s| !s.is_empty()) {
+                    obj.insert("tool".to_string(), serde_json::json!(tool));
+                }
+                if let Some(subject) = r.subject.filter(|s| !s.is_empty()) {
+                    obj.insert("subject".to_string(), serde_json::json!(subject));
+                }
+                if let Some(technique) = r.technique.filter(|s| !s.is_empty()) {
+                    obj.insert("technique".to_string(), serde_json::json!(technique));
+                }
+                if let Some(asset) = r.asset.filter(|s| !s.is_empty()) {
+                    obj.insert("asset".to_string(), serde_json::json!(asset));
+                }
+                if let Some(outcome) = r.outcome.filter(|s| !s.is_empty()) {
+                    obj.insert("outcome".to_string(), serde_json::json!(outcome));
+                }
+                if let Some(kind) = r.kind.filter(|s| !s.is_empty()) {
+                    obj.insert("kind".to_string(), serde_json::json!(kind));
+                }
+                if let Some(age) = r.age_seconds.filter(|s| *s >= 0.0) {
+                    obj.insert(
+                        "age_seconds".to_string(),
+                        serde_json::json!(age.round() as i64),
+                    );
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect())
+    }
+
+    pub(crate) async fn recent_evidence_detailed_for_worker_impl(
+        &self,
+        operation_id: uuid::Uuid,
+        worker_run_id: uuid::Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let rows = golish_db::repo::audit::recent_evidence_detailed_for_worker(
+            &self.pool,
+            operation_id,
+            worker_run_id,
+            limit,
         )
         .await?;
         Ok(rows
@@ -2168,7 +2593,7 @@ mod tests {
         eas_full_port_manifest_hash_v3, eas_port_scan_output_hash, eas_target_bound_evidence_facts,
         enumeration_evidence_fact_set, enumeration_target_bound_evidence_fact_set,
         projected_technique_outcome_evidence_id, terminal_materialization_asset_key,
-        vuln_target_bound_evidence_fact_set,
+        vuln_target_bound_evidence_fact_set, VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND,
     };
     use std::collections::BTreeSet;
     use std::net::IpAddr;
@@ -2419,6 +2844,44 @@ mod tests {
                 "mismatched Vuln evidence tuple must fail closed: {forged:?}"
             );
         }
+    }
+
+    #[test]
+    fn vuln_exhausted_terminalization_is_authoritative_only_for_exact_nuclei_terminal_tuple() {
+        let org = Uuid::new_v4();
+        let origin = "https://app.example.com:443";
+        let mut general = target_bound_row(org, origin, "WSTG-INPV-05", origin, "url");
+        general.evidence_outcome = "blocked".to_string();
+        general.tool_name = Some("vuln_nuclei_general".to_string());
+        general.evidence_kind = Some(VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND.to_string());
+        assert!(
+            vuln_target_bound_evidence_fact_set(org, vec![general.clone()]).contains(&(
+                origin.to_string(),
+                "WSTG-INPV-05".to_string(),
+                "blocked".to_string(),
+                91,
+            ))
+        );
+
+        let mut targeted = general.clone();
+        targeted.evidence_technique = "GOLISH-NDAY".to_string();
+        targeted.tool_name = Some("vuln_nuclei_fingerprint_targeted".to_string());
+        assert!(
+            vuln_target_bound_evidence_fact_set(org, vec![targeted]).contains(&(
+                origin.to_string(),
+                "GOLISH-NDAY".to_string(),
+                "blocked".to_string(),
+                91,
+            ))
+        );
+
+        let mut nonterminal_shape = general.clone();
+        nonterminal_shape.evidence_outcome = "empty".to_string();
+        assert!(vuln_target_bound_evidence_fact_set(org, vec![nonterminal_shape]).is_empty());
+
+        let mut wrong_tool = general;
+        wrong_tool.tool_name = Some("vuln_nuclei_fingerprint_targeted".to_string());
+        assert!(vuln_target_bound_evidence_fact_set(org, vec![wrong_tool]).is_empty());
     }
 
     #[test]

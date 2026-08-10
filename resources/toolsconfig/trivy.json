@@ -1,0 +1,33 @@
+{
+  "tool": {
+    "id": "trivy",
+    "pentestPhase": ["vuln_id", "post_exploit"],
+    "name": "Trivy",
+    "description": "Assess local filesystems, images and IaC; registry or credential access remains JIT-only.",
+    "executable": "trivy",
+    "runtime": "native",
+    "launchMode": "cli",
+    "version": "0.73.0",
+    "category": "cloud",
+    "subcategory": "container",
+    "tier": "recommended",
+    "tags": ["container", "iac", "filesystem", "registry-read", "apache-2.0"],
+    "install": {
+      "method": "homebrew",
+      "source": "trivy",
+      "macos": {"method": "homebrew", "source": "trivy"},
+      "linux": {"method": "github", "source": "aquasecurity/trivy"},
+      "windows": {"method": "github", "source": "aquasecurity/trivy"}
+    },
+    "params": [
+      {"label": "Mode", "flag": "", "type": "select", "required": true, "options": [{"value": "fs", "label": "Local filesystem"}, {"value": "image", "label": "Container image"}, {"value": "config", "label": "IaC config"}]},
+      {"label": "Exact artifact", "flag": "", "type": "string", "required": true, "description": "Exact local path, image digest or authorized registry image.", "placeholder": "."},
+      {"label": "Format", "flag": "--format", "type": "select", "required": true, "default": "json", "options": [{"value": "json", "label": "JSON"}, {"value": "sarif", "label": "SARIF"}]},
+      {"label": "Output", "flag": "--output", "type": "string", "required": true, "placeholder": "trivy.json"}
+    ],
+    "skills": [
+      {"id": "local-version", "name": "Local version smoke", "description": "No-target executable smoke only; no registry preset is exposed.", "args": "--version", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "json", "produces": ["vulnerability", "misconfiguration", "secret", "license", "info"], "patterns": [], "fields": {}, "detect": "Trivy|SchemaVersion|ArtifactName"}
+  }
+}

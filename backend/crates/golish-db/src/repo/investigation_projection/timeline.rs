@@ -10,11 +10,16 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::types::{invalid_payload, InvestigationProjectionResult, InvestigationReadAuthority};
-use super::InvestigationProjectionReadSnapshot;
+use super::{
+    apply_expected_page_authority, InvestigationPageValidationInput,
+    InvestigationProjectionReadSnapshot, InvestigationStageRunSelector,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvestigationTimelineQuery {
+    pub event_kinds: Vec<TimelineEventKind>,
     pub after: Option<(i64, Uuid)>,
+    pub expected_page_authority: Option<InvestigationPageValidationInput>,
     pub page_size: u32,
 }
 
@@ -132,10 +137,42 @@ pub async fn read_investigation_timeline(
     operation_id: Uuid,
     query: InvestigationTimelineQuery,
 ) -> InvestigationProjectionResult<InvestigationTimelinePage> {
-    let mut snapshot = InvestigationProjectionReadSnapshot::begin(pool, operation_id).await?;
+    read_investigation_timeline_inner(pool, operation_id, None, query).await
+}
+
+pub async fn read_investigation_timeline_for_stage_run(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: &InvestigationStageRunSelector,
+    query: InvestigationTimelineQuery,
+) -> InvestigationProjectionResult<InvestigationTimelinePage> {
+    read_investigation_timeline_inner(pool, operation_id, Some(selector), query).await
+}
+
+async fn read_investigation_timeline_inner(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: Option<&InvestigationStageRunSelector>,
+    query: InvestigationTimelineQuery,
+) -> InvestigationProjectionResult<InvestigationTimelinePage> {
+    let mut snapshot = if let Some(selector) = selector {
+        InvestigationProjectionReadSnapshot::begin_for_stage_run(pool, operation_id, selector)
+            .await?
+            .0
+    } else {
+        InvestigationProjectionReadSnapshot::begin(pool, operation_id).await?
+    };
+    if let Some(expected) = query.expected_page_authority.as_ref() {
+        apply_expected_page_authority(&mut snapshot, expected)?;
+    }
     let head = snapshot.authority.temporal.as_of_change_seq;
     let (after_change_seq, after_event_id) = query.after.unwrap_or((0, Uuid::nil()));
     let page_size = query.page_size.clamp(1, 100) as i64;
+    let event_kinds = query
+        .event_kinds
+        .iter()
+        .map(|kind| kind.as_str())
+        .collect::<Vec<_>>();
     let rows = sqlx::query_as::<_, TimelineRow>(
         r#"SELECT change.operation_id,change.event_id,change.change_seq,change.batch_id,
                   change.source_batch_seq,change.outbox_member_id,change.entity_kind,
@@ -155,12 +192,14 @@ pub async fn read_investigation_timeline(
               AND entity.entity_version=change.entity_version
             WHERE change.operation_id=$1 AND change.change_seq<=$2
               AND (change.change_seq,change.event_id)>($3,$4)
-            ORDER BY change.change_seq,change.event_id LIMIT $5"#,
+              AND (cardinality($5::TEXT[])=0 OR change.timeline_event_kind=ANY($5::TEXT[]))
+            ORDER BY change.change_seq,change.event_id LIMIT $6"#,
     )
     .bind(operation_id)
     .bind(head)
     .bind(after_change_seq)
     .bind(after_event_id)
+    .bind(event_kinds)
     .bind(page_size + 1)
     .fetch_all(&mut *snapshot.tx)
     .await?;

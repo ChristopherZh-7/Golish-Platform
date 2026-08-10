@@ -33,6 +33,16 @@ const CONTRACT_INVALID: &str = "TOOL_TRUTH_CONTRACT_INVALID";
 const DENOMINATOR_UNSEALED: &str = "TOOL_TRUTH_DENOMINATOR_UNSEALED";
 const RECEIPT_STALE: &str = "TOOL_TRUTH_RECEIPT_STALE";
 
+// These policies are frozen into every new receipt and are intentionally long
+// enough for one complete AI-driven operation to consume its predecessor
+// stages. The former 5-minute/1-minute windows made a normal EAS -> Enum ->
+// Vuln -> Investigation run expire by construction while automatic
+// revalidation remained manual-only and held. Expiry, target-state epochs and
+// all-fresh consumer checks remain unchanged; old receipts are never extended.
+const DEFAULT_TARGET_STATE_POSITIVE_TTL_MS: i64 = 86_400_000;
+const DEFAULT_TARGET_STATE_NEGATIVE_TTL_MS: i64 = 21_600_000;
+const DEFAULT_TARGET_STATE_REFUTATION_TTL_MS: i64 = 7_200_000;
+
 fn fail(code: &'static str) -> DbError {
     DbError::Other(anyhow::anyhow!(code))
 }
@@ -148,6 +158,15 @@ pub struct SealFixedProviderDestinationPolicy {
     pub endpoints: Vec<FixedProviderEndpoint>,
 }
 
+/// Seal an empty, enforced sandbox boundary for a host-owned reconciliation
+/// pass. The pass performs no network I/O; it only reconciles already-landed
+/// typed facts and evidence against one exact stage denominator.
+#[derive(Debug, Clone)]
+pub struct SealHostStageReconciliationPolicy {
+    pub denominator_id: Uuid,
+    pub capability: String,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
 pub struct SealedDestinationPolicy {
     pub id: Uuid,
@@ -211,6 +230,34 @@ pub struct TargetIntelInputObservation {
     pub input_key: String,
     pub technique: String,
     pub observation_state: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiptFinalizationMode {
+    TargetIntelProvider,
+    HostStageReconciliation,
+}
+
+impl ReceiptFinalizationMode {
+    const fn execution_backend(self) -> &'static str {
+        match self {
+            Self::TargetIntelProvider => "fixed_provider_transport",
+            Self::HostStageReconciliation => "sandboxed_cli",
+        }
+    }
+
+    const fn parser_contract(self) -> (&'static str, &'static str) {
+        match self {
+            Self::TargetIntelProvider => (
+                "target_intel.length_prefixed",
+                "target_intel.provider_result",
+            ),
+            Self::HostStageReconciliation => (
+                "tool_truth.host_stage_json",
+                "tool_truth.host_stage_reconciliation",
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -281,6 +328,41 @@ pub struct CapabilityExecutionReceiptRow {
     pub current_semantic_reconciliation_hash: Option<String>,
     pub row_version: i64,
     pub finalized_at: Option<DateTime<Utc>>,
+}
+
+/// Closed execution-authority reference accepted by compound domain writers.
+/// Every field is checked again by a composite FK/trigger; callers never pass
+/// an unscoped audit id or a self-authored authority tuple.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolTruthExecutionAuthorityRef {
+    pub id: Uuid,
+    pub operation_id: Uuid,
+    pub project_scope_id: Uuid,
+    pub project_path_at_freeze: String,
+    pub scope_snapshot_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub authority_hash: String,
+}
+
+/// One terminal generic receipt-input reference.  Domain repositories use
+/// this instead of maintaining a second completion/status vocabulary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapabilityReceiptInputRef {
+    pub receipt_id: Uuid,
+    pub receipt_input_id: Uuid,
+    pub denominator_id: Uuid,
+    pub denominator_item_id: Uuid,
+    pub logical_input_key: String,
+}
+
+/// Normalized Tool Truth evidence authority. `role` is deliberately closed by
+/// the occurrence-evidence table (`discovery`, `resolution`, `parameter`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvidenceAuthorityRef {
+    pub id: Uuid,
+    pub authority_hash: String,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize, PartialEq, Eq)]
@@ -371,6 +453,10 @@ struct FrozenSourceAuthority {
     stage_wave_binding_id: Option<Uuid>,
     stage_wave_binding_hash: Option<String>,
     stage_run_unit_id: Option<Uuid>,
+    /// A wave is an explicit dispatch census. Enumeration may not silently
+    /// drop one of its target members merely because the exact Web Origin was
+    /// not durably confirmed before the stage started.
+    enumeration_requires_every_source_target: bool,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -390,6 +476,113 @@ struct DerivedDenominatorItem {
     target_id: Uuid,
     exact_asset: String,
     member_hash: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct FrozenEnumerationOriginRow {
+    target_id: Uuid,
+    exact_origin: String,
+    target_name: String,
+    target_value: String,
+    target_ports: serde_json::Value,
+}
+
+/// Replace Enumeration's host-like source rows with the exact HTTP(S) Web
+/// Origins that EAS had already confirmed when this stage began.  The result
+/// is frozen while the source, target, observation, origin, and stage rows are
+/// share-locked; later observations can therefore never widen an existing
+/// root authority.
+async fn freeze_enumeration_exact_origin_assets(
+    tx: &mut Transaction<'_, Postgres>,
+    authority: &FrozenSourceAuthority,
+    stage_execution_id: Uuid,
+    source_assets: &[LockedDenominatorAsset],
+) -> Result<Vec<LockedDenominatorAsset>> {
+    let mut source_target_ids = source_assets
+        .iter()
+        .map(|asset| asset.target_id)
+        .collect::<Vec<_>>();
+    source_target_ids.sort_unstable();
+    source_target_ids.dedup();
+    if source_target_ids.is_empty() {
+        return Err(fail(CONTRACT_INVALID));
+    }
+
+    let rows = sqlx::query_as::<_, FrozenEnumerationOriginRow>(
+        r#"SELECT observation.target_id,origin.origin AS exact_origin,
+                  target.name AS target_name,target.value AS target_value,
+                  COALESCE(target.ports,'[]'::jsonb) AS target_ports
+              FROM web_origin_observations observation
+              JOIN web_origins origin ON origin.id=observation.web_origin_id
+              JOIN targets target ON target.id=observation.target_id
+              JOIN stage_runs stage ON stage.id=$4
+             WHERE observation.target_id=ANY($1)
+               AND observation.organization_id=$2
+               AND origin.organization_id=$2
+               AND target.organization_id=$2
+               AND observation.project_path=$3
+               AND origin.project_path=$3
+               AND target.project_path=$3
+               AND target.created_at<=stage.started_at
+               AND origin.created_at<=stage.started_at
+               AND observation.observed_at<=stage.started_at
+               AND origin.scheme IN ('http','https')
+               AND (
+                    observation.status_code IS NOT NULL
+                    OR LOWER(observation.source) IN (
+                        'httpx','nmap','eas_probe_http_liveness'
+                    )
+               )
+             ORDER BY observation.target_id,origin.origin,observation.observed_at,observation.id
+             FOR SHARE OF observation,origin,target,stage"#,
+    )
+    .bind(&source_target_ids)
+    .bind(authority.organization_id)
+    .bind(&authority.project_path_at_freeze)
+    .bind(stage_execution_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let source_target_set = source_target_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let mut exact_assets =
+        std::collections::BTreeMap::<(Uuid, String), LockedDenominatorAsset>::new();
+    let mut resolved_targets = std::collections::HashSet::new();
+    for row in rows {
+        let canonical = golish_pentest_domain::canonical_web_origin(&row.exact_origin)
+            .filter(|origin| origin.key == row.exact_origin)
+            .ok_or_else(|| fail(MANIFEST_DRIFT))?;
+        if !source_target_set.contains(&row.target_id)
+            || !golish_pentest_domain::confirmed_target_web_origins(
+                &row.target_name,
+                &row.target_value,
+                &row.target_ports,
+            )
+            .into_iter()
+            .any(|candidate| candidate.key == canonical.key)
+        {
+            return Err(fail(MANIFEST_DRIFT));
+        }
+        resolved_targets.insert(row.target_id);
+        exact_assets
+            .entry((row.target_id, canonical.key.clone()))
+            .or_insert(LockedDenominatorAsset {
+                target_id: row.target_id,
+                exact_asset: canonical.key,
+                asset_type: "url".to_string(),
+                web_capable: true,
+            });
+    }
+
+    if exact_assets.is_empty()
+        || (authority.enumeration_requires_every_source_target
+            && resolved_targets.len() != source_target_set.len())
+    {
+        return Err(fail(DENOMINATOR_UNSEALED));
+    }
+    Ok(exact_assets.into_values().collect())
 }
 
 /// Lock a durable source, compile its exact applicability set, and seal the
@@ -514,6 +707,7 @@ where
                     stage_wave_binding_id: Some(binding_id),
                     stage_wave_binding_hash: Some(persisted_binding_hash),
                     stage_run_unit_id: None,
+                    enumeration_requires_every_source_target: true,
                 },
                 assets,
             )
@@ -559,6 +753,7 @@ where
             .bind(&row.5)
             .fetch_optional(&mut *tx)
             .await?;
+            let wave_bound = bound_wave.is_some();
             let assets = if let Some((wave_id, asset_hash)) = bound_wave {
                 let wave_items = sqlx::query_as::<_, WaveItem>(
                     r#"SELECT id,target_id,asset_value,asset_type,source
@@ -619,10 +814,23 @@ where
                     stage_wave_binding_id: None,
                     stage_wave_binding_hash: None,
                     stage_run_unit_id: Some(stage_run_unit_id),
+                    enumeration_requires_every_source_target: wave_bound,
                 },
                 assets,
             )
         }
+    };
+
+    let locked_assets = if authority.stage_kind == "enumeration" {
+        freeze_enumeration_exact_origin_assets(
+            &mut tx,
+            &authority,
+            command.stage_execution_id,
+            &locked_assets,
+        )
+        .await?
+    } else {
+        locked_assets
     };
 
     let contract = ToolTruthContract::try_from(authority.operation_contract.as_str())
@@ -1144,7 +1352,6 @@ pub async fn seal_fixed_provider_destination_policy(
             || !(1..=65535).contains(&endpoint.port)
             || !endpoint.path_prefix.starts_with('/')
             || endpoint.path_prefix.contains('%')
-            || endpoint.path_prefix.contains('_')
     }) {
         return Err(fail(CONTRACT_INVALID));
     }
@@ -1282,6 +1489,102 @@ pub async fn seal_fixed_provider_destination_policy(
     Ok(row)
 }
 
+pub async fn seal_host_stage_reconciliation_policy(
+    pool: &PgPool,
+    command: &SealHostStageReconciliationPolicy,
+) -> Result<SealedDestinationPolicy> {
+    if command.denominator_id.is_nil() || command.capability.trim().is_empty() {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    let mut tx = pool.begin().await?;
+    let execution_authority_id: Uuid = sqlx::query_scalar(
+        r#"SELECT d.execution_authority_id
+             FROM coverage_denominators d
+             JOIN tool_truth_execution_authorities authority
+               ON authority.id=d.execution_authority_id
+            WHERE d.id=$1 AND d.sealed_at IS NOT NULL
+              AND authority.execution_owner_kind='host_stage'
+              AND EXISTS(
+                  SELECT 1 FROM coverage_denominator_items item
+                   WHERE item.denominator_id=d.id AND item.expected_capability=$2
+              )
+            FOR SHARE OF d,authority"#,
+    )
+    .bind(command.denominator_id)
+    .bind(&command.capability)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| fail(AUTHORITY_STALE))?;
+    let tls_policy_hash = sha256_json(&serde_json::json!({
+        "network_io": "not_permitted",
+        "reconciliation_only": true,
+    }))?;
+    let prohibited_range_policy_hash = sha256_json(&serde_json::json!({
+        "network_destinations": "sealed_empty",
+    }))?;
+    let policy_hash = sha256_json(&serde_json::json!({
+        "denominator_id": command.denominator_id,
+        "execution_authority_id": execution_authority_id,
+        "capability": command.capability,
+        "policy_contract_version": "tool_execution_destination.v1",
+        "execution_backend": "sandboxed_cli",
+        "governance_status": "enforced",
+        "redirect_mode": "deny",
+        "max_redirect_hops": 0,
+        "tls_policy_hash": tls_policy_hash,
+        "prohibited_range_policy_hash": prohibited_range_policy_hash,
+        "members": Vec::<String>::new(),
+    }))?;
+    if let Some(existing) = sqlx::query_as::<_, SealedDestinationPolicy>(
+        r#"SELECT id,execution_authority_id,policy_hash
+             FROM capability_execution_destination_policies
+            WHERE denominator_id=$1 AND capability=$2 AND policy_hash=$3
+              AND execution_backend='sandboxed_cli'
+              AND governance_status='enforced' AND sealed_at IS NOT NULL
+            FOR SHARE"#,
+    )
+    .bind(command.denominator_id)
+    .bind(&command.capability)
+    .bind(&policy_hash)
+    .fetch_optional(&mut *tx)
+    .await?
+    {
+        if existing.execution_authority_id != execution_authority_id {
+            return Err(fail(MANIFEST_DRIFT));
+        }
+        tx.commit().await?;
+        return Ok(existing);
+    }
+    let policy_id = Uuid::new_v5(&command.denominator_id, policy_hash.as_bytes());
+    sqlx::query(
+        r#"INSERT INTO capability_execution_destination_policies(
+               id,denominator_id,execution_authority_id,capability,
+               execution_backend,governance_status,redirect_mode,max_redirect_hops,
+               tls_policy_hash,prohibited_range_policy_hash,policy_hash
+           ) VALUES($1,$2,$3,$4,'sandboxed_cli','enforced','deny',0,$5,$6,$7)"#,
+    )
+    .bind(policy_id)
+    .bind(command.denominator_id)
+    .bind(execution_authority_id)
+    .bind(&command.capability)
+    .bind(tls_policy_hash)
+    .bind(prohibited_range_policy_hash)
+    .bind(&policy_hash)
+    .execute(&mut *tx)
+    .await?;
+    let row = sqlx::query_as::<_, SealedDestinationPolicy>(
+        r#"UPDATE capability_execution_destination_policies
+              SET sealed_at=statement_timestamp()
+            WHERE id=$1
+            RETURNING id,execution_authority_id,policy_hash"#,
+    )
+    .bind(policy_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(row)
+}
+
 pub async fn begin(
     pool: &PgPool,
     command: &BeginCapabilityReceipt,
@@ -1336,8 +1639,73 @@ pub async fn begin_managed_claim(
     })
 }
 
+/// Transaction-scoped managed begin used by host-owned durable I/O claims.
+/// The caller owns commit/rollback so the derived denominator, destination
+/// policy, receipt and domain binding become visible as one durable begin.
+pub async fn begin_managed_claim_in_connection(
+    conn: &mut sqlx::PgConnection,
+    command: &BeginManagedCapabilityReceipt,
+) -> Result<ManagedReceiptBeginOutcome> {
+    let (row, created) = begin_on_connection(
+        conn,
+        command.id,
+        command.denominator_id,
+        &command.capability,
+        command.attempt_ordinal,
+        Some(command.destination_policy_id),
+    )
+    .await?;
+    Ok(if created {
+        ManagedReceiptBeginOutcome::Created(row)
+    } else if row.finalized_at.is_some() {
+        ManagedReceiptBeginOutcome::TerminalReplay(row)
+    } else {
+        ManagedReceiptBeginOutcome::InFlight(row)
+    })
+}
+
 async fn begin_on(
     pool: &PgPool,
+    receipt_id: Uuid,
+    denominator_id: Uuid,
+    capability: &str,
+    attempt_ordinal: i32,
+    managed_destination_policy_id: Option<Uuid>,
+) -> Result<(CapabilityExecutionReceiptRow, bool)> {
+    let mut tx = pool.begin().await?;
+    let result = begin_on_connection(
+        &mut tx,
+        receipt_id,
+        denominator_id,
+        capability,
+        attempt_ordinal,
+        managed_destination_policy_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(result)
+}
+
+/// Transaction-scoped begin used by compound domain commits. The caller owns
+/// commit/rollback so the capability receipt cannot survive without the
+/// entities and final lane receipt it authorizes.
+pub async fn begin_in_connection(
+    conn: &mut sqlx::PgConnection,
+    command: &BeginCapabilityReceipt,
+) -> Result<(CapabilityExecutionReceiptRow, bool)> {
+    begin_on_connection(
+        conn,
+        command.id,
+        command.denominator_id,
+        &command.capability,
+        command.attempt_ordinal,
+        None,
+    )
+    .await
+}
+
+async fn begin_on_connection(
+    conn: &mut sqlx::PgConnection,
     receipt_id: Uuid,
     denominator_id: Uuid,
     capability: &str,
@@ -1347,18 +1715,17 @@ async fn begin_on(
     if attempt_ordinal <= 0 || capability.trim().is_empty() {
         return Err(fail(CONTRACT_INVALID));
     }
-    let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!(
             "tool-truth-receipt:{denominator_id}:{capability}:{attempt_ordinal}"
         ))
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
     let denominator = sqlx::query_as::<_, (Uuid, String, String, Option<DateTime<Utc>>)>(
         "SELECT execution_authority_id,input_manifest_hash,denominator_hash,sealed_at FROM coverage_denominators WHERE id=$1 FOR SHARE",
     )
     .bind(denominator_id)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     .ok_or_else(|| fail(AUTHORITY_STALE))?;
     if denominator.3.is_none() {
@@ -1369,7 +1736,7 @@ async fn begin_on(
     )
     .bind(denominator_id)
     .bind(capability)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
     if !exact_capability {
         return Err(fail(MANIFEST_DRIFT));
@@ -1381,7 +1748,10 @@ async fn begin_on(
         sqlx::query_as::<_, (Uuid, String)>(
             r#"SELECT id,policy_hash FROM capability_execution_destination_policies
                     WHERE id=$1 AND denominator_id=$2 AND execution_authority_id=$3
-                      AND capability=$4 AND execution_backend='fixed_provider_transport'
+                      AND capability=$4
+                      AND execution_backend IN (
+                          'fixed_provider_transport','host_pinned_http','sandboxed_cli'
+                      )
                       AND governance_status='enforced' AND sealed_at IS NOT NULL
                     FOR SHARE"#,
         )
@@ -1389,7 +1759,7 @@ async fn begin_on(
         .bind(denominator_id)
         .bind(denominator.0)
         .bind(capability)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(|| fail(AUTHORITY_STALE))?
     } else {
@@ -1412,7 +1782,7 @@ async fn begin_on(
         .bind(denominator.0)
         .bind(capability)
         .bind(&policy_hash)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?
         {
             id
@@ -1432,13 +1802,13 @@ async fn begin_on(
             .bind(tls_policy_hash)
             .bind(prohibited_range_policy_hash)
             .bind(&policy_hash)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await?;
             sqlx::query(
                     "UPDATE capability_execution_destination_policies SET sealed_at=statement_timestamp() WHERE id=$1",
                 )
                 .bind(id)
-                .execute(&mut *tx)
+                .execute(&mut *conn)
                 .await?;
             id
         };
@@ -1452,14 +1822,14 @@ async fn begin_on(
     .bind(denominator.0)
     .bind(capability)
     .bind(attempt_ordinal)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     {
         let (existing_policy_id, existing_policy_hash): (Uuid, String) = sqlx::query_as(
             "SELECT destination_policy_id,destination_policy_hash FROM capability_execution_receipts WHERE id=$1",
         )
         .bind(existing.id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut *conn)
         .await?;
         if existing.input_manifest_hash != denominator.1
             || existing_policy_id != destination_policy_id
@@ -1467,12 +1837,11 @@ async fn begin_on(
         {
             return Err(fail(MANIFEST_DRIFT));
         }
-        tx.commit().await?;
         return Ok((existing, false));
     }
 
     supersede_prior_attempts_on(
-        &mut tx,
+        conn,
         denominator_id,
         denominator.0,
         capability,
@@ -1482,9 +1851,9 @@ async fn begin_on(
 
     let temporal_member_hash = sha256_json(&serde_json::json!({
         "fact_class": "target_state",
-        "positive_ttl_ms": 300000,
-        "negative_ttl_ms": 60000,
-        "refutation_ttl_ms": 60000,
+        "positive_ttl_ms": DEFAULT_TARGET_STATE_POSITIVE_TTL_MS,
+        "negative_ttl_ms": DEFAULT_TARGET_STATE_NEGATIVE_TTL_MS,
+        "refutation_ttl_ms": DEFAULT_TARGET_STATE_REFUTATION_TTL_MS,
         "same_epoch": true,
         "required_recheck_source": "manual_only",
     }))?;
@@ -1500,7 +1869,7 @@ async fn begin_on(
     )
     .bind(denominator.0)
     .bind(&temporal_policy_hash)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?
     {
         id
@@ -1514,25 +1883,28 @@ async fn begin_on(
         .bind(id)
         .bind(denominator.0)
         .bind(&temporal_policy_hash)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             r#"INSERT INTO evidence_temporal_validity_policy_members(
                    id,policy_id,ordinal,fact_class,positive_ttl_ms,negative_ttl_ms,
                    refutation_ttl_ms,require_same_target_state_epoch,
                    required_recheck_source,member_hash
-               ) VALUES($1,$2,0,'target_state',300000,60000,60000,TRUE,'manual_only',$3)"#,
+               ) VALUES($1,$2,0,'target_state',$3,$4,$5,TRUE,'manual_only',$6)"#,
         )
         .bind(Uuid::new_v4())
         .bind(id)
+        .bind(DEFAULT_TARGET_STATE_POSITIVE_TTL_MS)
+        .bind(DEFAULT_TARGET_STATE_NEGATIVE_TTL_MS)
+        .bind(DEFAULT_TARGET_STATE_REFUTATION_TTL_MS)
         .bind(temporal_member_hash)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
         sqlx::query(
             "UPDATE evidence_temporal_validity_policies SET sealed_at=statement_timestamp() WHERE id=$1",
         )
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await?;
         id
     };
@@ -1576,14 +1948,13 @@ async fn begin_on(
     .bind(temporal_policy_id)
     .bind(temporal_policy_hash)
     .bind(typed_landing)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut *conn)
     .await?;
-    tx.commit().await?;
     Ok((row, true))
 }
 
 async fn supersede_prior_attempts_on(
-    tx: &mut Transaction<'_, Postgres>,
+    conn: &mut sqlx::PgConnection,
     denominator_id: Uuid,
     execution_authority_id: Uuid,
     capability: &str,
@@ -1600,7 +1971,7 @@ async fn supersede_prior_attempts_on(
     .bind(execution_authority_id)
     .bind(capability)
     .bind(current_attempt_ordinal)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await?;
     for (receipt_id, row_version, semantic_version, predecessor_id) in prior {
         let reconciliation_id = Uuid::new_v5(
@@ -1619,7 +1990,7 @@ async fn supersede_prior_attempts_on(
         .bind(execution_authority_id)
         .bind(next_version)
         .bind(predecessor_id)
-        .execute(&mut **tx)
+        .execute(&mut *conn)
         .await?;
         let semantic_hash: String = sqlx::query_scalar(
             r#"UPDATE capability_execution_reconciliations
@@ -1628,7 +1999,7 @@ async fn supersede_prior_attempts_on(
                 WHERE id=$1 RETURNING semantic_reconciliation_hash"#,
         )
         .bind(reconciliation_id)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut *conn)
         .await?;
         let updated = sqlx::query(
             r#"UPDATE capability_execution_receipts
@@ -1654,7 +2025,7 @@ async fn supersede_prior_attempts_on(
         .bind(next_version)
         .bind(reconciliation_id)
         .bind(semantic_hash)
-        .execute(&mut **tx)
+        .execute(&mut *conn)
         .await?;
         if updated.rows_affected() != 1 {
             return Err(fail(RECEIPT_STALE));
@@ -1884,7 +2255,10 @@ fn network_address_is_public(address: IpAddr) -> bool {
     }
 }
 
-fn target_intel_finalization_request_hash(command: &FinalizeTargetIntelReceipt) -> Result<String> {
+fn finalization_request_hash(
+    command: &FinalizeTargetIntelReceipt,
+    mode: ReceiptFinalizationMode,
+) -> Result<String> {
     let mut observations = command
         .input_observations
         .iter()
@@ -1922,6 +2296,7 @@ fn target_intel_finalization_request_hash(command: &FinalizeTargetIntelReceipt) 
         .collect::<Vec<_>>();
     hops.sort_by_key(|value| value.to_string());
     sha256_json(&serde_json::json!({
+        "finalization_mode": mode.execution_backend(),
         "receipt_id": command.receipt_id,
         "attempt_fence": command.attempt_fence.as_ref().map(|fence| serde_json::json!({
             "worker_run_id": fence.worker_run_id,
@@ -1966,6 +2341,29 @@ pub async fn finalize_target_intel_receipt(
     pool: &PgPool,
     command: &FinalizeTargetIntelReceipt,
 ) -> Result<CapabilityExecutionReceiptRow> {
+    finalize_receipt(pool, command, ReceiptFinalizationMode::TargetIntelProvider).await
+}
+
+/// Finalize a host-owned stage reconciliation. This path is deliberately
+/// network-empty: the witness is a canonical projection of already-persisted
+/// typed outcomes, not a second execution of the underlying tools.
+pub async fn finalize_host_stage_receipt(
+    pool: &PgPool,
+    command: &FinalizeTargetIntelReceipt,
+) -> Result<CapabilityExecutionReceiptRow> {
+    finalize_receipt(
+        pool,
+        command,
+        ReceiptFinalizationMode::HostStageReconciliation,
+    )
+    .await
+}
+
+async fn finalize_receipt(
+    pool: &PgPool,
+    command: &FinalizeTargetIntelReceipt,
+    mode: ReceiptFinalizationMode,
+) -> Result<CapabilityExecutionReceiptRow> {
     if command.receipt_id.is_nil()
         || command.request_count < 0
         || command.response_byte_count < 0
@@ -1994,6 +2392,14 @@ pub async fn finalize_target_intel_receipt(
                 "found" | "no_match" | "indeterminate"
             )
     }) || observations.len() != command.input_observations.len()
+    {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    if mode == ReceiptFinalizationMode::HostStageReconciliation
+        && (!command.network_hops.is_empty()
+            || command.request_count != 0
+            || command.retry_count != 0
+            || command.attempt_fence.is_some())
     {
         return Err(fail(CONTRACT_INVALID));
     }
@@ -2027,7 +2433,7 @@ pub async fn finalize_target_intel_receipt(
     {
         return Err(fail(CONTRACT_INVALID));
     }
-    let finalization_request_hash = target_intel_finalization_request_hash(command)?;
+    let finalization_request_hash = finalization_request_hash(command, mode)?;
     let mut fence_current = true;
 
     let mut tx = pool.begin().await?;
@@ -2090,13 +2496,14 @@ pub async fn finalize_target_intel_receipt(
         r#"SELECT EXISTS(
               SELECT 1 FROM capability_execution_destination_policies
                WHERE id=$1 AND execution_authority_id=$2 AND policy_hash=$3
-                 AND execution_backend='fixed_provider_transport'
+                 AND execution_backend=$4
                  AND governance_status='enforced' AND sealed_at IS NOT NULL
            )"#,
     )
     .bind(receipt.4)
     .bind(receipt.1)
     .bind(&receipt.5)
+    .bind(mode.execution_backend())
     .fetch_one(&mut *tx)
     .await?;
     if !destination_enforced {
@@ -2233,15 +2640,28 @@ pub async fn finalize_target_intel_receipt(
     } else if command.attempt_fence.is_some() {
         return Err(fail(AUTHORITY_STALE));
     }
+    let (audit_action, audit_details, classification_reason) = match mode {
+        ReceiptFinalizationMode::TargetIntelProvider => (
+            "target_intel_receipt_observed",
+            "Canonical TargetIntel provider execution",
+            "sealed TargetIntel execution",
+        ),
+        ReceiptFinalizationMode::HostStageReconciliation => (
+            "host_stage_receipt_reconciled",
+            "Canonical host-stage typed outcome reconciliation",
+            "sealed host-stage reconciliation",
+        ),
+    };
     let audit_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO audit_log(
                action,category,details,project_path,source,status,detail,run_id,audit_role,
                evidence_technique,evidence_outcome
-           ) VALUES('target_intel_receipt_observed','tool_truth',
-                    'Canonical TargetIntel provider execution',$1,'tool_truth_receipt',
-                    'completed',$2,$3,'evidence',$4,$5)
+           ) VALUES($1,'tool_truth',$2,$3,'tool_truth_receipt',
+                    'completed',$4,$5,'evidence',$6,$7)
            RETURNING id"#,
     )
+    .bind(audit_action)
+    .bind(audit_details)
     .bind(&authority.2)
     .bind(serde_json::json!({"tool_truth_producer": producer}))
     .bind(authority.0)
@@ -2262,11 +2682,12 @@ pub async fn finalize_target_intel_receipt(
         r#"INSERT INTO evidence_classifications(
                evidence_audit_id,classification,scope_version,reason,
                classified_by_session,producing_stage_run_id
-           ) VALUES($1,'in_scope',$2,'sealed TargetIntel execution','tool_truth_receipt',$3)
+           ) VALUES($1,'in_scope',$2,$3,'tool_truth_receipt',$4)
            RETURNING id"#,
     )
     .bind(audit_id)
     .bind(scope_version)
+    .bind(classification_reason)
     .bind(authority.5)
     .fetch_one(&mut *tx)
     .await?;
@@ -2401,8 +2822,9 @@ pub async fn finalize_target_intel_receipt(
     }
 
     let parser_census_id = Uuid::new_v5(&command.receipt_id, b"parser-census:v1");
+    let (framer_contract_id, parser_contract_id) = mode.parser_contract();
     let parser_digest = sha256_json(&serde_json::json!({
-        "parser": "target_intel_provider_result",
+        "parser": parser_contract_id,
         "version": 1,
     }))?;
     let framing_manifest_hash = sha256_json(&serde_json::json!({
@@ -2416,16 +2838,17 @@ pub async fn finalize_target_intel_receipt(
                framer_digest,framing_manifest_hash,parser_contract_id,
                parser_contract_version,parser_digest,parse_domain_byte_count,
                framed_record_count,unaccounted_nonempty_record_count,sealed_empty
-           ) VALUES($1,$2,$3,$4,$5,'target_intel.length_prefixed','1',$6,$7,
-                    'target_intel.provider_result','1',$8,$9,$10,0,FALSE)"#,
+           ) VALUES($1,$2,$3,$4,$5,$6,'1',$7,$8,$9,'1',$10,$11,$12,0,FALSE)"#,
     )
     .bind(parser_census_id)
     .bind(command.receipt_id)
     .bind(receipt.1)
     .bind(&receipt.3)
     .bind(command.raw_witness.artifact_id)
+    .bind(framer_contract_id)
     .bind(&parser_digest)
     .bind(framing_manifest_hash)
+    .bind(parser_contract_id)
     .bind(&parser_digest)
     .bind(command.raw_witness.stored_byte_count)
     .bind(if command.raw_witness.stored_byte_count > 0 {
@@ -2502,7 +2925,8 @@ pub async fn finalize_target_intel_receipt(
         && command.parser_complete
         && command.failure_reason_code.is_none()
         && !command.raw_witness.truncated
-        && !command.network_hops.is_empty()
+        && (mode == ReceiptFinalizationMode::HostStageReconciliation
+            || !command.network_hops.is_empty())
         && items.iter().all(|(_, input_key, technique)| {
             matches!(
                 observation_map
@@ -2895,7 +3319,14 @@ pub async fn finalize_target_intel_receipt(
             command
                 .failure_reason_code
                 .clone()
-                .unwrap_or_else(|| "target_intel_incomplete".to_string()),
+                .unwrap_or_else(|| match mode {
+                    ReceiptFinalizationMode::TargetIntelProvider => {
+                        "target_intel_incomplete".to_string()
+                    }
+                    ReceiptFinalizationMode::HostStageReconciliation => {
+                        "host_stage_reconciliation_incomplete".to_string()
+                    }
+                }),
         )
     };
     let semantic_hash: String = sqlx::query_scalar(
@@ -2924,6 +3355,21 @@ pub async fn finalize_target_intel_receipt(
         "no_match"
     } else {
         "indeterminate"
+    };
+    let receipt_security_interpretation = if receipt_observation == "found" {
+        "signal"
+    } else if mode == ReceiptFinalizationMode::HostStageReconciliation
+        && command
+            .typed_landing
+            .get("security_interpretation")
+            .and_then(serde_json::Value::as_str)
+            == Some("inconclusive")
+    {
+        "inconclusive"
+    } else if complete {
+        "not_assessed"
+    } else {
+        "inconclusive"
     };
     let row = sqlx::query_as::<_, CapabilityExecutionReceiptRow>(&format!(
         r#"UPDATE capability_execution_receipts
@@ -2965,17 +3411,14 @@ pub async fn finalize_target_intel_receipt(
         "source_unavailable"
     })
     .bind(reconciliation_state)
-    .bind(if receipt_observation == "found" {
-        "signal"
-    } else if complete {
-        "not_assessed"
-    } else {
-        "inconclusive"
-    })
+    .bind(receipt_security_interpretation)
     .bind(&command.typed_landing)
     .bind((!complete).then(|| {
         serde_json::json!({
-            "code": "TOOL_TRUTH_TARGET_INTEL_INCOMPLETE",
+            "code": match mode {
+                ReceiptFinalizationMode::TargetIntelProvider => "TOOL_TRUTH_TARGET_INTEL_INCOMPLETE",
+                ReceiptFinalizationMode::HostStageReconciliation => "TOOL_TRUTH_HOST_STAGE_INCOMPLETE",
+            },
             "missing_inputs": items
                 .iter()
                 .filter(|(_, input_key, technique)| {
@@ -3000,6 +3443,21 @@ pub async fn finalize_target_intel_receipt(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| fail(RECEIPT_STALE))?;
+    if reconciliation_state == "orphaned" {
+        super::report_authority_invalidation::invalidate_reports_for_source_authority_on(
+            &mut tx,
+            super::report_authority_invalidation::ReportInvalidationSourceV1::ToolTruthSemanticOrphan {
+                receipt_id: command.receipt_id,
+                reconciliation_id,
+                reconciliation_hash: row
+                    .current_semantic_reconciliation_hash
+                    .clone()
+                    .ok_or_else(|| fail(MANIFEST_DRIFT))?,
+            },
+            Uuid::new_v5(&reconciliation_id, b"tool-truth-report-invalidation.v1"),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(row)
 }
@@ -3087,6 +3545,18 @@ pub async fn append_reconciliation_failure(
     .await?;
     if affected.rows_affected() != 1 {
         return Err(fail(RECEIPT_STALE));
+    }
+    if command.state == ReconciliationFailureState::Orphaned {
+        super::report_authority_invalidation::invalidate_reports_for_source_authority_on(
+            &mut tx,
+            super::report_authority_invalidation::ReportInvalidationSourceV1::ToolTruthSemanticOrphan {
+                receipt_id: command.receipt_id,
+                reconciliation_id: command.id,
+                reconciliation_hash: semantic_hash.to_owned(),
+            },
+            Uuid::new_v5(&command.id, b"tool-truth-report-invalidation.v1"),
+        )
+        .await?;
     }
     tx.commit().await?;
     Ok(reconciliation)

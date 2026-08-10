@@ -2632,6 +2632,7 @@ dependencies = [
  "hmac 0.13.0",
  "parking_lot",
  "regex",
+ "reqwest 0.13.3",
  "rig-core",
  "ring",
  "serde",
@@ -2747,8 +2748,10 @@ dependencies = [
  "golish-llm-providers",
  "golish-memory-app",
  "golish-memory-domain",
+ "golish-pentest-domain",
  "golish-prompts",
  "golish-settings",
+ "golish-skills",
  "golish-sub-agents",
  "golish-tools",
  "parking_lot",
@@ -2766,6 +2769,7 @@ dependencies = [
  "tokenx-rs",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -3398,6 +3402,7 @@ dependencies = [
  "sqlx",
  "tauri",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "ts-rs",
@@ -3431,6 +3436,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
+ "ts-rs",
  "uuid",
 ]
 
@@ -3536,9 +3542,12 @@ name = "golish-skills"
 version = "0.2.43"
 dependencies = [
  "anyhow",
+ "chrono",
  "dirs",
  "golish-core",
+ "libc",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.18",
@@ -3566,6 +3575,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.11.0",
  "tempfile",
  "tera",
  "thiserror 2.0.18",
@@ -9690,6 +9700,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "ts-rs-macros",
+ "uuid",
 ]
 
 [[package]]

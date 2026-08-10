@@ -214,7 +214,7 @@ pub async fn scoping_passive_recon_organization_authorized(
     )
     .await?;
     Ok(matches!(
-        latest_subsidiary_choice(&lifecycle, root_organization_id),
+        latest_subsidiary_choice(&lifecycle, root_organization_id, None),
         Some((_, SubsidiaryChoice::Included))
     ))
 }
@@ -260,10 +260,14 @@ pub async fn derive_exact_with_connection(
         input.stage_execution_id,
     )
     .await?;
-    let (choice_row, choice) = latest_subsidiary_choice(&lifecycle, input.root_organization_id)
-        .ok_or(ScopeDecisionError::Missing {
-            entity: "scope_decision_choice",
-        })?;
+    let (choice_row, choice) = latest_subsidiary_choice(
+        &lifecycle,
+        input.root_organization_id,
+        Some(&root.organization_name),
+    )
+    .ok_or(ScopeDecisionError::Missing {
+        entity: "scope_decision_choice",
+    })?;
 
     let root_unit = ApprovedOrgUnit {
         decision_row_id: format!("root:{}", input.root_organization_id),
@@ -523,14 +527,16 @@ pub async fn load_for_execution_with_connection(
     .await?)
 }
 
-fn latest_subsidiary_choice(
-    lifecycle: &[ExactScopingLifecycleRow],
+fn latest_subsidiary_choice<'a>(
+    lifecycle: &'a [ExactScopingLifecycleRow],
     root_organization_id: Uuid,
-) -> Option<(&ExactScopingLifecycleRow, SubsidiaryChoice)> {
+    root_organization_name: Option<&str>,
+) -> Option<(&'a ExactScopingLifecycleRow, SubsidiaryChoice)> {
     lifecycle
         .iter()
         .filter_map(|row| {
-            parse_subsidiary_choice(row, root_organization_id).map(|choice| (row, choice))
+            parse_subsidiary_choice(row, root_organization_id, root_organization_name)
+                .map(|choice| (row, choice))
         })
         .next_back()
 }
@@ -538,49 +544,19 @@ fn latest_subsidiary_choice(
 fn parse_subsidiary_choice(
     row: &ExactScopingLifecycleRow,
     root_organization_id: Uuid,
+    root_organization_name: Option<&str>,
 ) -> Option<SubsidiaryChoice> {
-    if row.name != "ask_human" || row.args.get("input_type")?.as_str()? != "choice" {
+    if row.name != "ask_human" {
         return None;
     }
-    let context = serde_json::from_str::<Value>(row.args.get("context")?.as_str()?).ok()?;
-    if context.get("decision")?.as_str()? != "subsidiary_scope"
-        || context
-            .get("organization_id")?
-            .as_str()?
-            .parse::<Uuid>()
-            .ok()?
-            != root_organization_id
-    {
-        return None;
-    }
-    let result = successful_human_result(row.result.as_deref())?;
-    let response = result.to_ascii_lowercase();
-    if [
-        "不纳入子公司",
-        "仅母公司",
-        "只测试母公司",
-        "no subsidiaries",
-        "exclude subsidiaries",
-        "parent company only",
-        "root only",
-    ]
-    .iter()
-    .any(|marker| response.contains(marker))
-    {
-        Some(SubsidiaryChoice::RootOnly)
-    } else if [
-        "纳入：",
-        "纳入:",
-        "纳入子公司",
-        "include subsidiaries",
-        "subsidiaries in scope",
-    ]
-    .iter()
-    .any(|marker| response.contains(marker))
-    {
-        Some(SubsidiaryChoice::Included)
-    } else {
-        None
+    match tool_calls::subsidiary_scope_decision(
+        &row.args,
+        row.result.as_deref(),
+        root_organization_id,
+        root_organization_name,
+    )? {
+        true => Some(SubsidiaryChoice::RootOnly),
+        false => Some(SubsidiaryChoice::Included),
     }
 }
 
@@ -874,5 +850,71 @@ mod tests {
         assert!(ScopeDecisionMode::ALL
             .iter()
             .all(|mode| MODE_CHECK_SQL.contains(mode.as_str())));
+    }
+
+    #[test]
+    fn exact_scope_freeze_reuses_canonical_typed_subsidiary_choice_parser() {
+        let root_organization_id = Uuid::new_v4();
+        let row = |response: &str| ExactScopingLifecycleRow {
+            id: Uuid::new_v4(),
+            call_id: Uuid::new_v4().to_string(),
+            session_id: Uuid::new_v4(),
+            name: "ask_human".to_string(),
+            args: serde_json::json!({
+                "input_type": "choice",
+                "context": serde_json::json!({
+                    "decision": "subsidiary_scope",
+                    "organization_id": root_organization_id,
+                }).to_string(),
+                "question": "Choose subsidiary scope",
+                "options": ["root_only", "include_51", "include_100"],
+            }),
+            result: Some(
+                serde_json::json!({
+                    "response": response,
+                    "skipped": false,
+                })
+                .to_string(),
+            ),
+            created_at: Utc::now(),
+        };
+
+        assert_eq!(
+            parse_subsidiary_choice(&row("root_only"), root_organization_id, None),
+            Some(SubsidiaryChoice::RootOnly)
+        );
+        assert_eq!(
+            parse_subsidiary_choice(&row("include_100"), root_organization_id, None),
+            Some(SubsidiaryChoice::Included)
+        );
+
+        let legacy = ExactScopingLifecycleRow {
+            args: serde_json::json!({
+                "input_type": "choice",
+                "context": "Confirmed enterprise: Golish Fixture Corporation",
+                "question": "Confirm subsidiary scope for Golish Fixture Corporation",
+                "options": [
+                    "Root-only: only Golish Fixture Corporation is in scope",
+                    "Include subsidiaries",
+                ],
+            }),
+            result: Some(
+                serde_json::json!({
+                    "response": "Root-only: only Golish Fixture Corporation is in scope",
+                    "skipped": false,
+                })
+                .to_string(),
+            ),
+            ..row("root_only")
+        };
+        assert_eq!(
+            parse_subsidiary_choice(
+                &legacy,
+                root_organization_id,
+                Some("Golish Fixture Corporation"),
+            ),
+            Some(SubsidiaryChoice::RootOnly),
+            "an exact-operation legacy request is accepted only when it names the exact root"
+        );
     }
 }

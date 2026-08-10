@@ -181,6 +181,7 @@ pub(crate) fn build_profile_patch_from_entries(
                 | "wechat_official_accounts"
                 | "exposed_emails"
                 | "code_leaks"
+                | "code_repositories"
                 | "mail_mx"
         )
     }

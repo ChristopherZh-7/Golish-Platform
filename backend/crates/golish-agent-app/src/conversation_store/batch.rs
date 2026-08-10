@@ -130,8 +130,8 @@ pub async fn conv_save_batch(
             }
 
             sqlx::query(
-                r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                r#"INSERT INTO terminal_state (session_id, conversation_id, working_directory, scrollback, custom_name, plan_json, execution_mode, retired_plans_json, plan_message_id, stage_run_json, investigation_workspace_json)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                    ON CONFLICT (session_id) DO UPDATE SET
                      working_directory = EXCLUDED.working_directory,
                      scrollback = EXCLUDED.scrollback,
@@ -141,6 +141,7 @@ pub async fn conv_save_batch(
                      retired_plans_json = EXCLUDED.retired_plans_json,
                      plan_message_id = EXCLUDED.plan_message_id,
                      stage_run_json = EXCLUDED.stage_run_json,
+                     investigation_workspace_json = EXCLUDED.investigation_workspace_json,
                      updated_at = NOW()"#,
             )
             .bind(&ts.session_id)
@@ -153,6 +154,12 @@ pub async fn conv_save_batch(
             .bind(&ts.retired_plans_json)
             .bind(&ts.plan_message_id)
             .bind(&ts.stage_run_json)
+            .bind(
+                ts.investigation_workspace_json
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?,
+            )
             .execute(&mut *tx)
             .await
 ?;

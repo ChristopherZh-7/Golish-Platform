@@ -194,12 +194,780 @@ impl CleanupCloseoutGateSnapshot {
     }
 }
 
+/// DB-authoritative Enumeration v2 exact-subject closure. Counts are derived
+/// from the frozen root denominator, immutable lane receipts and recomputed
+/// closure graphs; model deliverables and scheduler-specific WorkerOutputs
+/// cannot supply or reduce them. An unresolved endpoint may be terminal only
+/// through a bounded Resolution receipt and remains visible as residual
+/// observability metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnumerationOccurrenceGateSnapshot {
+    pub enforces_closeout: bool,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub frozen_subject_count: i64,
+    pub coverage_receipt_count: i64,
+    pub missing_coverage_receipt_count: i64,
+    pub invalid_coverage_receipt_count: i64,
+    pub closure_graph_drift_count: i64,
+    /// Informational only: these occurrences are terminal residuals because
+    /// their exact Resolution receipts are dependencies of Coverage.
+    pub residual_occurrence_count: i64,
+}
+
+impl EnumerationOccurrenceGateSnapshot {
+    pub const fn allows_closeout(self) -> bool {
+        self.frozen_subject_count > 0
+            && self.coverage_receipt_count == self.frozen_subject_count
+            && self.missing_coverage_receipt_count == 0
+            && self.invalid_coverage_receipt_count == 0
+            && self.closure_graph_drift_count == 0
+    }
+}
+
+/// One immutable unresolved endpoint occurrence assigned to the bounded
+/// Enumeration Resolution lane. The repository derives the exact source
+/// target and Web Origin from the occurrence owner tuple; callers cannot
+/// supply either value from a model-authored work item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumerationUnresolvedOccurrenceView {
+    pub occurrence_id: Uuid,
+    pub source_target_id: Uuid,
+    pub exact_origin: String,
+    pub producer_receipt: EnumerationLaneClosureReceiptV2,
+}
+
+/// Read-only crash/replay recovery key for an already committed lane receipt.
+/// It is derived from the immutable formulaic shard; no worker/tool lease is
+/// required because recovery never writes lane truth or repeats an external
+/// action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverEnumerationLaneReceiptV2 {
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub lane: EnumerationLaneKindV2,
+    pub resolution_occurrence_id: Option<Uuid>,
+    pub dependency_receipt_ids: Vec<Uuid>,
+}
+
+/// Trusted task-local identity captured by the JS/API producer.  The lease
+/// token is deliberately absent from the artifact/worker output; runtime adds
+/// it only to the opaque commit command while the same tool call is live.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationProducerLineageV2 {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub worker_run_id: Uuid,
+    pub tool_call_record_id: Uuid,
+    pub worker_attempt_epoch: i64,
+}
+
+/// Value-free capture-manifest identity for one analyzed source file.  Script
+/// bodies and query values never cross this seam.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationProducerScriptV2 {
+    pub source_file: String,
+    pub manifest_url: String,
+    pub content_sha256: String,
+    pub source_urls: Vec<String>,
+    pub discovered_from: Vec<String>,
+    pub document_bases: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationProducerParameterFactV2 {
+    pub name: String,
+    pub location: String,
+    pub value_type: String,
+    pub requirement: String,
+    pub confidence: f32,
+    pub source_anchor_ids: Vec<String>,
+}
+
+/// One real static callsite emitted by the deterministic JS analyzer.  URL
+/// fields are sanitized/value-free; request bodies and credentials are absent.
+/// Parameter facts are source observations only.  They are not a terminal
+/// assessment and can only be reduced by the separately fenced Parameter
+/// worker.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationProducerOccurrenceV2 {
+    pub candidate_id: String,
+    pub source_file: String,
+    pub source_span: serde_json::Value,
+    pub method: String,
+    pub raw_expression: String,
+    pub receiver: Option<String>,
+    pub protocol: String,
+    pub resolution_status: String,
+    pub scope_decision: String,
+    pub canonical_url: Option<String>,
+    pub resolution_reason: String,
+    pub route_kind: String,
+    pub resolution_chain: serde_json::Value,
+    pub graphql_operation_name: Option<String>,
+    pub websocket_subprotocol: Option<String>,
+    pub request_sent: bool,
+    pub parameter_facts: Vec<EnumerationProducerParameterFactV2>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationProducerArtifactCensusV2 {
+    pub script_count: u32,
+    pub occurrence_count: u32,
+    pub parameter_fact_count: u32,
+    pub unresolved_occurrence_count: u32,
+    pub scope_excluded_occurrence_count: u32,
+    pub jsapi_evidence_count: u32,
+}
+
+/// Hash-bound, value-free output of the deterministic JS/API producer.  This
+/// is consumed synchronously before the producer tool lifecycle is finished;
+/// it is never reconstructed from a later/latest query.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationJsApiProducerArtifactV2 {
+    pub artifact_version: String,
+    pub lineage: EnumerationProducerLineageV2,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub scripts: Vec<EnumerationProducerScriptV2>,
+    pub occurrences: Vec<EnumerationProducerOccurrenceV2>,
+    pub jsapi_evidence_audit_ids: Vec<i64>,
+    pub census: EnumerationProducerArtifactCensusV2,
+    pub artifact_sha256: String,
+}
+
+impl EnumerationJsApiProducerArtifactV2 {
+    pub fn computed_artifact_sha256(&self) -> anyhow::Result<String> {
+        use sha2::{Digest, Sha256};
+
+        let material = serde_json::json!({
+            "artifact_version": self.artifact_version,
+            "captured_at": self.captured_at,
+            "census": self.census,
+            "jsapi_evidence_audit_ids": self.jsapi_evidence_audit_ids,
+            "lineage": self.lineage,
+            "occurrences": self.occurrences,
+            "scripts": self.scripts,
+        });
+        let encoded = serde_json::to_vec(&material)?;
+        let digest = Sha256::digest(encoded)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(format!("sha256:{digest}"))
+    }
+
+    pub fn validate_census_and_hash(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.artifact_version == "enumeration_js_api_producer_artifact.v2",
+            "ENUMERATION_PRODUCER_ARTIFACT_VERSION_INVALID"
+        );
+        anyhow::ensure!(
+            !self.jsapi_evidence_audit_ids.is_empty()
+                && self.jsapi_evidence_audit_ids.iter().all(|id| *id > 0)
+                && self
+                    .jsapi_evidence_audit_ids
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1]),
+            "ENUMERATION_PRODUCER_ARTIFACT_VACUOUS"
+        );
+        anyhow::ensure!(
+            self.occurrences
+                .iter()
+                .all(|occurrence| occurrence.parameter_facts.iter().all(|fact| {
+                    !fact.source_anchor_ids.is_empty()
+                        && fact
+                            .source_anchor_ids
+                            .iter()
+                            .all(|anchor| !anchor.trim().is_empty())
+                        && fact
+                            .source_anchor_ids
+                            .windows(2)
+                            .all(|pair| pair[0] < pair[1])
+                })),
+            "ENUMERATION_PRODUCER_PARAMETER_ANCHOR_MANIFEST_INVALID"
+        );
+        let parameter_fact_count = self
+            .occurrences
+            .iter()
+            .map(|occurrence| occurrence.parameter_facts.len())
+            .sum::<usize>();
+        let unresolved_occurrence_count = self
+            .occurrences
+            .iter()
+            .filter(|occurrence| {
+                matches!(
+                    occurrence.resolution_status.as_str(),
+                    "unresolved" | "ambiguous"
+                )
+            })
+            .count();
+        let scope_excluded_occurrence_count = self
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.scope_decision == "scope_excluded")
+            .count();
+        anyhow::ensure!(
+            usize::try_from(self.census.script_count).ok() == Some(self.scripts.len())
+                && usize::try_from(self.census.occurrence_count).ok()
+                    == Some(self.occurrences.len())
+                && usize::try_from(self.census.parameter_fact_count).ok()
+                    == Some(parameter_fact_count)
+                && usize::try_from(self.census.unresolved_occurrence_count).ok()
+                    == Some(unresolved_occurrence_count)
+                && usize::try_from(self.census.scope_excluded_occurrence_count).ok()
+                    == Some(scope_excluded_occurrence_count)
+                && usize::try_from(self.census.jsapi_evidence_count).ok()
+                    == Some(self.jsapi_evidence_audit_ids.len()),
+            "ENUMERATION_PRODUCER_ARTIFACT_CENSUS_DRIFT"
+        );
+        anyhow::ensure!(
+            self.computed_artifact_sha256()? == self.artifact_sha256,
+            "ENUMERATION_PRODUCER_ARTIFACT_HASH_DRIFT"
+        );
+        Ok(())
+    }
+}
+
+/// One value-free browser runtime observation.  Runtime parameter fields are
+/// source facts, not a PARAM terminal outcome.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationBrowserOccurrenceV2 {
+    pub logical_key: String,
+    pub capture_event_id: Uuid,
+    pub duplicate_ordinal: i32,
+    pub request_url: String,
+    pub canonical_request_url: String,
+    pub method: String,
+    pub page_url: String,
+    pub document_base: Option<String>,
+    pub request_header_names: Vec<String>,
+    pub parameter_facts: Vec<EnumerationProducerParameterFactV2>,
+    pub initiator_script_url: Option<String>,
+    pub initiator_line: Option<i32>,
+    pub initiator_column: Option<i32>,
+    pub initiator_status: String,
+    pub cdp_request_id_hash: Option<String>,
+    pub request_sent: bool,
+    pub read_only_block_reason: Option<String>,
+    pub observation_kind: String,
+    pub scope_decision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationBrowserArtifactCensusV2 {
+    pub script_count: u32,
+    pub occurrence_count: u32,
+    pub parameter_fact_count: u32,
+    pub browser_evidence_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationBrowserProducerArtifactV2 {
+    pub artifact_version: String,
+    pub lineage: EnumerationProducerLineageV2,
+    pub captured_at: chrono::DateTime<chrono::Utc>,
+    pub scripts: Vec<EnumerationProducerScriptV2>,
+    pub occurrences: Vec<EnumerationBrowserOccurrenceV2>,
+    pub browser_evidence_audit_ids: Vec<i64>,
+    pub census: EnumerationBrowserArtifactCensusV2,
+    pub artifact_sha256: String,
+}
+
+impl EnumerationBrowserProducerArtifactV2 {
+    pub fn computed_artifact_sha256(&self) -> anyhow::Result<String> {
+        use sha2::{Digest, Sha256};
+
+        let material = serde_json::json!({
+            "artifact_version": self.artifact_version,
+            "browser_evidence_audit_ids": self.browser_evidence_audit_ids,
+            "captured_at": self.captured_at,
+            "census": self.census,
+            "lineage": self.lineage,
+            "occurrences": self.occurrences,
+            "scripts": self.scripts,
+        });
+        let digest = Sha256::digest(serde_json::to_vec(&material)?)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(format!("sha256:{digest}"))
+    }
+
+    pub fn validate_census_and_hash(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.artifact_version == "enumeration_browser_producer_artifact.v2",
+            "ENUMERATION_BROWSER_ARTIFACT_VERSION_INVALID"
+        );
+        anyhow::ensure!(
+            !self.browser_evidence_audit_ids.is_empty()
+                && self.browser_evidence_audit_ids.iter().all(|id| *id > 0)
+                && self
+                    .browser_evidence_audit_ids
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1]),
+            "ENUMERATION_BROWSER_ARTIFACT_VACUOUS"
+        );
+        anyhow::ensure!(
+            self.occurrences
+                .iter()
+                .all(|occurrence| occurrence.parameter_facts.iter().all(|fact| {
+                    !fact.source_anchor_ids.is_empty()
+                        && fact
+                            .source_anchor_ids
+                            .iter()
+                            .all(|anchor| !anchor.trim().is_empty())
+                        && fact
+                            .source_anchor_ids
+                            .windows(2)
+                            .all(|pair| pair[0] < pair[1])
+                })),
+            "ENUMERATION_BROWSER_PARAMETER_ANCHOR_MANIFEST_INVALID"
+        );
+        let parameter_fact_count = self
+            .occurrences
+            .iter()
+            .map(|occurrence| occurrence.parameter_facts.len())
+            .sum::<usize>();
+        anyhow::ensure!(
+            usize::try_from(self.census.script_count).ok() == Some(self.scripts.len())
+                && usize::try_from(self.census.occurrence_count).ok()
+                    == Some(self.occurrences.len())
+                && usize::try_from(self.census.parameter_fact_count).ok()
+                    == Some(parameter_fact_count)
+                && usize::try_from(self.census.browser_evidence_count).ok()
+                    == Some(self.browser_evidence_audit_ids.len()),
+            "ENUMERATION_BROWSER_ARTIFACT_CENSUS_DRIFT"
+        );
+        anyhow::ensure!(
+            self.computed_artifact_sha256()? == self.artifact_sha256,
+            "ENUMERATION_BROWSER_ARTIFACT_HASH_DRIFT"
+        );
+        Ok(())
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EnumerationLaneKindV2 {
+    Browser,
+    JsApi,
+    Parameter,
+    Resolution,
+    Coverage,
+}
+
+/// Immutable, exact-set lane receipt.  Zero entity counts are valid when the
+/// terminal disposition is `checked_empty`; the receipt itself distinguishes
+/// that state from a lane that never ran.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnumerationLaneClosureReceiptV2 {
+    pub receipt_id: Uuid,
+    pub lane: EnumerationLaneKindV2,
+    pub execution_authority_id: Uuid,
+    pub artifact_sha256: String,
+    pub receipt_set_sha256: String,
+    pub closure_graph_sha256: String,
+    pub dependency_receipt_ids: Vec<Uuid>,
+    pub evidence_audit_ids: Vec<i64>,
+    pub script_denominator_id: Option<Uuid>,
+    pub candidate_denominator_ids: Vec<Uuid>,
+    pub parameter_denominator_ids: Vec<Uuid>,
+    pub resolution_occurrence_id: Option<Uuid>,
+    pub resolution_terminal_receipt_id: Option<Uuid>,
+    pub resolution_terminal_receipt_input_id: Option<Uuid>,
+    pub terminal_disposition: String,
+    pub entity_set_sha256: String,
+    pub denominator_set_sha256: String,
+    pub script_count: i64,
+    pub candidate_count: i64,
+    pub occurrence_count: i64,
+    pub parameter_assessment_count: i64,
+    pub parameter_fact_count: i64,
+    pub unresolved_count: i64,
+    pub group_count: i64,
+    pub occurrence_link_count: i64,
+    pub api_link_count: i64,
+    pub missing: i64,
+    pub replayed: bool,
+}
+
+impl EnumerationLaneClosureReceiptV2 {
+    pub fn is_terminal(&self) -> bool {
+        let ids_are_canonical = |ids: &[Uuid]| {
+            !ids.iter().any(Uuid::is_nil) && ids.windows(2).all(|pair| pair[0] < pair[1])
+        };
+        let evidence_is_canonical = !self.evidence_audit_ids.is_empty()
+            && self.evidence_audit_ids.iter().all(|id| *id > 0)
+            && self
+                .evidence_audit_ids
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]);
+        let denominator_shape_is_valid = match self.lane {
+            EnumerationLaneKindV2::Browser | EnumerationLaneKindV2::JsApi => {
+                self.script_denominator_id.is_some_and(|id| !id.is_nil())
+                    && !self.candidate_denominator_ids.is_empty()
+                    && self.parameter_denominator_ids.is_empty()
+                    && self.resolution_occurrence_id.is_none()
+                    && self.resolution_terminal_receipt_id.is_none()
+                    && self.resolution_terminal_receipt_input_id.is_none()
+            }
+            EnumerationLaneKindV2::Parameter => {
+                self.script_denominator_id.is_none()
+                    && self.candidate_denominator_ids.is_empty()
+                    && self.resolution_occurrence_id.is_none()
+            }
+            EnumerationLaneKindV2::Resolution => {
+                self.script_denominator_id.is_none()
+                    && self.candidate_denominator_ids.is_empty()
+                    && self.parameter_denominator_ids.is_empty()
+                    && self.resolution_occurrence_id.is_some_and(|id| !id.is_nil())
+                    && self
+                        .resolution_terminal_receipt_id
+                        .is_some_and(|id| !id.is_nil())
+                    && self
+                        .resolution_terminal_receipt_input_id
+                        .is_some_and(|id| !id.is_nil())
+            }
+            EnumerationLaneKindV2::Coverage => {
+                self.script_denominator_id.is_none()
+                    && self.candidate_denominator_ids.is_empty()
+                    && self.parameter_denominator_ids.is_empty()
+                    && self.resolution_occurrence_id.is_none()
+            }
+        };
+        !self.receipt_id.is_nil()
+            && !self.execution_authority_id.is_nil()
+            && self.artifact_sha256.starts_with("sha256:")
+            && self.receipt_set_sha256.starts_with("sha256:")
+            && self.closure_graph_sha256.starts_with("sha256:")
+            && self.entity_set_sha256.starts_with("sha256:")
+            && self.denominator_set_sha256.starts_with("sha256:")
+            && matches!(
+                self.terminal_disposition.as_str(),
+                "found" | "checked_empty" | "terminal_with_residual"
+            )
+            && self.script_count >= 0
+            && self.candidate_count >= 0
+            && self.occurrence_count >= 0
+            && self.parameter_assessment_count >= 0
+            && self.parameter_fact_count >= 0
+            && self.unresolved_count >= 0
+            && self.group_count >= 0
+            && self.occurrence_link_count >= 0
+            && self.api_link_count >= 0
+            && self.missing == 0
+            && denominator_shape_is_valid
+            && ids_are_canonical(&self.dependency_receipt_ids)
+            && ids_are_canonical(&self.candidate_denominator_ids)
+            && ids_are_canonical(&self.parameter_denominator_ids)
+            && evidence_is_canonical
+    }
+}
+
+/// Live JsApi producer commit.  The token only exists in process memory and
+/// is used by the application/repo boundary to prove the exact active tool
+/// fence before any authority or receipt is created.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitEnumerationJsApiProducerV2 {
+    pub stable_request_id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub worker_run_id: Uuid,
+    pub worker_attempt_epoch: i64,
+    pub lease_token: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub artifact: EnumerationJsApiProducerArtifactV2,
+    pub browser_receipt: EnumerationLaneClosureReceiptV2,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitEnumerationBrowserProducerV2 {
+    pub stable_request_id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub worker_run_id: Uuid,
+    pub worker_attempt_epoch: i64,
+    pub lease_token: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub artifact: EnumerationBrowserProducerArtifactV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReduceEnumerationParameterV2 {
+    pub stable_request_id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub worker_run_id: Uuid,
+    pub worker_attempt_epoch: i64,
+    pub lease_token: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub evidence_audit_ids: Vec<i64>,
+    pub browser_receipt: EnumerationLaneClosureReceiptV2,
+    pub js_api_receipt: EnumerationLaneClosureReceiptV2,
+}
+
+/// Exact Browser or JS/API producer receipt that owns the unresolved
+/// occurrence. Runtime observations must not be attributed to a JS/API
+/// authority they never belonged to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumerationResolutionProducerReceiptV2 {
+    pub receipt: EnumerationLaneClosureReceiptV2,
+}
+
+/// Server-observed terminal state for one bounded Resolution work item.  A
+/// submitted suggestion remains advisory; exhausted/unsupported are explicit
+/// residual closeouts rather than checked-empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnumerationResolutionTerminalStateV2 {
+    AdvisoryResidual,
+    BudgetExhausted,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloseEnumerationResolutionV2 {
+    pub stable_request_id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub resolution_work_item_id: Uuid,
+    pub unresolved_occurrence_id: Uuid,
+    pub worker_run_id: Uuid,
+    pub worker_attempt_epoch: i64,
+    pub lease_token: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub terminal_state: EnumerationResolutionTerminalStateV2,
+    pub reason_code: String,
+    pub evidence_audit_ids: Vec<i64>,
+    pub producer_receipt: EnumerationLaneClosureReceiptV2,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewEnumerationCoverageV2 {
+    pub stable_request_id: Uuid,
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub worker_run_id: Uuid,
+    pub worker_attempt_epoch: i64,
+    pub lease_token: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub evidence_audit_ids: Vec<i64>,
+    pub browser_receipt: EnumerationLaneClosureReceiptV2,
+    pub js_api_receipt: EnumerationLaneClosureReceiptV2,
+    pub parameter_receipt: EnumerationLaneClosureReceiptV2,
+    pub resolution_receipts: Vec<EnumerationLaneClosureReceiptV2>,
+}
+
+/// Result of the application-owned Candidate -> Plan C admission compound.
+/// The runtime receives only committed Campaign identities; all plan,
+/// objective, capability-registry, Tool Truth and denominator authority is
+/// selected and persisted by the host repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateCampaignAdmissionBatchView {
+    pub generation_seal_id: Uuid,
+    pub objective_count: u32,
+    pub campaign_ids: Vec<Uuid>,
+    pub replayed_campaign_count: u32,
+}
+
+/// Host-owned progress snapshot for the authoritative Plan C scheduler. The
+/// runtime receives only durable state counts and review-safe action IDs; URL,
+/// credentials, policy, budgets, private manifests and oracle inputs remain
+/// behind the application repository boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationCampaignSchedulerView {
+    pub campaign_count: u32,
+    pub pending_authorization_count: u32,
+    pub authorized_count: u32,
+    pub started_count: u32,
+    pub awaiting_oracle_count: u32,
+    pub terminal_count: u32,
+    pub blocked_count: u32,
+    pub wave_count: u32,
+    pub fixed_point_wave_count: u32,
+    pub revision_count: u32,
+    pub adjudicated_revision_count: u32,
+    pub pending_prepared_action_ids: Vec<Uuid>,
+}
+
+/// One server-frozen, redacted Verification Campaign consult lane. The
+/// provider receives this projection only after the complete 1..=3 lane
+/// census has committed; raw targets, credentials, request bodies and action
+/// authority never cross this boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationConsultWorkItemView {
+    pub operation_id: Uuid,
+    pub campaign_id: Uuid,
+    pub round_id: Uuid,
+    pub consult_lane_id: Uuid,
+    pub objective_id: Uuid,
+    pub role_id: String,
+    pub input_projection_hash: String,
+    pub request_packet: serde_json::Value,
+}
+
+/// Append-only terminal disposition for a frozen consult lane. A failed,
+/// timed-out or cancelled provider call is evidence, not a completed proposal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationConsultTerminalState {
+    Completed,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordVerificationConsultTerminal {
+    pub stable_request_id: Uuid,
+    pub operation_id: Uuid,
+    pub campaign_id: Uuid,
+    pub round_id: Uuid,
+    pub consult_lane_id: Uuid,
+    pub role_id: String,
+    pub input_projection_hash: String,
+    pub state: VerificationConsultTerminalState,
+    pub response_artifact: Option<serde_json::Value>,
+    pub reason_code: Option<String>,
+}
+
+impl VerificationCampaignSchedulerView {
+    pub const fn is_terminal(&self) -> bool {
+        self.campaign_count > 0
+            && self.terminal_count == self.campaign_count
+            && self.pending_authorization_count == 0
+            && self.authorized_count == 0
+            && self.started_count == 0
+            && self.awaiting_oracle_count == 0
+            && self.blocked_count == 0
+            && self.wave_count > 0
+            && self.fixed_point_wave_count == self.wave_count
+            && self.revision_count > 0
+            && self.adjudicated_revision_count == self.revision_count
+    }
+
+    pub const fn waits_for_authorization(&self) -> bool {
+        self.pending_authorization_count > 0
+    }
+}
+
 /// Provides all database repository operations that golish-ai needs.
 ///
 /// The application layer implements this trait. golish-ai callers access
 /// it through `DbTracker::repo()`.
 #[async_trait]
 pub trait DbRepoProvider: Send + Sync {
+    /// Resolve the compound nested-worker lifecycle. Missing wiring is a
+    /// typed fail-closed capability, never a fallback to the two independent
+    /// StageTeam and PentAGI repositories.
+    fn investigation_nested_dispatch_repository(
+        &self,
+    ) -> super::investigation_nested_dispatch::InvestigationNestedDispatchResult<
+        std::sync::Arc<
+            dyn super::investigation_nested_dispatch::InvestigationNestedDispatchRepository,
+        >,
+    > {
+        Err(
+            super::investigation_nested_dispatch::InvestigationNestedDispatchRepositoryError::Unavailable {
+                operation: "resolve_investigation_nested_dispatch_repository",
+            },
+        )
+    }
+
+    /// Resolve the unified Investigation analysis host. Missing production
+    /// wiring is a typed fail-closed result, never an empty analysis set.
+    fn investigation_analysis_host_repository(
+        &self,
+    ) -> super::investigation_analysis_host::InvestigationAnalysisHostResult<
+        std::sync::Arc<dyn super::investigation_analysis_host::InvestigationAnalysisHostRepository>,
+    > {
+        Err(
+            super::investigation_analysis_host::InvestigationAnalysisHostError::Unavailable {
+                operation: "resolve_investigation_analysis_host_repository",
+            },
+        )
+    }
+
+    /// Resolve the private unified Investigation persistence port. Callers get
+    /// a SQL-free capability; the concrete Pg writer remains app-owned.
+    fn unified_investigation_repository(
+        &self,
+    ) -> super::unified_investigation::UnifiedInvestigationRepoResult<
+        std::sync::Arc<dyn super::unified_investigation::UnifiedInvestigationRepository>,
+    > {
+        Err(
+            super::unified_investigation::UnifiedInvestigationRepositoryError::Unavailable {
+                operation: "resolve_unified_investigation_repository",
+            },
+        )
+    }
+
+    /// Resolve the canonical Plan C persistence port. Legacy and lightweight
+    /// test providers inherit a typed unavailable result, so the scheduler
+    /// stops before consult/provider/adapter dispatch instead of treating a
+    /// missing repository as empty Campaign work.
+    fn verification_campaign_repository(
+        &self,
+    ) -> super::verification_campaign::RepoResult<
+        std::sync::Arc<dyn super::verification_campaign::VerificationCampaignRepository>,
+    > {
+        Err(
+            super::verification_campaign::VerificationCampaignRepositoryError::Unavailable {
+                operation: "resolve_verification_campaign_repository",
+            },
+        )
+    }
+
+    /// Resolve the isolated shadow evaluation port. Its type graph has no
+    /// execution, credential, authorization, lease, or budget capability.
+    fn verification_campaign_shadow_repository(
+        &self,
+    ) -> super::verification_campaign::RepoResult<
+        std::sync::Arc<dyn super::verification_campaign::VerificationCampaignShadowRepository>,
+    > {
+        Err(
+            super::verification_campaign::VerificationCampaignRepositoryError::Unavailable {
+                operation: "resolve_verification_campaign_shadow_repository",
+            },
+        )
+    }
+
     /// Read the immutable Tool Truth contract for a known operation. Test and
     /// standalone adapters retain legacy behavior unless they model rollout.
     async fn tool_truth_contract(
@@ -218,6 +986,33 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<ToolTruthDenominatorView> {
         Err(anyhow::anyhow!(
             "tool truth denominator sealer is unavailable"
+        ))
+    }
+
+    /// Reconcile one exact host-stage root from already-landed typed facts.
+    /// Production receipt-v1 runtimes must implement this; the default is
+    /// fail-closed so a missing host cannot silently produce a fresh bundle.
+    async fn tool_truth_finalize_stage_root(
+        &self,
+        _request: FinalizeStageToolTruthRequest,
+    ) -> anyhow::Result<StageToolTruthCloseoutView> {
+        Err(anyhow::anyhow!(
+            "tool truth host-stage finalizer is unavailable"
+        ))
+    }
+
+    /// Read the exact sealed Enumeration root for one StageTeamUnit. The
+    /// implementation must address the deterministic stable seal identity;
+    /// selecting a latest denominator is forbidden.
+    async fn enumeration_frozen_root_members(
+        &self,
+        _operation_id: Uuid,
+        _organization_id: Uuid,
+        _stage_execution_id: Uuid,
+        _stage_run_unit_id: Uuid,
+    ) -> anyhow::Result<Vec<EnumerationFrozenRootMemberView>> {
+        Err(anyhow::anyhow!(
+            "Enumeration frozen root reader is unavailable"
         ))
     }
 
@@ -329,6 +1124,7 @@ pub trait DbRepoProvider: Send + Sync {
 
     async fn passive_scans_insert(
         &self,
+        operation_id: Option<Uuid>,
         target_id: Uuid,
         project_path: &str,
         scan_type: &str,
@@ -343,6 +1139,20 @@ pub trait DbRepoProvider: Send + Sync {
         target_id: Uuid,
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value>;
+
+    /// Operation-bound form used by harness workers. The default preserves
+    /// compatibility for non-production repositories, while the app adapter
+    /// overrides it so planning projections use the same frozen operation
+    /// manifest that guarded producers revalidate before network execution.
+    async fn query_target_data_for_operation(
+        &self,
+        operation_id: Option<Uuid>,
+        target_id: Uuid,
+        sections: &[String],
+    ) -> anyhow::Result<serde_json::Value> {
+        let _ = operation_id;
+        self.query_target_data(target_id, sections).await
+    }
 
     /// In-scope recon assets (`targets.scope='in'` values) for the current
     /// operation. The harness coverage gate injects these into
@@ -575,6 +1385,138 @@ pub trait DbRepoProvider: Send + Sync {
         .await
     }
 
+    /// Read the active Enumeration v2 occurrence closure census. `None` means
+    /// the operation is frozen to legacy_v1; v2 adapters must fail closed when
+    /// the active Unit or any lifecycle component is missing.
+    async fn enumeration_occurrence_gate_snapshot(
+        &self,
+        _operation_id: Uuid,
+        _organization_id: Uuid,
+    ) -> anyhow::Result<Option<EnumerationOccurrenceGateSnapshot>> {
+        Ok(None)
+    }
+
+    /// Read the stable, operation-owned unresolved occurrence worklist for one
+    /// exact active Enumeration Unit. Production implementations must verify
+    /// the operation/project/org/execution/unit owner chain and return rows in
+    /// a deterministic order. The unavailable default is fail-closed.
+    async fn enumeration_unresolved_occurrences(
+        &self,
+        _operation_id: Uuid,
+        _organization_id: Uuid,
+        _stage_execution_id: Uuid,
+        _stage_run_unit_id: Uuid,
+    ) -> anyhow::Result<Vec<EnumerationUnresolvedOccurrenceView>> {
+        anyhow::bail!("Enumeration unresolved occurrence repository is unavailable")
+    }
+
+    /// Recover one immutable receipt after the DB commit succeeded but its
+    /// StageWorkerOutput was not landed. Implementations must use the exact
+    /// subject/lane (and occurrence for Resolution), compare the dependency
+    /// set, and never select a latest receipt.
+    async fn enumeration_recover_lane_receipt_v2(
+        &self,
+        _request: RecoverEnumerationLaneReceiptV2,
+    ) -> anyhow::Result<Option<EnumerationLaneClosureReceiptV2>> {
+        anyhow::bail!("ENUMERATION_V2_RECEIPT_RECOVERY_UNAVAILABLE")
+    }
+
+    /// Land Browser runtime facts while the exact Browser tool/worker lease is
+    /// live.  The returned receipt names the complete immutable runtime set;
+    /// Browser never publishes a PARAM outcome.
+    async fn enumeration_commit_browser_producer_v2(
+        &self,
+        _request: CommitEnumerationBrowserProducerV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        anyhow::bail!("ENUMERATION_V2_BROWSER_REPOSITORY_UNAVAILABLE")
+    }
+
+    /// Land the complete static JS/API entity set while the exact analyzer
+    /// tool/worker lease remains live.  The Browser receipt is an explicit
+    /// immutable dependency and cannot be substituted by a latest query.
+    async fn enumeration_commit_js_api_producer_v2(
+        &self,
+        _request: CommitEnumerationJsApiProducerV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        anyhow::bail!("ENUMERATION_V2_PRODUCER_REPOSITORY_UNAVAILABLE")
+    }
+
+    /// Reduce the exact Browser + JS/API occurrence sets under the separately
+    /// fenced Parameter worker.  Missing rows are not checked-empty.
+    async fn enumeration_reduce_parameter_v2(
+        &self,
+        _request: ReduceEnumerationParameterV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        anyhow::bail!("ENUMERATION_V2_PARAMETER_REPOSITORY_UNAVAILABLE")
+    }
+
+    /// Close exactly one server-assigned unresolved occurrence under its
+    /// bounded Resolution worker. The repository derives the durable advisory
+    /// suggestion (if any), books same-lane evidence and returns an exact
+    /// residual receipt; the parent occurrence remains immutable.
+    async fn enumeration_close_resolution_v2(
+        &self,
+        _request: CloseEnumerationResolutionV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        anyhow::bail!("ENUMERATION_V2_RESOLUTION_REPOSITORY_UNAVAILABLE")
+    }
+
+    /// Re-reduce the complete named lane receipt graph beneath a separately
+    /// fenced, read-only Coverage worker and return its immutable exact-set
+    /// receipt.  No latest/current authority lookup is permitted.
+    async fn enumeration_review_coverage_v2(
+        &self,
+        _request: ReviewEnumerationCoverageV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        anyhow::bail!("ENUMERATION_V2_COVERAGE_REPOSITORY_UNAVAILABLE")
+    }
+
+    /// Atomically-authoritative, replay-safe Candidate -> Plan C handoff. The
+    /// concrete app implementation derives every sealed verification plan and
+    /// objective in the generation, records the closed four-capability census,
+    /// seals the exact Wave denominator and admits one Campaign per objective
+    /// through a fresh Tool Truth callback. Missing implementations fail
+    /// closed; callers must never substitute a Reporting placeholder.
+    async fn admit_candidate_generation_campaigns(
+        &self,
+        _stable_request_id: Uuid,
+        _operation_id: Uuid,
+        _organization_id: Uuid,
+        _generation_seal_id: Uuid,
+    ) -> anyhow::Result<CandidateCampaignAdmissionBatchView> {
+        anyhow::bail!("Candidate verification Campaign admission repository is unavailable")
+    }
+
+    /// Advance every nonterminal authoritative Campaign through the
+    /// deterministic host state machine as far as current durable authority
+    /// permits. In particular, compilation stops at the JIT authorization
+    /// boundary; a model-authored deliverable can neither authorize nor forge
+    /// execution/oracle completion.
+    async fn drive_authoritative_verification_campaigns(
+        &self,
+        _operation_id: Uuid,
+    ) -> anyhow::Result<VerificationCampaignSchedulerView> {
+        anyhow::bail!("Authoritative verification Campaign scheduler is unavailable")
+    }
+
+    /// Freeze every newly admitted Campaign's bounded consult census and
+    /// return only lanes that do not yet have an append-only terminal record.
+    async fn prepare_authoritative_verification_consults(
+        &self,
+        _operation_id: Uuid,
+    ) -> anyhow::Result<Vec<VerificationConsultWorkItemView>> {
+        anyhow::bail!("Authoritative verification consult scheduler is unavailable")
+    }
+
+    /// Record exactly one terminal outcome for an already-frozen consult lane.
+    /// Implementations must validate the owner tuple and typed artifact again.
+    async fn record_authoritative_verification_consult_terminal(
+        &self,
+        _command: RecordVerificationConsultTerminal,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Authoritative verification consult terminal repository is unavailable")
+    }
+
     // ── Tasks & Subtasks ────────────────────────────────────────────────
 
     async fn task_create(&self, task: NewTask) -> anyhow::Result<TaskView>;
@@ -781,6 +1723,40 @@ pub trait DbRepoProvider: Send + Sync {
             facts,
         )
         .await
+    }
+
+    /// Append one immutable fixture Target Intel semantic-pivot receipt to the
+    /// existing `audit_log`. Identity fields are trusted host inputs and are
+    /// repeated inside `receipt`; no schema/migration is required.
+    async fn semantic_intel_receipt_append(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        project_path: Option<&str>,
+        receipt: &serde_json::Value,
+    ) -> anyhow::Result<i64> {
+        let _ = (
+            operation_id,
+            organization_id,
+            session_id,
+            project_path,
+            receipt,
+        );
+        anyhow::bail!("semantic_intel_receipt_store_unavailable")
+    }
+
+    /// Load the exact terminal receipt used for duplicate/frontier decisions.
+    /// `expansion_queue` is intentionally absent from this seam.
+    async fn semantic_intel_terminal_receipt(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        stable_query_key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        let _ = (operation_id, organization_id, session_id, stable_query_key);
+        Ok(None)
     }
 
     /// PR-C step2b（#4 / E3，设计 2026-06-23-technique-outcomes-provenance）：把一条
@@ -1135,6 +2111,19 @@ pub trait DbRepoProvider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Recent evidence produced by this exact stage attempt. Refiner routing
+    /// must use this narrower read so work from a predecessor stage cannot
+    /// trigger a submit-only retry in the active stage.
+    async fn recent_evidence_ids_for_stage_attempt(
+        &self,
+        session_id: &str,
+        stage_execution_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        let _ = (session_id, stage_execution_id, limit);
+        Ok(Vec::new())
+    }
+
     /// Recent **real** evidence rows for a chat session, newest first, each carrying
     /// debug context: `evidence_id`, `tool`, `subject`, `technique`, `asset`,
     /// `outcome`, `kind`, `age_seconds`. Backs the read-only `list_recent_evidence`
@@ -1149,6 +2138,19 @@ pub trait DbRepoProvider: Send + Sync {
         limit: i64,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         let _ = (session_id, limit);
+        Ok(Vec::new())
+    }
+
+    /// Recent evidence produced by one exact durable worker inside one
+    /// operation. Bound stage workers use this view so inherited Scoping rows
+    /// and sibling-worker receipts cannot be cited as this WorkItem's output.
+    async fn recent_evidence_detailed_for_worker(
+        &self,
+        operation_id: Uuid,
+        worker_run_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let _ = (operation_id, worker_run_id, limit);
         Ok(Vec::new())
     }
 
@@ -1482,5 +2484,87 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<Option<crate::harness::ReportingGateTruth>> {
         let _ = operation_id;
         anyhow::bail!("REPORTING_TRUTH_REPO_UNAVAILABLE")
+    }
+}
+
+#[cfg(test)]
+mod enumeration_occurrence_gate_tests {
+    use super::*;
+
+    fn snapshot() -> EnumerationOccurrenceGateSnapshot {
+        EnumerationOccurrenceGateSnapshot {
+            enforces_closeout: true,
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: Uuid::new_v4(),
+            frozen_subject_count: 1,
+            coverage_receipt_count: 1,
+            missing_coverage_receipt_count: 0,
+            invalid_coverage_receipt_count: 0,
+            closure_graph_drift_count: 0,
+            residual_occurrence_count: 0,
+        }
+    }
+
+    #[test]
+    fn occurrence_gate_accepts_authoritative_checked_empty() {
+        assert!(snapshot().allows_closeout());
+    }
+
+    #[test]
+    fn occurrence_gate_rejects_vacuous_closeout_without_frozen_subjects() {
+        let never_analyzed = EnumerationOccurrenceGateSnapshot {
+            frozen_subject_count: 0,
+            coverage_receipt_count: 0,
+            ..snapshot()
+        };
+        assert!(!never_analyzed.allows_closeout());
+    }
+
+    #[test]
+    fn occurrence_gate_accepts_resolution_sealed_residuals() {
+        let residual = EnumerationOccurrenceGateSnapshot {
+            residual_occurrence_count: 1,
+            ..snapshot()
+        };
+        assert!(residual.allows_closeout());
+    }
+
+    #[test]
+    fn occurrence_gate_rejects_closure_graph_drift() {
+        let invalid = EnumerationOccurrenceGateSnapshot {
+            closure_graph_drift_count: 1,
+            ..snapshot()
+        };
+        assert!(!invalid.allows_closeout());
+    }
+
+    #[test]
+    fn verification_scheduler_requires_campaign_and_wave_fixed_point_terminal_truth() {
+        let terminal = VerificationCampaignSchedulerView {
+            campaign_count: 2,
+            pending_authorization_count: 0,
+            authorized_count: 0,
+            started_count: 0,
+            awaiting_oracle_count: 0,
+            terminal_count: 2,
+            blocked_count: 0,
+            wave_count: 1,
+            fixed_point_wave_count: 1,
+            revision_count: 2,
+            adjudicated_revision_count: 2,
+            pending_prepared_action_ids: Vec::new(),
+        };
+        assert!(terminal.is_terminal());
+        assert!(!VerificationCampaignSchedulerView {
+            fixed_point_wave_count: 0,
+            ..terminal.clone()
+        }
+        .is_terminal());
+        assert!(!VerificationCampaignSchedulerView {
+            pending_authorization_count: 1,
+            pending_prepared_action_ids: vec![Uuid::new_v4()],
+            ..terminal
+        }
+        .is_terminal());
     }
 }

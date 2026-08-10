@@ -341,12 +341,23 @@ where
 fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::Value> {
     let mut additional_params_json = serde_json::Map::new();
 
-    if let Some(web_config) = ctx.llm.openai_web_search_config {
+    let provider_server_search_allowed =
+        provider_server_search_allowed(ctx.target_intel_goal_shadow);
+    if let Some(web_config) = ctx
+        .llm
+        .openai_web_search_config
+        .filter(|_| provider_server_search_allowed)
+    {
         tracing::info!(
             "Adding OpenAI web_search_preview tool with context_size={}",
             web_config.search_context_size
         );
         additional_params_json.insert("tools".to_string(), json!([web_config.to_tool_json()]));
+    } else if ctx.llm.openai_web_search_config.is_some() && !provider_server_search_allowed {
+        tracing::info!(
+            target: "harness::target_intel_goal_shadow",
+            "fixture policy removed provider server-side web search before request construction"
+        );
     }
 
     // OpenAI Responses API expects a nested `reasoning` object with:
@@ -437,6 +448,12 @@ fn build_additional_params(ctx: &AgenticLoopContext<'_>) -> Option<serde_json::V
     } else {
         Some(serde_json::Value::Object(additional_params_json))
     }
+}
+
+fn provider_server_search_allowed(
+    fixture: Option<&crate::eval_support::TargetIntelGoalShadowFixture>,
+) -> bool {
+    fixture.is_none_or(|fixture| fixture.allow_provider_server_web_search())
 }
 
 /// Providers whose OpenAI/Anthropic-compatible endpoints accept
@@ -667,12 +684,19 @@ async fn wait_for_cancelled(ctx: &AgenticLoopContext<'_>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        additional_params_has_tool_choice, compose_system_prompt,
+        additional_params_has_tool_choice, compose_system_prompt, provider_server_search_allowed,
         request_uses_tool_choice_incompatible_thinking_mode, resolve_stage_tool_choice,
         strip_tool_choice_from_additional_params, tool_choice_rejected_by_thinking_mode,
         ToolChoice, SUBMIT_STAGE_DELIVERABLE_TOOL,
     };
     use serde_json::json;
+
+    #[test]
+    fn target_intel_fixture_disables_model_provider_server_search() {
+        let fixture = crate::eval_support::TargetIntelGoalShadowFixture::strict_passive();
+        assert!(!provider_server_search_allowed(Some(&fixture)));
+        assert!(provider_server_search_allowed(None));
+    }
 
     // 设计 2026-06-12 (防御 C) · prompt 级硬约束注入。
     #[test]

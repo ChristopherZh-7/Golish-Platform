@@ -97,3 +97,19 @@ cd backend && cargo nextest run -p golish-sub-agents executor
 
 - 两个 Nuclei wrapper 不使用 generic per-tool outer timeout；它们自己的 foreground deadline是唯一扫描预算。executor 为 active wrapper安装 task-local cancellation，收到 Stop 后先 signal，再 await wrapper future、tool lifecycle finish和证据/outcome landing，最后才结束当前 sub-agent dispatch。
 - 默认 Vuln Scanner 没有整段 wall-clock timeout；新的 formulaic Nuclei path更进一步绕过 LLM worker，由 runtime host直接调用 wrapper。普通工具和 anonymous-access仍保留有界 generic timeout，不继承 Nuclei 的特殊所有权。
+
+## Target Intel fixture public tools（2026-08-02）
+
+- `ToolProvider` 可注入与 root 相同的 `IntelPublicEvidenceAdapter`；fixture sub-agent tool setup移除 `web_search/web_fetch`，只注册 host-owned Intel public definitions。
+- response parser把两个 Intel public工具交给provider adapter执行；closed Candidate/Campaign reasoning roles仍提前返回 submit-only surface，不能被该注入拓宽。
+- `executor::verification_campaign`维护closed 13-role catalog、role→artifact kind、`verification_campaign_artifact.v1` parser与1–3 lane terminal census seal。parser还把canonical obligation/coverage/residual exact set与provider调用前冻结的redacted request packet逐项比较；只有`proposed` typed artifact可成为completed，失败/超时/取消只能参与无artifact的terminal census。
+
+## Target Intel Goal worker/reviewer primitives（2026-08-02）
+
+- `intel_goal.rs` keeps the model request surface closed to a bounded display name, exact prompt,
+  and subject refs. The host stamps role/kind/output schema, sorts and deduplicates refs, and hashes
+  prompt/ref identities into an epoch-bound dedupe key.
+- Worker and reviewer prompts are neutral and task-specific; they do not inherit the historical
+  six-axis completion prompt. The `intel_review.v1` parser accepts only PASS/REWORK/NEEDS_HUMAN,
+  requires actionable material findings for REWORK, and a typed human requirement for
+  NEEDS_HUMAN. Advisory rework remains disabled.

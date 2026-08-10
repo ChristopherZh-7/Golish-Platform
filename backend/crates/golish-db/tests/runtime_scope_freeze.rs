@@ -1,8 +1,9 @@
 use chrono::{Duration, Utc};
 use golish_db::models::NewSession;
 use golish_db::repo::{
-    operation_org_scope, operation_scope_decisions, organizations, project_scopes,
-    runtime_memory_tx, sessions, stage_deliverable_submissions, tool_calls,
+    audit, operation_org_scope, operation_scope_decisions, organizations, project_scopes,
+    runtime_memory_tx, scoping_company_identities, sessions, stage_deliverable_submissions,
+    tool_calls,
 };
 use golish_db::{DbConfig, GolishDb};
 use serial_test::serial;
@@ -81,6 +82,7 @@ impl ScopeFixture {
                 profile: "red_team".to_string(),
                 entry_stage: "scoping".to_string(),
                 project_scope_id: scope.project_scope_id,
+                application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
                 cli_scope: None,
             },
         )
@@ -113,6 +115,7 @@ impl ScopeFixture {
                 profile: "red_team".to_string(),
                 entry_stage: "scoping".to_string(),
                 project_scope_id: scope.project_scope_id,
+                application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
                 cli_scope: None,
             },
         )
@@ -182,6 +185,63 @@ impl ScopeFixture {
         )
         .await
         .expect("persist primary candidate identity");
+        let identity_payload = serde_json::json!({
+            "canonical_legal_name": "Primary Root",
+            "aliases": [],
+            "brands": [],
+            "registration_identifiers": {},
+        });
+        let scope_policy = serde_json::json!({"trusted_roots": ["primary.example"]});
+        let evidence = audit::log_evidence(
+            db.pool(),
+            "scoping_company_identity_fixture",
+            "scoping",
+            "fixture.company_identity.v1",
+            Some(&project_path),
+            "fixture",
+            None,
+            Some(&session.id.to_string()),
+            Some("recon_lookup_company"),
+            &serde_json::json!({
+                "operation_id": operation_id,
+                "organization_id": root.id,
+                "identity": identity_payload,
+            }),
+            Some(operation_id),
+            None,
+            None,
+            Some("found"),
+        )
+        .await
+        .expect("record company identity evidence");
+        scoping_company_identities::insert_terminal_receipt(
+            db.pool(),
+            &scoping_company_identities::ScopingCompanyIdentityReceiptRow {
+                id: Uuid::new_v4(),
+                operation_id,
+                stage_execution_id,
+                resolution_attempt: 0,
+                supersedes_receipt_id: None,
+                organization_id: Some(root.id),
+                subject_hint: "Primary Root".to_string(),
+                canonical_legal_name: Some("Primary Root".to_string()),
+                aliases: serde_json::json!([]),
+                brands: serde_json::json!([]),
+                registration_identifiers: serde_json::json!({}),
+                disambiguation_fields: serde_json::json!({}),
+                confirmation_method: "exact_reuse".to_string(),
+                resolution_status: "confirmed".to_string(),
+                scope_policy: scope_policy.clone(),
+                source_receipt_refs: serde_json::json!(["fixture:exact_reuse"]),
+                artifact_refs: serde_json::json!([]),
+                evidence_refs: serde_json::json!([format!("audit:{}", evidence.id)]),
+                identity_sha256: prefixed_json_sha256(&identity_payload),
+                scope_policy_sha256: prefixed_json_sha256(&scope_policy),
+                identity_payload,
+            },
+        )
+        .await
+        .expect("freeze confirmed company identity");
 
         Self {
             db,
@@ -399,6 +459,17 @@ impl ScopeFixture {
     }
 }
 
+fn prefixed_json_sha256(value: &serde_json::Value) -> String {
+    let digest = Sha256::digest(serde_json::to_vec(value).expect("serialize fixture json"));
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
 fn decision_input(fixture: &ScopeFixture) -> operation_scope_decisions::ExactScopeDecisionInput {
     operation_scope_decisions::ExactScopeDecisionInput {
         operation_id: fixture.operation_id,
@@ -406,6 +477,62 @@ fn decision_input(fixture: &ScopeFixture) -> operation_scope_decisions::ExactSco
         stage_execution_id: fixture.stage_execution_id,
         root_organization_id: fixture.root_id,
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn trusted_company_intake_freezes_one_evidenced_root_identity_and_replays_exactly() {
+    let mut fixture = ScopeFixture::start("trusted_identity").await;
+    let input = scoping_company_identities::TrustedCompanyIdentityIntake {
+        operation_id: fixture.foreign_operation_id,
+        stage_execution_id: fixture.foreign_stage_execution_id,
+        organization_id: fixture.foreign_root_id,
+        canonical_legal_name: "Foreign Root".to_string(),
+        session_id: None,
+    };
+    let frozen = scoping_company_identities::freeze_trusted_intake(fixture.db.pool(), &input)
+        .await
+        .expect("freeze trusted root identity");
+    assert_eq!(frozen.organization_id, Some(fixture.foreign_root_id));
+    assert_eq!(frozen.confirmation_method, "exact_reuse");
+    assert_eq!(frozen.resolution_status, "confirmed");
+    let evidence_ref = frozen.evidence_refs[0]
+        .as_str()
+        .expect("typed evidence reference");
+    let evidence_id = evidence_ref
+        .strip_prefix("audit:")
+        .expect("audit evidence prefix")
+        .parse::<i64>()
+        .expect("audit evidence id");
+    let evidence_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log WHERE id=$1 AND audit_role='evidence' AND run_id=$2",
+    )
+    .bind(evidence_id)
+    .bind(fixture.foreign_operation_id)
+    .fetch_one(fixture.db.pool())
+    .await
+    .expect("load trusted identity evidence");
+    assert_eq!(evidence_count, 1);
+
+    let replay = scoping_company_identities::freeze_trusted_intake(fixture.db.pool(), &input)
+        .await
+        .expect("replay trusted root identity");
+    assert_eq!(replay, frozen);
+
+    let child_error = scoping_company_identities::freeze_trusted_intake(
+        fixture.db.pool(),
+        &scoping_company_identities::TrustedCompanyIdentityIntake {
+            organization_id: fixture.foreign_child_id,
+            canonical_legal_name: "Foreign Child".to_string(),
+            ..input
+        },
+    )
+    .await
+    .expect_err("ordinary child organization must not become root identity");
+    assert!(child_error
+        .to_string()
+        .contains("SCOPING_TRUSTED_ORGANIZATION_MISMATCH"));
+    fixture.db.stop().await;
 }
 
 #[tokio::test]

@@ -137,61 +137,22 @@ const CAPABILITIES: &[StageCapabilitySpec] = &[
         runner: CapabilityRunnerKind::ExistingDirectTool,
     },
     StageCapabilitySpec {
-        id: "intel.collect_passive_assets",
-        label: "Collect passive assets",
+        id: "intel.semantic_asset_discovery",
+        label: "Search corporate assets from a semantic pivot",
         stage: StageKind::TargetIntel,
-        techniques: &[
-            "GOLISH-INTEL-DNS",
-            "GOLISH-INTEL-ASN",
-            "GOLISH-INTEL-CT",
-            "GOLISH-INTEL-SUBDOMAIN",
-            "GOLISH-INTEL-OSINT",
-        ],
-        tool_names: &["recon_map_assets"],
+        techniques: &[],
+        tool_names: &["recon_search_intel"],
         allowed_tool_types: &[],
         risk: CapabilityRisk::Passive,
         batchable: true,
         max_batch: 25,
         writes: &[
-            "targets",
-            "dns_records",
-            "source_query_log",
-            "technique_outcomes",
+            "target_intel_goal_frontier_v2",
+            "intel_semantic_artifacts",
+            "audit_log",
+            "targets_after_attribution_and_reachability",
         ],
         runner: CapabilityRunnerKind::ExistingDirectTool,
-    },
-    StageCapabilitySpec {
-        id: "intel.collect_whois",
-        label: "Collect WHOIS/RDAP",
-        stage: StageKind::TargetIntel,
-        techniques: &["GOLISH-INTEL-WHOIS"],
-        tool_names: &["recon_lookup_whois"],
-        allowed_tool_types: &[],
-        risk: CapabilityRisk::Passive,
-        batchable: true,
-        max_batch: 25,
-        writes: &["organizations", "source_query_log", "technique_outcomes"],
-        runner: CapabilityRunnerKind::ExistingDirectTool,
-    },
-    StageCapabilitySpec {
-        id: "intel.record_terminal_gap",
-        label: "Record terminal intel gap",
-        stage: StageKind::TargetIntel,
-        techniques: &[
-            "GOLISH-INTEL-DNS",
-            "GOLISH-INTEL-WHOIS",
-            "GOLISH-INTEL-ASN",
-            "GOLISH-INTEL-CT",
-            "GOLISH-INTEL-SUBDOMAIN",
-            "GOLISH-INTEL-OSINT",
-        ],
-        tool_names: &[],
-        allowed_tool_types: &[],
-        risk: CapabilityRisk::Passive,
-        batchable: true,
-        max_batch: 25,
-        writes: &["coverage_terminal_cell"],
-        runner: CapabilityRunnerKind::MetadataOnly,
     },
     StageCapabilitySpec {
         id: "eas.probe_http_liveness",
@@ -673,17 +634,15 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_capabilities_do_not_expose_scan_cli() {
-        let tools = capabilities_for_stage(StageKind::TargetIntel)
+    fn target_intel_capability_is_semantic_search_only() {
+        let capabilities = capabilities_for_stage(StageKind::TargetIntel);
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities[0].id, "intel.semantic_asset_discovery");
+        let tools = capabilities
             .into_iter()
             .flat_map(|capability| capability.tool_names.iter().copied())
             .collect::<Vec<_>>();
-        for forbidden in ["pentest_run", "nmap", "httpx", "naabu", "masscan"] {
-            assert!(
-                !tools.contains(&forbidden),
-                "target_intel should not expose {forbidden}"
-            );
-        }
+        assert_eq!(tools, ["recon_search_intel"]);
     }
 
     #[test]

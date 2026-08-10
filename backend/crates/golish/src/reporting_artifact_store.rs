@@ -15,6 +15,7 @@ use golish_reporting_app::{
     ReportArtifactStoreFactory, ReportFormat, ReportingAppError, StagedArtifact,
 };
 use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -185,6 +186,101 @@ impl ReportArtifactStore for ProjectReportArtifactStore {
         .map(|_| ())
         .map_err(artifact_error)
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalReportArtifactReadRequest {
+    pub receipt_id: Uuid,
+    pub operation_id: Uuid,
+    pub project_scope_id: Uuid,
+    pub principal_id: Uuid,
+    /// Server-private digest of request identity, authorization and purpose.
+    pub request_private_snapshot_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HistoricalReportArtifactReadResult {
+    pub bytes: Vec<u8>,
+    pub authority: golish_reporting_domain::HistoricalArtifactReadAuthorityV0,
+}
+
+/// Complete controlled historical read: authorize exact DB metadata, anchor
+/// the project root, read through the hardened no-follow handle path, verify
+/// content identity, then append a read attestation against current authority
+/// time. Raw bytes never enter report claims or the investigation projection.
+pub async fn read_historical_report_artifact(
+    pool: &PgPool,
+    input: HistoricalReportArtifactReadRequest,
+) -> anyhow::Result<HistoricalReportArtifactReadResult> {
+    let mut prepare_tx = pool.begin().await?;
+    let preparation =
+        golish_db::repo::historical_report_artifacts::prepare_historical_artifact_read_on(
+            &mut prepare_tx,
+            input.receipt_id,
+            input.operation_id,
+            input.project_scope_id,
+            input.principal_id,
+        )
+        .await?;
+    let canonical_project_path: String = sqlx::query_scalar(
+        "SELECT canonical_project_path FROM project_scopes WHERE project_scope_id=$1 FOR SHARE",
+    )
+    .bind(input.project_scope_id)
+    .fetch_optional(&mut *prepare_tx)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("historical_artifact_project_scope_missing"))?;
+    prepare_tx.commit().await?;
+
+    let format = match preparation.artifact_kind.as_str() {
+        "markdown" => golish_projects::file_storage::ReportArtifactFormat::Markdown,
+        "json" => golish_projects::file_storage::ReportArtifactFormat::Json,
+        _ => anyhow::bail!("historical_artifact_format_unsupported"),
+    };
+    let byte_len = u64::try_from(preparation.byte_len)
+        .map_err(|_| anyhow::anyhow!("historical_artifact_length_invalid"))?;
+    let bytes = golish_projects::file_storage::read_verified_report_artifact(
+        Path::new(&canonical_project_path),
+        &golish_projects::file_storage::StoredReportArtifact {
+            format,
+            content_key: preparation.content_key,
+            storage_path: preparation.storage_path,
+            sha256: preparation.sha256.clone(),
+            byte_len,
+        },
+    )
+    .await?;
+    let observed_sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut attest_tx = pool.begin().await?;
+    let current_project_path: String = sqlx::query_scalar(
+        "SELECT canonical_project_path FROM project_scopes WHERE project_scope_id=$1 FOR SHARE",
+    )
+    .bind(input.project_scope_id)
+    .fetch_optional(&mut *attest_tx)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("historical_artifact_project_scope_missing"))?;
+    if current_project_path != canonical_project_path {
+        anyhow::bail!("historical_artifact_project_scope_changed");
+    }
+    let authority =
+        golish_db::repo::historical_report_artifacts::attest_historical_artifact_read_on(
+            &mut attest_tx,
+            golish_db::repo::historical_report_artifacts::AttestHistoricalArtifactReadV0 {
+                receipt_id: input.receipt_id,
+                operation_id: input.operation_id,
+                project_scope_id: input.project_scope_id,
+                principal_id: input.principal_id,
+                request_private_snapshot_hash: input.request_private_snapshot_hash,
+                observed_sha256,
+                observed_byte_len: i64::try_from(bytes.len())
+                    .map_err(|_| anyhow::anyhow!("historical_artifact_length_invalid"))?,
+            },
+        )
+        .await?;
+    attest_tx.commit().await?;
+    Ok(HistoricalReportArtifactReadResult { bytes, authority })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -373,6 +469,7 @@ mod tests {
                 entry_stage: "target_intel".to_string(),
                 project_scope_id: project_scope.project_scope_id,
                 cli_scope: None,
+                application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             },
         )
         .await

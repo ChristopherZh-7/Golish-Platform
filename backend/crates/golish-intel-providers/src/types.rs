@@ -124,6 +124,38 @@ impl QueryType {
     }
 }
 
+/// Escape one semantic value for placement inside a provider-owned quoted
+/// literal. This function never accepts or emits a complete provider query;
+/// provider modules prepend their fixed field/operator after escaping.
+pub fn escape_provider_literal(value: &str) -> crate::IntelResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(crate::IntelError::Other(
+            "semantic provider literal is empty".to_string(),
+        ));
+    }
+    if value.chars().count() > 512 {
+        return Err(crate::IntelError::Other(
+            "semantic provider literal exceeds 512 characters".to_string(),
+        ));
+    }
+
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            control if control.is_control() => {
+                use std::fmt::Write as _;
+                write!(&mut escaped, "\\u{:04x}", control as u32)
+                    .expect("writing to String cannot fail");
+            }
+            other => escaped.push(other),
+        }
+    }
+    Ok(escaped)
+}
+
 /// Static metadata about an intel provider. Used by Settings UI to render
 /// a card per provider, link to signup / docs, and show free-tier info.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,4 +253,25 @@ pub enum ConnectionStatus {
     QuotaExhausted { message: String },
     /// Network-level failure (DNS / TLS / 5xx).
     NetworkError { message: String },
+}
+
+#[cfg(test)]
+mod semantic_literal_tests {
+    use super::*;
+
+    #[test]
+    fn provider_literal_compilers_escape_quotes_slashes_and_operators() {
+        let input = "Acme\\\" OR domain=\\\"evil.test: 中文";
+        for query in [
+            crate::fofa::compile_semantic_query(QueryType::Org, input).unwrap(),
+            crate::hunter::compile_semantic_query(QueryType::Org, input).unwrap(),
+            crate::shodan::compile_semantic_query(QueryType::Org, input).unwrap(),
+            crate::quake::compile_semantic_query(QueryType::Org, input).unwrap(),
+        ] {
+            assert!(query.contains("\\\\\\\""));
+            assert!(query.contains("OR domain="));
+            assert!(!query.contains(" OR domain=\""));
+            assert!(query.contains("中文"));
+        }
+    }
 }

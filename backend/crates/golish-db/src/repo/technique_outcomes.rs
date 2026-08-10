@@ -144,6 +144,33 @@ ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
   updated_at = NOW() \
 WHERE technique_outcomes.outcome IN ('partial', 'error')";
 
+/// Epoch-guarded stage attempts may replace terminal truth only when it is
+/// older than the current stage epoch. This is the append-only replacement
+/// execution case: the old evidence remains in the ledger, while the mutable
+/// coverage cell becomes an unfinished marker for the fresh stage execution.
+/// A terminal result collected in the current epoch still wins the race.
+const UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_OR_STALE_SQL: &str = "\
+INSERT INTO technique_outcomes \
+  (organization_id, run_id, asset, technique, outcome, source, query, \
+   result_count, confidence, evidence_ids, seq, collected_at) \
+VALUES \
+  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+   (SELECT COALESCE(MAX(seq), 0) + 1 FROM technique_outcomes \
+     WHERE organization_id = $1 AND run_id = $2), \
+   $11) \
+ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
+  outcome = EXCLUDED.outcome, \
+  source = EXCLUDED.source, \
+  query = EXCLUDED.query, \
+  result_count = EXCLUDED.result_count, \
+  confidence = EXCLUDED.confidence, \
+  evidence_ids = EXCLUDED.evidence_ids, \
+  collected_at = EXCLUDED.collected_at, \
+  updated_at = NOW() \
+WHERE technique_outcomes.outcome IN ('partial', 'error') \
+   OR technique_outcomes.collected_at IS NULL \
+   OR technique_outcomes.collected_at < $12";
+
 /// 读某 run 的全部维（org 隔离，IDOR）。`seq` 只是并发写入下的排序提示；
 /// asset/technique 是确定性 tie-breaker，避免两个并发首插拿到同一 seq 时读序漂移。
 const LIST_FOR_RUN_SQL: &str = "\
@@ -236,6 +263,32 @@ where
         .bind(w.confidence)
         .bind(w.evidence_ids.as_slice())
         .bind(w.collected_at)
+        .execute(executor)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+async fn execute_epoch_attempt_marker<'e, E>(
+    executor: E,
+    w: &TechniqueOutcomeWrite,
+    stage_started_at: DateTime<Utc>,
+) -> Result<bool>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let result = sqlx::query(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_OR_STALE_SQL)
+        .bind(w.organization_id)
+        .bind(&w.run_id)
+        .bind(&w.asset)
+        .bind(&w.technique)
+        .bind(&w.outcome)
+        .bind(w.source.as_deref())
+        .bind(w.query.as_deref())
+        .bind(w.result_count)
+        .bind(w.confidence)
+        .bind(w.evidence_ids.as_slice())
+        .bind(w.collected_at)
+        .bind(stage_started_at)
         .execute(executor)
         .await?;
     Ok(result.rows_affected() == 1)
@@ -512,7 +565,7 @@ pub async fn upsert_attempt_markers_guarded_if_epoch_current(
         return Ok(ConditionalBatchUpsertResult::Superseded);
     }
     for write in writes {
-        if !execute_attempt_marker(&mut *tx, write).await? {
+        if !execute_epoch_attempt_marker(&mut *tx, write, attempt_guard.stage_started_at).await? {
             tx.rollback().await?;
             return Ok(ConditionalBatchUpsertResult::Superseded);
         }
@@ -735,6 +788,17 @@ mod tests {
             .contains("WHERE technique_outcomes.outcome IN ('partial', 'error')"));
         assert!(!UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL.contains("'found'"));
         assert!(!UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL.contains("'empty'"));
+    }
+
+    #[test]
+    fn epoch_guarded_attempt_start_refreshes_only_stale_terminal_truth() {
+        assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_OR_STALE_SQL
+            .contains("ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE"));
+        assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_OR_STALE_SQL
+            .contains("technique_outcomes.collected_at < $12"));
+        assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_OR_STALE_SQL
+            .contains("technique_outcomes.collected_at IS NULL"));
+        assert!(LOCK_OPERATION_EPOCH_SQL.contains("stage_started_at = $3"));
     }
 
     #[test]

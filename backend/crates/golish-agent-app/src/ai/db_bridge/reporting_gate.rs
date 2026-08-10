@@ -8,15 +8,19 @@ use golish_agent_kit::harness::reporting_gate::{
     validate_reporting_gate_truth, ReportingGateTruth,
 };
 use golish_reporting_app::ReportReadModelBuilder;
-use golish_reporting_domain::{ReportClaim, ReportClaimKind, ReportValidationResult};
+use golish_reporting_domain::{
+    ReportAuthorityClass, ReportClaim, ReportClaimKind, ReportClaimValue, ReportValidationResult,
+};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::reporting::{
     cleanup_closeout_truth_on, current_reportable_source_snapshot_on, frozen_organization_ids_on,
-    load_report_bundle_on, load_report_gate_integrity_on, load_reporting_project_authority,
-    lock_reporting_project_authority, PgReportTruthPort, ReportingProjectAuthority,
+    is_report_or_summary_authority_rejection, load_report_bundle_on, load_report_gate_integrity_on,
+    load_reporting_project_authority, lock_reporting_project_authority,
+    validate_persisted_report_or_summary_authority_on, PgReportTruthPort,
+    ReportingProjectAuthority,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -77,9 +81,11 @@ pub(super) fn stored_claim_hashes_are_valid(
             section_id: row.section_id,
             organization_id_at_time: row.organization_id_at_time,
             claim_kind: kind,
+            authority_class: ReportAuthorityClass::try_from(row.authority_class.as_str())
+                .map_err(|code| anyhow::anyhow!(code))?,
             subject_ref: row.subject_ref.clone(),
             predicate: row.predicate.clone(),
-            value: row.object_value.clone(),
+            value: serde_json::from_value::<ReportClaimValue>(row.object_value.clone())?,
             citation_ids: citation_ids
                 .remove(&row.claim_id)
                 .unwrap_or_default()
@@ -112,7 +118,7 @@ where
     Fut: Future<Output = ()> + Send,
 {
     let mut tx = pool.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         .execute(&mut *tx)
         .await?;
     let Some(bundle) = load_report_bundle_on(&mut tx, operation_id).await? else {
@@ -129,6 +135,17 @@ where
         return Ok(None);
     };
     let current_snapshot = current_reportable_source_snapshot_on(&mut tx, operation_id).await?;
+    let input_authority_valid = match validate_persisted_report_or_summary_authority_on(
+        &mut tx,
+        operation_id,
+        revision.revision_id,
+    )
+    .await
+    {
+        Ok(()) => true,
+        Err(error) if is_report_or_summary_authority_rejection(&error) => false,
+        Err(error) => return Err(error),
+    };
     let source_snapshot_exact = stored_snapshot.ordered_sources == current_snapshot.ordered_sources
         && stored_snapshot.source_set_hash == current_snapshot.source_set_hash
         && revision.source_set_hash == hex(&stored_snapshot.source_set_hash);
@@ -155,7 +172,8 @@ where
             && revision.validated_at.is_some()
             && claim_hashes_valid
     });
-    let claims_citations_valid = integrity.uncited_claim_count == 0
+    let claims_citations_valid = input_authority_valid
+        && integrity.uncited_claim_count == 0
         && integrity.invalid_citation_count == 0
         && integrity.invalid_blocked_residual_count == 0
         && integrity.invalid_technique_claim_count == 0
@@ -210,7 +228,7 @@ pub async fn build_or_reuse_validated_report(
     operation_id: Uuid,
 ) -> anyhow::Result<ReportingGateTruth> {
     let authority = load_reporting_project_authority(&pool, operation_id).await?;
-    build_or_reuse_validated_report_on(pool, operation_id, authority).await
+    build_or_reuse_validated_report_on(pool, operation_id, authority, true).await
 }
 
 pub async fn build_or_reuse_validated_report_with_project_authority(
@@ -218,13 +236,14 @@ pub async fn build_or_reuse_validated_report_with_project_authority(
     operation_id: Uuid,
     authority: ReportingProjectAuthority,
 ) -> anyhow::Result<ReportingGateTruth> {
-    build_or_reuse_validated_report_on(pool, operation_id, authority).await
+    build_or_reuse_validated_report_on(pool, operation_id, authority, false).await
 }
 
 async fn build_or_reuse_validated_report_on(
     pool: Arc<PgPool>,
     operation_id: Uuid,
     authority: ReportingProjectAuthority,
+    summary_only: bool,
 ) -> anyhow::Result<ReportingGateTruth> {
     lock_reporting_project_authority(&pool, operation_id, &authority).await?;
     if let Some(current) = load_reporting_gate_truth(&pool, operation_id).await? {
@@ -233,7 +252,11 @@ async fn build_or_reuse_validated_report_on(
             return Ok(current);
         }
     }
-    let truth_port = PgReportTruthPort::with_project_authority(pool.clone(), authority.clone());
+    let truth_port = if summary_only {
+        PgReportTruthPort::evidence_summary(pool.clone(), authority.clone())
+    } else {
+        PgReportTruthPort::with_project_authority(pool.clone(), authority.clone())
+    };
     let builder = ReportReadModelBuilder::new(truth_port);
     builder
         .build_and_validate(operation_id)
@@ -242,6 +265,8 @@ async fn build_or_reuse_validated_report_on(
     let truth = load_reporting_gate_truth(&pool, operation_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("report_validated_revision_missing"))?;
+    validate_reporting_gate_truth(&truth)
+        .map_err(|error| anyhow::anyhow!("reporting_gate_rejected:{error:?}"))?;
     lock_reporting_project_authority(&pool, operation_id, &authority).await?;
     Ok(truth)
 }

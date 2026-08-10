@@ -102,6 +102,7 @@ async fn reporting_scope(db: &GolishDb, label: &str, sealed: bool) -> (Uuid, Uui
             profile: "assessment".to_string(),
             entry_stage: "target_intel".to_string(),
             project_scope_id: project.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: None,
         },
     )

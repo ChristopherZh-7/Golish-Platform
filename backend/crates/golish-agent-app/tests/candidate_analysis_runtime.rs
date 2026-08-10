@@ -50,7 +50,7 @@ fn policy() -> CandidateAnalysisTeamPolicy {
         product_version_match_contract_version: 1,
         max_knowledge_feed_age_seconds: 86_400,
         require_signed_knowledge_feeds: true,
-        required_tool_truth_root_families: ToolTruthRootFamilyV1::ALL.to_vec(),
+        required_tool_truth_root_families: ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.to_vec(),
         max_source_bytes_per_input: 1_048_576,
         max_chunk_bytes: 16_384,
         max_chunks_per_input: 64,
@@ -866,6 +866,7 @@ impl HypothesisAnalysisRuntimeRepository for FakeRepository {
             projection_outbox_batch_id: stable_id("outbox"),
             projection_source_batch_seq: 1,
             projection_outbox_member_set_hash: hash('d'),
+            post_seal_route: CandidatePostSealRoute::TrueZeroReporting,
             replayed: false,
         })
     }

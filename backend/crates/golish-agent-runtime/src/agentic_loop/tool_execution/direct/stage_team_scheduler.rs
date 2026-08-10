@@ -5,17 +5,18 @@
 //! byte-identical rows before any provider dispatch.
 
 use golish_agent_kit::db_traits::{
-    CandidateAnalysisArtifactOutputReceipt, NewStageWorkerOutput, RuntimeStageTeamPlanStatus,
-    RuntimeStageWorkItemStatus, SeedStageRuntime, SeedStageTeamRuntime, StageTeamPlanSeed,
-    StageTeamPlanView, StageWorkItemSeed, StageWorkItemView, StageWorkerOutputDisposition,
-    StageWorkerOutputView,
+    CandidateAnalysisArtifactOutputReceipt, EnumerationLaneClosureReceiptV2, EnumerationLaneKindV2,
+    NewStageWorkerOutput, RuntimeStageTeamPlanStatus, RuntimeStageWorkItemStatus, SeedStageRuntime,
+    SeedStageTeamRuntime, StageTeamPlanSeed, StageTeamPlanView, StageWorkItemSeed,
+    StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
 };
 use golish_agent_kit::harness::{CanonicalFactKey, StageKind, StageSpec};
-use golish_sub_agents::StageTeamLeaderBinding;
-use serde::Deserialize;
+use golish_sub_agents::{StageTeamCompiledActionBinding, StageTeamLeaderBinding};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
 
 const MAX_TEAM_OUTPUT_VALUES: usize = 128;
 const MAX_TEAM_OUTPUT_SUMMARY_CHARS: usize = 4_096;
@@ -25,6 +26,359 @@ const MAX_STAGE_TEAM_CONTROLLER_TURN_RESUMES: usize = 2;
 // Gate repair cannot be created and then become unclaimable merely because the
 // initial Controller/child WorkerRun allowance was exhausted.
 const MAX_REPAIR_WORKER_RUNS_PER_GENERATION: usize = 4;
+const COMPANY_CONTROLLER_COORDINATION_MODE: &str = "company_controller";
+const INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE: &str = "investigation_task_orchestrator";
+const INVESTIGATION_COGNITIVE_ROLES: [&str; 9] = [
+    "investigation",
+    "pentester",
+    "researcher",
+    "browser",
+    "coder",
+    "installer",
+    "enricher",
+    "memorist",
+    "adviser",
+];
+
+pub(super) const ENUMERATION_MAX_COMPANY_UNITS_ACTIVE: u32 = 2;
+pub(super) const ENUMERATION_MAX_WORKERS_PER_COMPANY: u32 = 3;
+pub(super) const ENUMERATION_GLOBAL_HOST_JOB_CAP: u32 = 6;
+pub(super) const ENUMERATION_GLOBAL_BROWSER_JOB_CAP: u32 = 2;
+pub(super) const ENUMERATION_GLOBAL_PROVIDER_CAP: u32 = 4;
+pub(super) const ENUMERATION_MAX_DYNAMIC_REQUESTS_PER_COMPANY: u32 = 256;
+/// A formulaic WorkItem has two frozen Worker attempts.  A large but finite
+/// route-probe queue may legitimately need more than one WorkItem while each
+/// invocation remains bounded.  Successors preserve the exact origin and the
+/// tool-owned durable checkpoint. Six generations cap one producer at twelve
+/// wrapper invocations without rewriting exhausted history. The final bounded
+/// successor exists for response-loss recovery after a producer outcome lands
+/// but its v2 authority receipt transaction fails; terminal WorkItems are never
+/// rearmed because their deterministic output ids are immutable.
+pub(super) const ENUMERATION_MAX_FORMULAIC_GENERATIONS: u32 = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum EnumerationProducerKind {
+    Preflight,
+    Content,
+    Browser,
+    JsApi,
+    Parameter,
+    Resolution,
+    Coverage,
+}
+
+impl EnumerationProducerKind {
+    pub(super) const fn role(self) -> &'static str {
+        match self {
+            Self::Preflight | Self::Content => "content_mapper",
+            Self::Browser => "browser_runtime",
+            Self::JsApi => "js_api_analyzer",
+            Self::Parameter => "parameter_analyzer",
+            Self::Resolution => "resolution_analyst",
+            Self::Coverage => "coverage_reviewer",
+        }
+    }
+
+    pub(super) const fn wave(self) -> u8 {
+        match self {
+            Self::Preflight => 0,
+            Self::Content | Self::Browser => 1,
+            Self::JsApi => 2,
+            Self::Parameter => 3,
+            Self::Resolution => 4,
+            Self::Coverage => 5,
+        }
+    }
+
+    pub(super) const fn execution_kind(self) -> &'static str {
+        match self {
+            Self::Resolution => "llm_subagent",
+            _ => "host_deterministic",
+        }
+    }
+
+    pub(super) const fn request_kind(self) -> &'static str {
+        match self {
+            Self::Resolution => "enumeration_resolution",
+            _ => "formulaic_enumeration",
+        }
+    }
+
+    pub(super) const fn formulaic_tool(self) -> Option<&'static str> {
+        match self {
+            Self::Preflight => Some("enum_preflight_web_origins"),
+            Self::Content => Some("route_probe_paths"),
+            Self::Browser => Some("browser_collect_js_api"),
+            Self::JsApi => Some("js_extract_apis"),
+            Self::Parameter | Self::Coverage => None,
+            Self::Resolution => Some("enum_js_get_resolution_cluster"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EnumerationWorklistShard {
+    pub operation_id: uuid::Uuid,
+    pub stage_execution_id: uuid::Uuid,
+    pub stage_run_unit_id: uuid::Uuid,
+    pub organization_id: uuid::Uuid,
+    pub scope_snapshot_id: uuid::Uuid,
+    pub target_id: uuid::Uuid,
+    pub exact_origin: String,
+    pub producer: EnumerationProducerKind,
+    pub unresolved_cluster_id: Option<String>,
+    pub generation: uuid::Uuid,
+    pub attempt: u32,
+    /// Exact immutable dependency receipts carried forward from named sibling
+    /// WorkerOutputs. The vector is lane ordered by receipt id and is never
+    /// reconstructed from a latest/current authority lookup.
+    pub dependency_lane_receipts_v2: Vec<EnumerationLaneClosureReceiptV2>,
+    pub producer_evidence_audit_ids: Vec<i64>,
+}
+
+impl EnumerationWorklistShard {
+    fn canonical_dependency_receipts(&self) -> Vec<EnumerationLaneClosureReceiptV2> {
+        self.dependency_lane_receipts_v2
+            .iter()
+            .cloned()
+            .map(|mut receipt| {
+                receipt.replayed = false;
+                receipt
+            })
+            .collect()
+    }
+
+    pub(super) fn stable_key(&self) -> String {
+        let dependency_lane_receipts_v2 = self.canonical_dependency_receipts();
+        let digest = sha256_json(&json!({
+            "exact_origin": self.exact_origin,
+            "operation_id": self.operation_id,
+            "organization_id": self.organization_id,
+            "producer": self.producer,
+            "dependency_lane_receipts_v2": dependency_lane_receipts_v2,
+            "producer_evidence_audit_ids": self.producer_evidence_audit_ids,
+            "scope_snapshot_id": self.scope_snapshot_id,
+            "stage_execution_id": self.stage_execution_id,
+            "stage_run_unit_id": self.stage_run_unit_id,
+            "target_id": self.target_id,
+            "unresolved_cluster_id": self.unresolved_cluster_id,
+        }));
+        let base = format!(
+            "enumeration:{}:{}",
+            self.producer.role(),
+            digest.trim_start_matches("sha256:")
+        );
+        if self.attempt <= 1 {
+            base
+        } else {
+            format!("{base}:successor:{}", self.attempt)
+        }
+    }
+
+    pub(super) fn successor(&self) -> Self {
+        let mut successor = self.clone();
+        successor.attempt = successor.attempt.saturating_add(1);
+        successor
+    }
+
+    pub(super) fn typed_objective(&self) -> Value {
+        let dependency_lane_receipts_v2 = self.canonical_dependency_receipts();
+        json!({
+            "assignment_schema": "enumeration_formulaic_shard.v2",
+            "attempt": self.attempt,
+            "exact_origin": self.exact_origin,
+            "execution_kind": self.producer.execution_kind(),
+            "generation": self.generation,
+            "operation_id": self.operation_id,
+            "organization_id": self.organization_id,
+            "producer": self.producer,
+            "dependency_lane_receipts_v2": dependency_lane_receipts_v2,
+            "producer_evidence_audit_ids": self.producer_evidence_audit_ids,
+            "role": self.producer.role(),
+            "scope_snapshot_id": self.scope_snapshot_id,
+            "stable_work_key": self.stable_key(),
+            "stage_execution_id": self.stage_execution_id,
+            "stage_run_unit_id": self.stage_run_unit_id,
+            "target_id": self.target_id,
+            "unresolved_cluster_id": self.unresolved_cluster_id,
+            "wave": self.producer.wave(),
+        })
+    }
+
+    pub(super) fn subject_refs(&self) -> Vec<Value> {
+        vec![json!({
+            "kind": "target",
+            "target_id": self.target_id,
+        })]
+    }
+
+    pub(super) fn formulaic_args(&self) -> Option<Value> {
+        match self.producer {
+            EnumerationProducerKind::Preflight => Some(json!({
+                "origins": [{
+                    "target_id": self.target_id,
+                    "target_url": self.exact_origin,
+                }]
+            })),
+            EnumerationProducerKind::Content => Some(json!({
+                "targets": [{
+                    "target_id": self.target_id,
+                    "base_url": self.exact_origin,
+                }],
+                "batch_concurrency": 1,
+            })),
+            EnumerationProducerKind::Browser => Some(json!({
+                "target_id": self.target_id,
+                "target_url": self.exact_origin,
+                "crawl_mode": "standard",
+                "ai": false,
+                "ai_assist": false,
+            })),
+            EnumerationProducerKind::JsApi => Some(json!({
+                "target_id": self.target_id,
+                "target_url": self.exact_origin,
+                "ai": false,
+            })),
+            EnumerationProducerKind::Parameter
+            | EnumerationProducerKind::Resolution
+            | EnumerationProducerKind::Coverage => None,
+        }
+    }
+
+    pub(super) fn objective(&self) -> String {
+        let mut objective = self.typed_objective();
+        objective["instructions"] = if self.producer == EnumerationProducerKind::Resolution {
+            json!(
+                "Analyze only the assigned unresolved_cluster_id. First call enum_js_get_resolution_cluster with that exact UUID, reason over only its bounded redacted source windows and capture anchors, then call enum_js_submit_resolution exactly once with an evidence-anchored advisory disposition. Do not broaden scope, fetch arbitrary source, invent URL/parameter facts, publish a canonical endpoint, dispatch another worker, or submit a stage deliverable. The host closes the immutable residual receipt after your advisory tool result."
+            )
+        } else {
+            json!(
+                "Execute exactly this host-authored shard once. Do not broaden the origin, change the target id, enable nested AI flags, page another worklist, dispatch another worker, or submit a stage deliverable. Producer terminality is validated from the wrapper's persisted exact-origin outcome."
+            )
+        };
+        objective["tool"] = self
+            .producer
+            .formulaic_tool()
+            .map_or(Value::Null, Value::from);
+        objective["tool_args"] = self.formulaic_args().unwrap_or(Value::Null);
+        objective.to_string()
+    }
+
+    pub(super) fn controller_action(&self) -> StageTeamCompiledActionBinding {
+        StageTeamCompiledActionBinding {
+            action_id: self.stable_key(),
+            dedupe_key: self.stable_key(),
+            requested_role: self.producer.role().to_string(),
+            requested_kind: self.producer.request_kind().to_string(),
+            objective: self.objective(),
+            subject_refs: self.subject_refs(),
+            budget_hint: json!({"max_wrapper_calls": 1}),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) fn enumeration_shards_for_origin(
+    authority: &EnumerationWorklistShard,
+    has_unresolved_cluster: bool,
+) -> Vec<EnumerationWorklistShard> {
+    let producers = [
+        EnumerationProducerKind::Preflight,
+        EnumerationProducerKind::Content,
+        EnumerationProducerKind::Browser,
+        EnumerationProducerKind::JsApi,
+        EnumerationProducerKind::Parameter,
+        EnumerationProducerKind::Resolution,
+        EnumerationProducerKind::Coverage,
+    ];
+    producers
+        .into_iter()
+        .filter(|producer| {
+            *producer != EnumerationProducerKind::Resolution || has_unresolved_cluster
+        })
+        .map(|producer| EnumerationWorklistShard {
+            producer,
+            unresolved_cluster_id: (producer == EnumerationProducerKind::Resolution)
+                .then(|| authority.unresolved_cluster_id.clone())
+                .flatten(),
+            dependency_lane_receipts_v2: Vec::new(),
+            producer_evidence_audit_ids: Vec::new(),
+            ..authority.clone()
+        })
+        .collect()
+}
+
+pub(super) fn enumeration_wave_dependencies_satisfied(
+    producer: EnumerationProducerKind,
+    terminal_producers: &BTreeSet<EnumerationProducerKind>,
+    unresolved_cluster_exists: bool,
+) -> bool {
+    match producer {
+        EnumerationProducerKind::Preflight => true,
+        EnumerationProducerKind::Content | EnumerationProducerKind::Browser => {
+            terminal_producers.contains(&EnumerationProducerKind::Preflight)
+        }
+        EnumerationProducerKind::JsApi => {
+            terminal_producers.contains(&EnumerationProducerKind::Browser)
+        }
+        EnumerationProducerKind::Parameter => {
+            terminal_producers.contains(&EnumerationProducerKind::Browser)
+                && terminal_producers.contains(&EnumerationProducerKind::JsApi)
+        }
+        EnumerationProducerKind::Resolution => {
+            unresolved_cluster_exists
+                && terminal_producers.contains(&EnumerationProducerKind::JsApi)
+        }
+        EnumerationProducerKind::Coverage => {
+            terminal_producers.contains(&EnumerationProducerKind::Content)
+                && terminal_producers.contains(&EnumerationProducerKind::Parameter)
+                && (!unresolved_cluster_exists
+                    || terminal_producers.contains(&EnumerationProducerKind::Resolution))
+        }
+    }
+}
+
+/// Derive the complete deterministic producer denominator for one exact Web
+/// Origin. Terminal coverage rows do not erase a producer from the current
+/// frozen contract: replay is suppressed by the stable shard key/output, not
+/// by trusting a coverage projection as execution authority.
+pub(super) fn enumeration_required_producers_for_techniques<'a>(
+    techniques: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeSet<EnumerationProducerKind>, String> {
+    let mut required = BTreeSet::new();
+    for technique in techniques {
+        // Every frozen exact Web Origin runs the complete Browser -> JsApi ->
+        // Parameter receipt chain. Technique cells select additional probes;
+        // they do not make the JS/API truth prerequisite optional.
+        required.insert(EnumerationProducerKind::Preflight);
+        required.insert(EnumerationProducerKind::Browser);
+        required.insert(EnumerationProducerKind::JsApi);
+        required.insert(EnumerationProducerKind::Parameter);
+        required.insert(EnumerationProducerKind::Coverage);
+        match technique {
+            "GOLISH-ENUM-DIR" => {
+                required.insert(EnumerationProducerKind::Content);
+            }
+            "GOLISH-ENUM-JS" => {
+                required.insert(EnumerationProducerKind::Browser);
+            }
+            "GOLISH-ENUM-JSAPI" => {
+                required.insert(EnumerationProducerKind::Browser);
+                required.insert(EnumerationProducerKind::JsApi);
+            }
+            "GOLISH-ENUM-PARAM" => {
+                required.insert(EnumerationProducerKind::Browser);
+                required.insert(EnumerationProducerKind::JsApi);
+                required.insert(EnumerationProducerKind::Parameter);
+            }
+            unsupported => {
+                return Err(format!("unsupported Enumeration technique '{unsupported}'"))
+            }
+        }
+    }
+    Ok(required)
+}
 
 #[allow(dead_code)] // consumed by the Task 9 Candidate stage_run wiring
 pub(super) fn candidate_artifact_receipt_output(
@@ -87,7 +441,7 @@ const VULN_GENERAL_BASELINE_TECHNIQUES: &[&str] = &[
 const VULN_GENERAL_DAST_TECHNIQUES: &[&str] = &["WSTG-INPV-05", "WSTG-INPV-01", "WSTG-INPV-12"];
 const VULN_ANONYMOUS_TECHNIQUE: &str = "WSTG-ATHN-04";
 const VULN_NDAY_TECHNIQUE: &str = "GOLISH-NDAY";
-const MAX_VULN_AUTOMATIC_ATTEMPTS: u32 = 3;
+pub(super) const MAX_VULN_AUTOMATIC_ATTEMPTS: u32 = 3;
 const VULN_BUDGET_RECOVERY_ATTEMPT: u32 = MAX_VULN_AUTOMATIC_ATTEMPTS + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -348,36 +702,125 @@ pub(super) fn build_vuln_worklist_shards(
 }
 
 /// Project a claimed WorkItem into the narrow host authority understood by
-/// `golish-sub-agents`. Only the exact Company Controller receives it; every
-/// dynamic child intentionally receives no binding.
+/// `golish-sub-agents`. Company Controllers receive the durable dispatch/final
+/// router, while an Investigation Primary receives only planning authority;
+/// every dynamic child intentionally receives no binding.
 pub(super) fn stage_team_leader_binding_for_claim(
     plan: &StageTeamPlanView,
     item: &StageWorkItemView,
 ) -> Option<StageTeamLeaderBinding> {
-    let is_company_controller = plan
+    fn exact_verification_task_primary(item: &StageWorkItemView) -> bool {
+        let Some(verification_task_id) = item
+            .stable_key
+            .strip_prefix("task:")
+            .and_then(|value| value.strip_suffix(":primary"))
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .filter(|value| !value.is_nil())
+        else {
+            return false;
+        };
+        let Some([marker]) = item.input_refs.as_array().map(Vec::as_slice) else {
+            return false;
+        };
+        let fingerprint = marker
+            .get("subject_fingerprint_sha256")
+            .and_then(Value::as_str)
+            .and_then(|value| value.strip_prefix("sha256:"));
+        let original_item_id = Uuid::new_v5(
+            &verification_task_id,
+            b"investigation-task-primary-work-item-v1",
+        );
+        let recovery_item_id = Uuid::new_v5(
+            &original_item_id,
+            b"investigation-task-primary-infrastructure-recovery-work-item-v1",
+        );
+        let recovery_v2_item_id = Uuid::new_v5(
+            &original_item_id,
+            b"investigation-task-primary-infrastructure-recovery-work-item-v2",
+        );
+        (item.work_item_kind == "investigation_primary"
+            || (item.work_item_kind == "investigation_primary_recovery"
+                && item.id == recovery_item_id)
+            || (item.work_item_kind == "investigation_primary_recovery_v2"
+                && item.id == recovery_v2_item_id))
+            && item.created_by == "server_phase_transition"
+            && item.output_schema == "stage_unit_aggregate.v1"
+            && item.conflict_key.is_none()
+            && marker.get("kind").and_then(Value::as_str) == Some("verification_task")
+            && marker
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                == Some(verification_task_id)
+            && fingerprint.is_some_and(|hex| {
+                hex.len() == 64
+                    && hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
+    }
+
+    let coordination_mode = plan
         .dynamic_request_policy
         .get("coordination_mode")
-        .and_then(Value::as_str)
-        == Some("company_controller");
-    (is_company_controller
-        && plan.status == RuntimeStageTeamPlanStatus::Active
-        && item.status == RuntimeStageWorkItemStatus::Running
+        .and_then(Value::as_str);
+    let planning_only = match coordination_mode {
+        Some(COMPANY_CONTROLLER_COORDINATION_MODE) => false,
+        Some(INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE)
+            if plan.stage_kind == StageKind::Investigation.as_str()
+                && plan.leader_role == "investigation" =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    let exact_primary_key = item.stable_key == "leader:primary";
+    let exact_verification_task_primary_key =
+        planning_only && exact_verification_task_primary(item);
+    let exact_synthesis_recovery_key = planning_only
+        && item
+            .stable_key
+            .strip_prefix("leader:synthesis-recovery:")
+            .and_then(|value| Uuid::parse_str(value).ok())
+            .is_some();
+    let exact_finalizer_conflict = (exact_primary_key
+        && item.conflict_key.as_deref() == Some("stage_unit_finalizer"))
+        || ((exact_synthesis_recovery_key || exact_verification_task_primary_key)
+            && item.conflict_key.is_none());
+    let completed_investigation_primary_replay = planning_only
+        && (exact_primary_key || exact_verification_task_primary_key)
+        && plan.requests_closed_at.is_some()
+        && item.status == RuntimeStageWorkItemStatus::Completed;
+    (((plan.status == RuntimeStageTeamPlanStatus::Active)
+        || (completed_investigation_primary_replay
+            && plan.status == RuntimeStageTeamPlanStatus::Finalizing))
+        && (item.status == RuntimeStageWorkItemStatus::Running
+            || completed_investigation_primary_replay)
         && item.stage_team_plan_id == plan.id
         && item.stage_run_unit_id == plan.stage_run_unit_id
         && item.organization_id == plan.organization_id
-        && item.stable_key == "leader:primary"
+        && (exact_primary_key
+            || exact_synthesis_recovery_key
+            || exact_verification_task_primary_key)
         && item.role == plan.leader_role
         && plan.aggregator_role.as_deref() == Some(item.role.as_str())
         && item.is_aggregator
         && !item.required_for_barrier
-        && item.conflict_key.as_deref() == Some("stage_unit_finalizer"))
-    .then_some(StageTeamLeaderBinding {
-        stage_team_plan_id: plan.id,
-        leader_work_item_id: item.id,
-        expected_dispatch_epoch: plan.dispatch_epoch,
-        expected_plan_row_version: plan.row_version,
-        expected_work_item_row_version: item.row_version,
-    })
+        && exact_finalizer_conflict)
+        .then_some(StageTeamLeaderBinding {
+            stage_team_plan_id: plan.id,
+            leader_work_item_id: item.id,
+            expected_dispatch_epoch: plan.dispatch_epoch,
+            expected_plan_row_version: plan.row_version,
+            expected_work_item_row_version: item.row_version,
+            controller_action_compiler: plan
+                .dynamic_request_policy
+                .get("controller_action_compiler")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            compiled_actions: Vec::new(),
+            planning_only,
+        })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -393,6 +836,12 @@ struct StageChildReport {
     checked_empty_units: Vec<Value>,
     #[serde(default)]
     blocker_code: Option<String>,
+    #[serde(default)]
+    proposal_signals: Vec<Value>,
+    #[serde(default)]
+    action_intents: Vec<Value>,
+    #[serde(default)]
+    residuals: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -566,6 +1015,12 @@ pub(super) fn stage_child_completion_from_result(
             "stage child JSON did not match stage_worker_output.v1",
         ));
     };
+    let cognitive_payload_bytes = serde_json::to_vec(&json!({
+        "action_intents": &report.action_intents,
+        "proposal_signals": &report.proposal_signals,
+        "residuals": &report.residuals,
+    }))
+    .map_or(usize::MAX, |value| value.len());
     report.evidence_ids.sort_unstable();
     report.evidence_ids.dedup();
     if report.summary.trim().is_empty()
@@ -573,11 +1028,44 @@ pub(super) fn stage_child_completion_from_result(
         || report.fact_refs.len() > MAX_TEAM_OUTPUT_VALUES
         || report.evidence_ids.len() > MAX_TEAM_OUTPUT_VALUES
         || report.checked_empty_units.len() > MAX_TEAM_OUTPUT_VALUES
+        || report.proposal_signals.len() > 32
+        || report.action_intents.len() > 32
+        || report.residuals.len() > 32
+        || cognitive_payload_bytes > 64 * 1024
+        || report
+            .proposal_signals
+            .iter()
+            .chain(report.action_intents.iter())
+            .chain(report.residuals.iter())
+            .any(|value| !value.is_object())
         || report.evidence_ids.iter().any(|id| *id <= 0)
     {
         return Err(stage_child_output_violation(
             "STAGE_TEAM_WORKER_OUTPUT_INVALID",
             "stage child output exceeded bounds or contained invalid evidence ids",
+        ));
+    }
+    let investigation_cognitive_output = item.output_schema == "investigation_cognitive_output.v1";
+    if investigation_cognitive_output
+        && report.business_disposition == "found"
+        && (!report.fact_refs.is_empty()
+            || !report.evidence_ids.is_empty()
+            || !report.checked_empty_units.is_empty()
+            || report.blocker_code.is_some())
+    {
+        return Err(stage_child_output_violation(
+            "STAGE_TEAM_WORKER_OUTPUT_INVALID",
+            "successful Investigation cognition must be advisory-only: use found with empty fact_refs, evidence_ids, checked_empty_units and null blocker_code; inherited subject refs stay in frozen context, while proposal_signals/action_intents/residuals carry advisory output",
+        ));
+    }
+    if !investigation_cognitive_output
+        && (!report.proposal_signals.is_empty()
+            || !report.action_intents.is_empty()
+            || !report.residuals.is_empty())
+    {
+        return Err(stage_child_output_violation(
+            "STAGE_TEAM_WORKER_OUTPUT_INVALID",
+            "non-Investigation worker output cannot carry cognitive proposal fields",
         ));
     }
     let disposition = match report.business_disposition.as_str() {
@@ -608,7 +1096,8 @@ pub(super) fn stage_child_completion_from_result(
     }
     if (disposition == StageWorkerOutputDisposition::Found
         && report.fact_refs.is_empty()
-        && report.evidence_ids.is_empty())
+        && report.evidence_ids.is_empty()
+        && !investigation_cognitive_output)
         || (disposition == StageWorkerOutputDisposition::CheckedEmpty
             && (report.checked_empty_units.is_empty() || report.evidence_ids.is_empty()))
     {
@@ -631,12 +1120,18 @@ pub(super) fn stage_child_completion_from_result(
             "stage child dependency is not ready; retry after sibling discovery",
         ));
     }
-    let canonical_output = canonicalize_json(&json!({
+    let mut canonical_output = canonicalize_json(&json!({
         "discarded_invalid_fact_refs": discarded_fact_ref_count,
         "schema_version": 1,
         "stable_work_key": item.stable_key,
         "summary": report.summary,
     }));
+    if investigation_cognitive_output {
+        canonical_output["proposal_signals"] = Value::Array(report.proposal_signals);
+        canonical_output["action_intents"] = Value::Array(report.action_intents);
+        canonical_output["residuals"] = Value::Array(report.residuals);
+        canonical_output = canonicalize_json(&canonical_output);
+    }
     let hash_material = canonicalize_json(&json!({
         "blocker_code": report.blocker_code,
         "canonical_output": canonical_output,
@@ -721,6 +1216,81 @@ pub(super) fn server_vuln_child_output_from_wrapper(
     })
 }
 
+/// Persist the trusted Enumeration producer/verifier receipt in the immutable
+/// WorkerOutput. Later waves obtain the exact authority/hash tuple from this
+/// named sibling output, never from a latest/current repository query.
+pub(super) fn server_enumeration_receipt_output(
+    item: &StageWorkItemView,
+    worker_run_id: uuid::Uuid,
+    producer: EnumerationProducerKind,
+    exact_origin: &str,
+    receipt: &EnumerationLaneClosureReceiptV2,
+    evidence_ids: &[i64],
+) -> Result<NewStageWorkerOutput, StageChildOutputViolation> {
+    let expected_lane = match producer {
+        EnumerationProducerKind::Browser => Some(EnumerationLaneKindV2::Browser),
+        EnumerationProducerKind::JsApi => Some(EnumerationLaneKindV2::JsApi),
+        EnumerationProducerKind::Parameter => Some(EnumerationLaneKindV2::Parameter),
+        EnumerationProducerKind::Resolution => Some(EnumerationLaneKindV2::Resolution),
+        EnumerationProducerKind::Coverage => Some(EnumerationLaneKindV2::Coverage),
+        EnumerationProducerKind::Preflight | EnumerationProducerKind::Content => None,
+    };
+    if expected_lane != Some(receipt.lane) || !receipt.is_terminal() {
+        return Err(stage_child_output_violation(
+            "ENUMERATION_PRODUCER_RECEIPT_INVALID",
+            "server-owned Enumeration worker returned a vacuous or mismatched producer receipt",
+        ));
+    }
+    let mut submitted_evidence_ids = evidence_ids
+        .iter()
+        .copied()
+        .filter(|id| *id > 0)
+        .collect::<Vec<_>>();
+    submitted_evidence_ids.sort_unstable();
+    submitted_evidence_ids.dedup();
+    let evidence_ids = receipt.evidence_audit_ids.clone();
+    if evidence_ids.is_empty()
+        || evidence_ids.iter().any(|id| *id <= 0)
+        || evidence_ids.windows(2).any(|pair| pair[0] >= pair[1])
+        || submitted_evidence_ids != evidence_ids
+    {
+        return Err(stage_child_output_violation(
+            "ENUMERATION_FORMULAIC_LEDGER_LANDING_DRIFT",
+            "Enumeration WorkerOutput evidence must equal the receipt's canonical exact manifest",
+        ));
+    }
+    let canonical_output = canonicalize_json(&json!({
+        "exact_origin": exact_origin,
+        "producer": producer,
+        "lane_closure_receipt_v2": receipt,
+        "schema_version": 2,
+        "stable_work_key": item.stable_key,
+    }));
+    let hash_material = canonicalize_json(&json!({
+        "blocker_code": Value::Null,
+        "canonical_output": canonical_output,
+        "checked_empty_units": [],
+        "disposition": "found",
+        "evidence_ids": evidence_ids,
+        "fact_refs": [],
+        "output_schema": item.output_schema,
+        "work_item_id": item.id,
+        "worker_run_id": worker_run_id,
+    }));
+    Ok(NewStageWorkerOutput {
+        work_item_id: item.id,
+        worker_run_id,
+        output_schema: item.output_schema.clone(),
+        disposition: StageWorkerOutputDisposition::Found,
+        canonical_output,
+        fact_refs: Vec::new(),
+        evidence_ids,
+        checked_empty_units: Vec::new(),
+        blocker_code: None,
+        output_sha256: sha256_json(&hash_material),
+    })
+}
+
 #[cfg(test)]
 fn stage_child_output_from_result(
     item: &StageWorkItemView,
@@ -745,6 +1315,33 @@ pub(super) fn stage_child_objective(
     organization_id: uuid::Uuid,
     item: &StageWorkItemView,
 ) -> String {
+    if spec.kind == StageKind::Investigation {
+        return format!(
+            "Run one bounded cognition-only Investigation WorkItem. Organization: {organization_name} \
+             (organization_id: {organization_id}). Durable work_item_id: {work_item_id}; role: {role}; \
+             stable key: {stable_key}; frozen input: {input}. Analyze only this assignment. You may \
+             use exact-scope read tools and, when genuinely needed, one bounded nested cognitive \
+             specialist; you may not perform HTTP/browser/CLI/credential/pentest I/O, write a Finding, \
+             mutate a canonical hypothesis, change scope, or submit a stage deliverable. Finish with \
+             exactly one JSON object and no prose using investigation_cognitive_output.v1: \
+             {{\"business_disposition\":\"found|checked_empty|blocked\",\"summary\":\"...\",\
+             \"fact_refs\":[],\"evidence_ids\":[],\"checked_empty_units\":[],\"blocker_code\":null,\
+             \"proposal_signals\":[],\"action_intents\":[],\"residuals\":[]}}. Proposal/action/residual \
+             entries are advisory typed objects for the host reducer, never proof or execution authority. \
+             A successful cognition result MUST use business_disposition=found with fact_refs=[], \
+             evidence_ids=[], checked_empty_units=[], and blocker_code=null. Put knowledge gaps or \
+             checked-empty advisory observations in residuals instead. Inherited evidence subject_refs \
+             in frozen input are sealed authority selectors for the supplied context; they are not expected \
+             to appear in list_recent_evidence, whose exact-worker scope contains only rows newly produced \
+             by this WorkItem. Never classify inherited evidence as missing merely because that view is \
+             empty, and never copy inherited ids into evidence_ids. blocked is reserved for a real \
+             provider/runtime blocker and requires a stable blocker_code.",
+            work_item_id = item.id,
+            role = item.role,
+            stable_key = item.stable_key,
+            input = item.input_refs,
+        );
+    }
     format!(
         "Run one bounded SubAgent child WorkItem for stage {stage}. Organization: {organization_name} \
          (organization_id: {organization_id}). Durable work_item_id: {work_item_id}; role: {role}; \
@@ -837,15 +1434,41 @@ pub(super) fn build_stage_team_seed(
     }
 
     let server_owned_vuln_worklist = spec.kind == StageKind::VulnTriage;
-    let child_budget = if server_owned_vuln_worklist {
+    let server_owned_enumeration_worklist = spec.kind == StageKind::Enumeration;
+    let investigation_task_orchestrator = spec.kind == StageKind::Investigation;
+    if investigation_task_orchestrator {
+        let configured_roles = policy
+            .allowed_roles
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let cognitive_catalog = INVESTIGATION_COGNITIVE_ROLES
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if policy.aggregator_kind != "investigation_primary"
+            || policy.aggregator_role != "investigation"
+            || policy.allowed_roles.len() != INVESTIGATION_COGNITIVE_ROLES.len()
+            || configured_roles != cognitive_catalog
+        {
+            return Err("invalid_investigation_task_orchestrator_policy");
+        }
+    }
+    let coordination_mode = if investigation_task_orchestrator {
+        INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE
+    } else {
+        COMPANY_CONTROLLER_COORDINATION_MODE
+    };
+    let server_owned_formulaic_worklist =
+        server_owned_vuln_worklist || server_owned_enumeration_worklist;
+    let child_budget = if server_owned_formulaic_worklist {
         json!({"max_wrapper_calls": 1})
     } else {
         json!({})
     };
-    let organization_scope_implicit = !server_owned_vuln_worklist;
+    let organization_scope_implicit = !server_owned_formulaic_worklist;
 
     let leader_manifest = canonicalize_json(&json!({
-        "coordination_mode": "company_controller",
+        "coordination_mode": coordination_mode,
         "role": policy.aggregator_role,
         "stage": spec.kind.as_str(),
     }));
@@ -866,17 +1489,43 @@ pub(super) fn build_stage_team_seed(
     }];
 
     let mut allowed_roles = policy.allowed_roles.clone();
+    if server_owned_enumeration_worklist {
+        allowed_roles.extend(
+            [
+                EnumerationProducerKind::Preflight,
+                EnumerationProducerKind::Content,
+                EnumerationProducerKind::Browser,
+                EnumerationProducerKind::JsApi,
+                EnumerationProducerKind::Parameter,
+                EnumerationProducerKind::Resolution,
+                EnumerationProducerKind::Coverage,
+            ]
+            .into_iter()
+            .map(|producer| producer.role().to_string()),
+        );
+    }
     allowed_roles.sort();
     allowed_roles.dedup();
+    let mut allowed_dynamic_request_kinds = policy.allowed_dynamic_request_kinds.clone();
+    if server_owned_enumeration_worklist {
+        allowed_dynamic_request_kinds.push("formulaic_enumeration".to_string());
+    }
+    allowed_dynamic_request_kinds.sort();
+    allowed_dynamic_request_kinds.dedup();
+    let child_output_schema = if investigation_task_orchestrator {
+        "investigation_cognitive_output.v1"
+    } else {
+        "stage_worker_output.v1"
+    };
     let plan_material = json!({
         "aggregator_kind": policy.aggregator_kind,
         "aggregator_role": policy.aggregator_role,
         "allowed_roles": allowed_roles,
         "child_budget": child_budget,
-        "child_output_schema": "stage_worker_output.v1",
-        "coordination_mode": "company_controller",
+        "child_output_schema": child_output_schema,
+        "coordination_mode": coordination_mode,
         "global_provider_cap": policy.global_provider_cap,
-        "allowed_dynamic_request_kinds": policy.allowed_dynamic_request_kinds,
+        "allowed_dynamic_request_kinds": allowed_dynamic_request_kinds,
         "max_company_units_active": policy.max_company_units_active,
         "max_dynamic_subject_refs": policy.max_dynamic_subject_refs,
         "max_dynamic_requests": policy.max_dynamic_requests,
@@ -923,11 +1572,11 @@ pub(super) fn build_stage_team_seed(
         .checked_add(repair_worker_runs)
         .ok_or("stage_team_worker_limit_overflow")?;
     let mut dynamic_request_policy = json!({
-        "allowed_request_kinds": policy.allowed_dynamic_request_kinds,
+        "allowed_request_kinds": allowed_dynamic_request_kinds,
         "canonical_subject_refs_only": true,
         "child_budget": child_budget,
-        "child_output_schema": "stage_worker_output.v1",
-        "coordination_mode": "company_controller",
+        "child_output_schema": child_output_schema,
+        "coordination_mode": coordination_mode,
         "global_provider_cap": policy.global_provider_cap,
         "max_company_units_active": policy.max_company_units_active,
         // Same-Turn Gate repair and operator-triggered successor Turns
@@ -944,6 +1593,17 @@ pub(super) fn build_stage_team_seed(
     if server_owned_vuln_worklist {
         dynamic_request_policy["attempt_policy"] = json!({"max_attempts": 1});
         dynamic_request_policy["formulaic_worklist_executor"] = json!("vuln_v1");
+    } else if spec.kind == StageKind::Enumeration {
+        dynamic_request_policy["attempt_policy"] = json!({"max_attempts": 2});
+        dynamic_request_policy["formulaic_worklist_executor"] = json!("enumeration_v2");
+        dynamic_request_policy["enumeration_caps"] = json!({
+            "global_browser_jobs": ENUMERATION_GLOBAL_BROWSER_JOB_CAP,
+            "global_host_jobs": ENUMERATION_GLOBAL_HOST_JOB_CAP,
+            "global_provider_cap": ENUMERATION_GLOBAL_PROVIDER_CAP,
+            "max_company_units_active": ENUMERATION_MAX_COMPANY_UNITS_ACTIVE,
+            "max_dynamic_requests_per_company": ENUMERATION_MAX_DYNAMIC_REQUESTS_PER_COMPANY,
+            "max_workers_per_company": ENUMERATION_MAX_WORKERS_PER_COMPANY,
+        });
     }
 
     Ok(Some(SeedStageTeamRuntime {
@@ -1109,6 +1769,196 @@ mod tests {
     }
 
     #[test]
+    fn investigation_primary_binding_is_planning_only() {
+        let (mut plan, mut item) = controller_claim_views();
+        plan.stage_kind = StageKind::Investigation.as_str().to_string();
+        plan.leader_role = "investigation".to_string();
+        plan.aggregator_role = Some("investigation".to_string());
+        plan.dynamic_request_policy["coordination_mode"] =
+            json!(INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE);
+        plan.dynamic_request_policy
+            .as_object_mut()
+            .expect("policy object")
+            .remove("controller_action_compiler");
+        item.role = "investigation".to_string();
+
+        let binding = stage_team_leader_binding_for_claim(&plan, &item)
+            .expect("exact Investigation Primary receives planning authority");
+        assert!(binding.planning_only);
+        assert!(binding.controller_action_compiler.is_none());
+        assert!(binding.compiled_actions.is_empty());
+
+        plan.requests_closed_at = Some(chrono::Utc::now());
+        plan.status = RuntimeStageTeamPlanStatus::Finalizing;
+        item.status = RuntimeStageWorkItemStatus::Completed;
+        let completed = stage_team_leader_binding_for_claim(&plan, &item).expect(
+            "completed sealed Investigation Primary retains replay-only planning authority",
+        );
+        assert!(completed.planning_only);
+
+        plan.requests_closed_at = None;
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+        plan.requests_closed_at = Some(chrono::Utc::now());
+        plan.status = RuntimeStageTeamPlanStatus::Active;
+        item.status = RuntimeStageWorkItemStatus::Running;
+
+        item.stable_key = format!("leader:synthesis-recovery:{}", Uuid::from_u128(42));
+        item.conflict_key = None;
+        let recovery = stage_team_leader_binding_for_claim(&plan, &item)
+            .expect("sealed Investigation synthesis recovery retains planning authority");
+        assert!(recovery.planning_only);
+        assert_eq!(recovery.leader_work_item_id, item.id);
+
+        item.conflict_key = Some("stage_unit_finalizer".to_string());
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+
+        let verification_task_id = Uuid::from_u128(77);
+        plan.requests_closed_at = None;
+        plan.status = RuntimeStageTeamPlanStatus::Active;
+        item.status = RuntimeStageWorkItemStatus::Running;
+        item.stable_key = format!("task:{verification_task_id}:primary");
+        item.work_item_kind = "investigation_primary".to_string();
+        item.conflict_key = None;
+        item.output_schema = "stage_unit_aggregate.v1".to_string();
+        item.created_by = "server_phase_transition".to_string();
+        item.input_refs = json!([{
+            "id": verification_task_id,
+            "kind": "verification_task",
+            "subject_fingerprint_sha256": format!("sha256:{}", "a".repeat(64)),
+        }]);
+        let task_primary = stage_team_leader_binding_for_claim(&plan, &item)
+            .expect("exact VerificationTask Primary retains planning-only authority");
+        assert!(task_primary.planning_only);
+
+        let original_item_id = Uuid::new_v5(
+            &verification_task_id,
+            b"investigation-task-primary-work-item-v1",
+        );
+        item.id = Uuid::new_v5(
+            &original_item_id,
+            b"investigation-task-primary-infrastructure-recovery-work-item-v1",
+        );
+        item.work_item_kind = "investigation_primary_recovery".to_string();
+        let recovery_primary = stage_team_leader_binding_for_claim(&plan, &item)
+            .expect("deterministic VerificationTask recovery retains planning-only authority");
+        assert!(recovery_primary.planning_only);
+        item.id = Uuid::new_v5(
+            &original_item_id,
+            b"investigation-task-primary-infrastructure-recovery-work-item-v2",
+        );
+        item.work_item_kind = "investigation_primary_recovery_v2".to_string();
+        let recovery_v2_primary = stage_team_leader_binding_for_claim(&plan, &item)
+            .expect("deterministic VerificationTask v2 recovery retains planning-only authority");
+        assert!(recovery_v2_primary.planning_only);
+        item.id = Uuid::new_v4();
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+        item.id = original_item_id;
+        item.work_item_kind = "investigation_primary".to_string();
+
+        item.created_by = "model".to_string();
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+        item.created_by = "server_phase_transition".to_string();
+        item.input_refs[0]["id"] = json!(Uuid::from_u128(78));
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+        item.input_refs[0]["id"] = json!(verification_task_id);
+        item.input_refs[0]["subject_fingerprint_sha256"] = json!("sha256:BAD");
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+
+        plan.stage_kind = StageKind::TargetIntel.as_str().to_string();
+        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
+    }
+
+    #[test]
+    fn investigation_policy_seeds_one_primary_without_fixed_lanes() {
+        let raw_spec: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../resources/harness/stages/investigation/spec.json"
+        )))
+        .expect("Investigation stage spec JSON");
+        assert_eq!(
+            raw_spec["team_scheduler"]["coordination_mode"],
+            INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE
+        );
+
+        let spec =
+            load_embedded_stage_spec(StageKind::Investigation).expect("Investigation stage spec");
+        let mut base = base_seed();
+        base.stage_kind = StageKind::Investigation.as_str().to_string();
+        base.specialist = "investigation".to_string();
+        base.work_item_key = StageKind::Investigation.as_str().to_string();
+        base.agent_path_prefix = "main>stage_run:investigation".to_string();
+
+        let seeded = build_stage_team_seed(&spec, base)
+            .expect("valid Investigation TaskOrchestrator policy")
+            .expect("Investigation seeds its durable governance envelope");
+
+        assert_eq!(seeded.work_items.len(), 1);
+        assert_eq!(seeded.work_items[0].stable_key, "leader:primary");
+        assert_eq!(seeded.work_items[0].work_item_kind, "investigation_primary");
+        assert_eq!(seeded.work_items[0].role, "investigation");
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["coordination_mode"],
+            INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE
+        );
+        assert!(!seeded
+            .plan
+            .allowed_roles
+            .contains(&"company_stage_controller".to_string()));
+        assert_eq!(
+            seeded
+                .plan
+                .allowed_roles
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            [
+                "adviser",
+                "browser",
+                "coder",
+                "enricher",
+                "installer",
+                "investigation",
+                "memorist",
+                "pentester",
+                "researcher",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+        );
+        assert!(seeded
+            .plan
+            .dynamic_request_policy
+            .get("controller_action_compiler")
+            .is_none());
+        assert!(seeded
+            .plan
+            .dynamic_request_policy
+            .get("formulaic_worklist_executor")
+            .is_none());
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["child_output_schema"],
+            "investigation_cognitive_output.v1"
+        );
+    }
+
+    #[test]
+    fn investigation_policy_rejects_roles_outside_the_cognitive_catalog() {
+        let mut spec =
+            load_embedded_stage_spec(StageKind::Investigation).expect("Investigation stage spec");
+        spec.team_scheduler
+            .as_mut()
+            .expect("Investigation TeamPlan policy")
+            .allowed_roles
+            .push("fixed_consult_lane".to_string());
+
+        assert!(matches!(
+            build_stage_team_seed(&spec, base_seed()),
+            Err("invalid_investigation_task_orchestrator_policy")
+        ));
+    }
+
+    #[test]
     fn target_intel_plan_is_stable_and_seeds_only_the_primary_leader() {
         let spec = load_embedded_stage_spec(StageKind::TargetIntel).expect("target_intel spec");
         let first = build_stage_team_seed(&spec, base_seed())
@@ -1146,7 +1996,6 @@ mod tests {
     fn downstream_company_stages_seed_the_same_controller_shape() {
         for (stage, specialist, child_role) in [
             (StageKind::ExternalAttackSurface, "prober", "prober"),
-            (StageKind::Enumeration, "enumerator", "enumerator"),
             (StageKind::VulnTriage, "vuln_scanner", "vuln_scanner"),
         ] {
             let spec = load_embedded_stage_spec(stage).expect("downstream stage spec");
@@ -1456,7 +2305,7 @@ mod tests {
         assert_eq!(
             seeded.plan.dynamic_request_policy,
             json!({
-                "allowed_request_kinds": ["coverage_recheck", "provider_followup"],
+                "allowed_request_kinds": ["semantic_frontier_task"],
                 "canonical_subject_refs_only": true,
                 "child_budget": {},
                 "child_output_schema": "stage_worker_output.v1",
@@ -1466,8 +2315,8 @@ mod tests {
                 "max_controller_gate_repairs": 1,
                 "max_controller_turn_resumes": 2,
                 "max_repair_generations": MAX_STAGE_TEAM_REPAIR_GENERATIONS,
-                "max_requests": 12,
-                "max_subject_refs": 16,
+                "max_requests": 32,
+                "max_subject_refs": 32,
                 "organization_scope_implicit": true,
             })
         );
@@ -1542,6 +2391,47 @@ mod tests {
         assert_eq!(
             invalid.blocker_code.as_deref(),
             Some("STAGE_TEAM_WORKER_OUTPUT_INVALID")
+        );
+    }
+
+    #[test]
+    fn investigation_child_rejects_authority_bearing_evidence_even_with_advisory_signals() {
+        let mut item = stage_child_item();
+        item.output_schema = "investigation_cognitive_output.v1".to_string();
+        let violation = stage_child_completion_from_result(
+            &item,
+            Uuid::new_v4(),
+            &json!({
+                "response": r#"{"business_disposition":"found","summary":"Evidence suggests an authorization boundary hypothesis","fact_refs":[],"evidence_ids":[41],"checked_empty_units":[],"blocker_code":null,"proposal_signals":[{"kind":"authorization_boundary","evidence_ids":[41]}],"action_intents":[{"kind":"read_only_recheck"}],"residuals":[]}"#
+            }),
+            true,
+        )
+        .expect_err("Investigation cognitive output cannot re-emit inherited evidence authority");
+
+        assert_eq!(violation.failure_code, "STAGE_TEAM_WORKER_OUTPUT_INVALID");
+        assert!(violation.detail.contains("advisory-only"));
+    }
+
+    #[test]
+    fn investigation_cognitive_worker_may_report_advisory_found_without_claiming_evidence() {
+        let mut item = stage_child_item();
+        item.output_schema = "investigation_cognitive_output.v1".to_string();
+        let output = stage_child_completion_from_result(
+            &item,
+            Uuid::new_v4(),
+            &json!({
+                "response": r#"{"business_disposition":"found","summary":"A bounded reasoning lead for Primary review","fact_refs":[],"evidence_ids":[],"checked_empty_units":[],"blocker_code":null,"proposal_signals":[{"kind":"advisory_lead"}],"action_intents":[],"residuals":[]}"#
+            }),
+            true,
+        )
+        .expect("advisory-only Investigation cognitive output");
+
+        assert_eq!(output.disposition, StageWorkerOutputDisposition::Found);
+        assert!(output.fact_refs.is_empty());
+        assert!(output.evidence_ids.is_empty());
+        assert_eq!(
+            output.canonical_output["proposal_signals"][0]["kind"],
+            "advisory_lead"
         );
     }
 
@@ -1772,5 +2662,351 @@ mod tests {
         assert!(prompt.contains("IMMUTABLE CHILD OUTPUT MANIFEST"));
         assert!(prompt.contains(&item.id.to_string()));
         assert!(prompt.contains("only Worker allowed"));
+    }
+
+    fn enumeration_shard() -> EnumerationWorklistShard {
+        EnumerationWorklistShard {
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            target_id: Uuid::new_v4(),
+            exact_origin: "https://example.test:443/".to_string(),
+            producer: EnumerationProducerKind::Preflight,
+            unresolved_cluster_id: Some("cluster:1".to_string()),
+            generation: Uuid::new_v4(),
+            attempt: 1,
+            dependency_lane_receipts_v2: Vec::new(),
+            producer_evidence_audit_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn enumeration_plan_uses_the_server_owned_formulaic_worklist() {
+        let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
+        let mut base = base_seed();
+        base.stage_kind = StageKind::Enumeration.as_str().to_string();
+        base.specialist = "enumerator".to_string();
+        let seeded = build_stage_team_seed(&spec, base).unwrap().unwrap();
+        assert!(seeded
+            .plan
+            .dynamic_request_policy
+            .get("controller_action_compiler")
+            .is_none());
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["formulaic_worklist_executor"],
+            "enumeration_v2"
+        );
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["organization_scope_implicit"],
+            false
+        );
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["allowed_request_kinds"],
+            json!(["enumeration_resolution", "formulaic_enumeration"])
+        );
+        assert_eq!(
+            seeded.plan.allowed_roles,
+            vec![
+                "browser_runtime".to_string(),
+                "company_stage_controller".to_string(),
+                "content_mapper".to_string(),
+                "coverage_reviewer".to_string(),
+                "js_api_analyzer".to_string(),
+                "parameter_analyzer".to_string(),
+                "resolution_analyst".to_string()
+            ]
+        );
+        assert_eq!(seeded.work_items.len(), 1);
+        assert_eq!(seeded.work_items[0].role, "company_stage_controller");
+    }
+
+    #[test]
+    fn enumeration_compiled_objective_carries_its_exact_immutable_work_key() {
+        let shard = enumeration_shard();
+        let objective = shard.typed_objective();
+
+        assert_eq!(
+            objective.get("stable_work_key").and_then(Value::as_str),
+            Some(shard.stable_key().as_str())
+        );
+    }
+
+    #[test]
+    fn enumeration_shard_uses_the_authorized_canonical_target_subject() {
+        let shard = enumeration_shard();
+
+        assert_eq!(
+            shard.subject_refs(),
+            vec![json!({"kind":"target","target_id":shard.target_id})]
+        );
+        assert_eq!(shard.typed_objective()["exact_origin"], shard.exact_origin);
+    }
+
+    #[test]
+    fn enumeration_browser_and_js_shards_use_single_target_formulaic_arguments() {
+        let mut shard = enumeration_shard();
+        shard.unresolved_cluster_id = None;
+        shard.producer = EnumerationProducerKind::Browser;
+        assert_eq!(
+            shard.formulaic_args(),
+            Some(json!({
+                "target_id": shard.target_id,
+                "target_url": shard.exact_origin,
+                "crawl_mode": "standard",
+                "ai": false,
+                "ai_assist": false,
+            }))
+        );
+
+        shard.producer = EnumerationProducerKind::JsApi;
+        assert_eq!(
+            shard.formulaic_args(),
+            Some(json!({
+                "target_id": shard.target_id,
+                "target_url": shard.exact_origin,
+                "ai": false,
+            }))
+        );
+    }
+
+    #[test]
+    fn enumeration_stable_identity_ignores_the_receipt_replay_observation_bit() {
+        let mut shard = enumeration_shard();
+        shard.unresolved_cluster_id = None;
+        shard.producer = EnumerationProducerKind::JsApi;
+        shard.dependency_lane_receipts_v2 = vec![EnumerationLaneClosureReceiptV2 {
+            receipt_id: Uuid::new_v4(),
+            lane: EnumerationLaneKindV2::Browser,
+            execution_authority_id: Uuid::new_v4(),
+            artifact_sha256: format!("sha256:{}", "a".repeat(64)),
+            receipt_set_sha256: format!("sha256:{}", "b".repeat(64)),
+            closure_graph_sha256: format!("sha256:{}", "c".repeat(64)),
+            dependency_receipt_ids: Vec::new(),
+            evidence_audit_ids: vec![41],
+            script_denominator_id: Some(Uuid::new_v4()),
+            candidate_denominator_ids: vec![Uuid::new_v4()],
+            parameter_denominator_ids: Vec::new(),
+            resolution_occurrence_id: None,
+            resolution_terminal_receipt_id: None,
+            resolution_terminal_receipt_input_id: None,
+            terminal_disposition: "found".to_string(),
+            entity_set_sha256: format!("sha256:{}", "d".repeat(64)),
+            denominator_set_sha256: format!("sha256:{}", "e".repeat(64)),
+            script_count: 1,
+            candidate_count: 1,
+            occurrence_count: 1,
+            parameter_assessment_count: 0,
+            parameter_fact_count: 0,
+            unresolved_count: 0,
+            group_count: 1,
+            occurrence_link_count: 1,
+            api_link_count: 1,
+            missing: 0,
+            replayed: false,
+        }];
+        let mut replay = shard.clone();
+        replay.dependency_lane_receipts_v2[0].replayed = true;
+
+        assert_eq!(shard.stable_key(), replay.stable_key());
+        assert_eq!(shard.typed_objective(), replay.typed_objective());
+        assert_eq!(
+            replay.typed_objective()["dependency_lane_receipts_v2"][0]["replayed"],
+            false
+        );
+    }
+
+    #[test]
+    fn enumeration_shards_partition_exact_origin_and_producer_without_overlap() {
+        let shards = enumeration_shards_for_origin(&enumeration_shard(), true);
+        let keys = shards
+            .iter()
+            .map(|shard| shard.stable_key())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(keys.len(), shards.len());
+        assert!(shards
+            .iter()
+            .all(|shard| shard.exact_origin == "https://example.test:443/"));
+    }
+
+    #[test]
+    fn enumeration_browser_and_dir_wave_can_run_concurrently() {
+        assert_eq!(EnumerationProducerKind::Content.wave(), 1);
+        assert_eq!(EnumerationProducerKind::Browser.wave(), 1);
+        let terminal = [EnumerationProducerKind::Preflight].into_iter().collect();
+        assert!(enumeration_wave_dependencies_satisfied(
+            EnumerationProducerKind::Content,
+            &terminal,
+            false
+        ));
+        assert!(enumeration_wave_dependencies_satisfied(
+            EnumerationProducerKind::Browser,
+            &terminal,
+            false
+        ));
+    }
+
+    #[test]
+    fn enumeration_jsapi_waits_for_browser_manifest_receipt() {
+        let mut terminal = [EnumerationProducerKind::Preflight].into_iter().collect();
+        assert!(!enumeration_wave_dependencies_satisfied(
+            EnumerationProducerKind::JsApi,
+            &terminal,
+            false
+        ));
+        terminal.insert(EnumerationProducerKind::Browser);
+        assert!(enumeration_wave_dependencies_satisfied(
+            EnumerationProducerKind::JsApi,
+            &terminal,
+            false
+        ));
+    }
+
+    #[test]
+    fn enumeration_parameter_waits_for_runtime_and_static_occurrences() {
+        let browser_only = [EnumerationProducerKind::Browser].into_iter().collect();
+        assert!(!enumeration_wave_dependencies_satisfied(
+            EnumerationProducerKind::Parameter,
+            &browser_only,
+            false
+        ));
+        let both = [
+            EnumerationProducerKind::Browser,
+            EnumerationProducerKind::JsApi,
+        ]
+        .into_iter()
+        .collect();
+        assert!(enumeration_wave_dependencies_satisfied(
+            EnumerationProducerKind::Parameter,
+            &both,
+            false
+        ));
+    }
+
+    #[test]
+    fn enumeration_parameter_and_coverage_are_in_the_runtime_denominator() {
+        let required = enumeration_required_producers_for_techniques([
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-JSAPI",
+            "GOLISH-ENUM-PARAM",
+        ])
+        .unwrap();
+        assert_eq!(
+            required,
+            [
+                EnumerationProducerKind::Preflight,
+                EnumerationProducerKind::Content,
+                EnumerationProducerKind::Browser,
+                EnumerationProducerKind::JsApi,
+                EnumerationProducerKind::Parameter,
+                EnumerationProducerKind::Coverage,
+            ]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn enumeration_terminal_projection_does_not_shrink_frozen_producer_denominator() {
+        let from_pending =
+            enumeration_required_producers_for_techniques(["GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM"])
+                .unwrap();
+        let from_terminal =
+            enumeration_required_producers_for_techniques(["GOLISH-ENUM-DIR", "GOLISH-ENUM-PARAM"])
+                .unwrap();
+        assert_eq!(from_pending, from_terminal);
+        assert!(from_terminal.contains(&EnumerationProducerKind::Parameter));
+        assert!(from_terminal.contains(&EnumerationProducerKind::Coverage));
+    }
+
+    #[test]
+    fn enumeration_resolution_worker_only_spawns_for_unresolved_cluster() {
+        assert!(!enumeration_shards_for_origin(&enumeration_shard(), false)
+            .iter()
+            .any(|shard| shard.producer == EnumerationProducerKind::Resolution));
+        assert!(enumeration_shards_for_origin(&enumeration_shard(), true)
+            .iter()
+            .any(|shard| shard.producer == EnumerationProducerKind::Resolution));
+    }
+
+    #[test]
+    fn enumeration_rolling_window_never_exceeds_company_or_global_caps() {
+        assert_eq!(ENUMERATION_MAX_COMPANY_UNITS_ACTIVE, 2);
+        assert_eq!(ENUMERATION_MAX_WORKERS_PER_COMPANY, 3);
+        assert_eq!(ENUMERATION_GLOBAL_HOST_JOB_CAP, 6);
+        assert_eq!(ENUMERATION_GLOBAL_PROVIDER_CAP, 4);
+    }
+
+    #[test]
+    fn enumeration_browser_jobs_never_exceed_global_two() {
+        assert_eq!(ENUMERATION_GLOBAL_BROWSER_JOB_CAP, 2);
+    }
+
+    #[test]
+    fn enumeration_successor_preserves_authority_but_uses_a_distinct_stable_key() {
+        let shard = enumeration_shard();
+        let successor = shard.successor();
+        assert_ne!(successor.stable_key(), shard.stable_key());
+        assert!(successor.stable_key().ends_with(":successor:2"));
+        assert_eq!(successor.attempt, shard.attempt + 1);
+        assert_eq!(successor.generation, shard.generation);
+        assert_eq!(successor.operation_id, shard.operation_id);
+        assert_eq!(successor.target_id, shard.target_id);
+        assert_eq!(successor.exact_origin, shard.exact_origin);
+    }
+
+    #[test]
+    fn enumeration_controller_is_only_final_submitter() {
+        let spec = load_embedded_stage_spec(StageKind::Enumeration).unwrap();
+        let mut base = base_seed();
+        base.stage_kind = StageKind::Enumeration.as_str().to_string();
+        let seeded = build_stage_team_seed(&spec, base).unwrap().unwrap();
+        assert_eq!(seeded.plan.final_submitter_kind, "worker");
+        assert_eq!(
+            seeded.plan.aggregator_role.as_deref(),
+            Some("company_stage_controller")
+        );
+    }
+
+    #[test]
+    fn enumeration_role_tool_masks_are_host_enforced() {
+        assert_eq!(
+            EnumerationProducerKind::Resolution.role(),
+            "resolution_analyst"
+        );
+        assert_eq!(EnumerationProducerKind::Browser.role(), "browser_runtime");
+        assert_eq!(
+            EnumerationProducerKind::Coverage.role(),
+            "coverage_reviewer"
+        );
+    }
+
+    #[test]
+    fn enumeration_deterministic_lanes_never_dispatch_provider() {
+        for producer in [
+            EnumerationProducerKind::Preflight,
+            EnumerationProducerKind::Content,
+            EnumerationProducerKind::Browser,
+            EnumerationProducerKind::JsApi,
+            EnumerationProducerKind::Parameter,
+            EnumerationProducerKind::Coverage,
+        ] {
+            assert_eq!(producer.execution_kind(), "host_deterministic");
+        }
+        assert_eq!(
+            EnumerationProducerKind::Resolution.execution_kind(),
+            "llm_subagent"
+        );
+    }
+
+    #[test]
+    fn free_text_objective_cannot_expand_typed_shard_scope() {
+        let shard = enumeration_shard();
+        let objective = shard.typed_objective();
+        assert_eq!(objective["target_id"], json!(shard.target_id));
+        assert_eq!(objective["exact_origin"], shard.exact_origin);
+        assert!(objective.get("free_text_subject").is_none());
     }
 }

@@ -45,6 +45,7 @@ export type {
   ExecutionMode,
   FinalizedStreamingBlock,
   InputMode,
+  InvestigationRefreshHint,
   PendingCommand,
   PlanStep,
   PlanSummary,

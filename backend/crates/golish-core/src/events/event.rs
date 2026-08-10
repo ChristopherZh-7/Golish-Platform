@@ -539,6 +539,17 @@ pub enum AiEvent {
         duration_ms: u64,
     },
 
+    /// Commit-visible refresh hint for one exact unified Investigation run.
+    /// The event carries no authority body: consumers must bootstrap/read the
+    /// DB projection and ignore duplicate or out-of-order sequence numbers.
+    InvestigationProjectionChanged {
+        operation_id: String,
+        stage_execution_id: String,
+        stage_run_request_id: String,
+        #[ts(type = "number")]
+        change_seq: i64,
+    },
+
     // Observability: first-class harness decision record (design 2026-06-05).
     /// A harness decision (gate / evidence / submit / background-notes), carried
     /// with the correlation spine so an AI can thread the main agent and every

@@ -18,7 +18,9 @@
 pub mod agent_mode;
 pub mod agent_session;
 pub mod api_request_stats;
+pub mod application_model_contract;
 pub mod attack_execution;
+pub mod candidate_technique;
 pub mod events;
 pub mod message;
 pub mod runtime;
@@ -31,10 +33,15 @@ pub mod event_emitter;
 pub mod hitl;
 pub mod hypothesis_semantic_key;
 pub mod hypothesis_verification;
+pub mod hypothesis_verification_task;
 pub mod investigation_comparison;
 pub mod investigation_contract;
+pub mod investigation_fuel;
+pub mod investigation_main_read_session;
 pub mod investigation_projection;
+pub mod investigation_run_closure;
 pub mod jsonl;
+pub mod methodology_context;
 pub mod os;
 pub mod paths;
 pub mod pentest_context;
@@ -43,6 +50,7 @@ pub mod prompt;
 pub mod ready_gate;
 pub mod session_manager;
 pub mod skill_provider;
+pub mod stage_topology_contract;
 pub mod textual_tool_call;
 pub mod time;
 pub mod tool_args;
@@ -62,6 +70,9 @@ pub use agent_session::{
 pub use api_request_stats::{
     ApiRequestStats, ApiRequestStatsSnapshot, ProviderRequestStatsSnapshot,
 };
+pub use application_model_contract::{
+    ApplicationModelContract, ApplicationModelContractParseError, ApplicationModelOperationContract,
+};
 pub use attack_execution::{
     check_candidate_tool_boundary, check_candidate_tool_boundary_mode, AttackExecutionContract,
     CandidateAttemptContextRef, CandidateToolBoundaryError,
@@ -76,6 +87,11 @@ pub use investigation_contract::{
     CampaignWritePolicy, ComparePolicy, InvestigationAuthority, InvestigationContractParseError,
     InvestigationContractVersion, InvestigationErrorCode, InvestigationModePolicy,
     InvestigationRolloutMode, LegacyProjectionPolicy,
+};
+pub use investigation_run_closure::{
+    InvestigationDelegationCensusV1, InvestigationExactSetCensusV1, InvestigationFuelClosureV1,
+    InvestigationRunClosureDispositionV1, InvestigationRunClosureError, InvestigationRunClosureV1,
+    InvestigationTerminalWorkCensusV1, INVESTIGATION_RUN_CLOSURE_CONTRACT_V1,
 };
 pub use message::{PromptPart, PromptPayload};
 pub use pentest_context::PentestEngineContext;
@@ -93,6 +109,10 @@ pub use session::{
 pub use session_kind::{is_title_gen_session_id, title_gen_session_id, TITLE_GEN_SESSION_PREFIX};
 pub use session_manager::{SessionManager, SessionManagerFactory};
 pub use skill_provider::{SkillMatch, SkillMetadata, SkillProvider};
+pub use stage_topology_contract::{
+    FrozenStageTopologyContractMaterial, StageTopologyContract, StageTopologyContractError,
+    StageTopologyFreezeSource,
+};
 pub use textual_tool_call::{
     finalize_assistant_text, parse_textual_tool_calls, select_textual_tool_call,
     select_textual_tool_calls, strip_textual_tool_call_markup, FinalizedAssistantText,

@@ -61,3 +61,12 @@
 ```bash
 cd backend && cargo nextest run -p golish-agent-kit tool_executors
 ```
+
+## Host-owned Intel public evidence adapter（2026-08-02）
+
+- `intel_public_search` / `intel_public_fetch` 是 fixture/dev-only surface；`StrictPassiveIntelPublicAdapter` 只接受声明为 fake 的 transport，并在 evidence + audit receipt 成功后才返回 `untrusted_data`。
+- fetch 只允许 GET/HEAD，拒绝 userinfo、非 HTTP(S)、target-owned host、literal/DNS 中任一
+  special-use IPv4/IPv6（含 shared、benchmark、documentation、Teredo 与 private 6to4）、
+  unpinned/rebound connect、未声明 final URL、异常 status/timestamp、超限 redirect/body 与
+  file MIME；每跳 redirect 重新解析和验证。search hit/string/body 同样有 hard bounds。
+- `public_web_readonly` 在 Plan A 固定为 typed unsupported，不会静默退化为真实网络访问；legacy `web_fetch` fixture 外保持原样。

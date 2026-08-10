@@ -87,13 +87,14 @@ pub enum ComparisonHypothesisReadinessV1 {
 #[serde(tag = "availability", rename_all = "snake_case")]
 pub enum PlanCMemberAuthorityV1 {
     NotAvailablePlanC,
+    PendingCampaignAdmission,
     Available { member_hash: String },
 }
 
 impl PlanCMemberAuthorityV1 {
     fn validate(&self, field: &'static str) -> Result<(), InvestigationComparisonError> {
         match self {
-            Self::NotAvailablePlanC => Ok(()),
+            Self::NotAvailablePlanC | Self::PendingCampaignAdmission => Ok(()),
             Self::Available { member_hash } if is_hash(member_hash) => Ok(()),
             Self::Available { .. } => Err(InvestigationComparisonError::InvalidHash(field)),
         }
@@ -104,6 +105,7 @@ impl PlanCMemberAuthorityV1 {
 #[serde(tag = "availability", rename_all = "snake_case")]
 pub enum PlanCExactSetAuthorityInputV1 {
     NotAvailablePlanC,
+    PendingCampaignAdmission,
     Available { member_hashes: Vec<String> },
 }
 
@@ -111,6 +113,7 @@ pub enum PlanCExactSetAuthorityInputV1 {
 #[serde(tag = "availability", rename_all = "snake_case")]
 pub enum PlanCExactSetAuthorityV1 {
     NotAvailablePlanC,
+    PendingCampaignAdmission,
     Available { exact_set: ComparisonExactSetV1 },
 }
 
@@ -121,6 +124,9 @@ impl PlanCExactSetAuthorityInputV1 {
     ) -> Result<PlanCExactSetAuthorityV1, InvestigationComparisonError> {
         match self {
             Self::NotAvailablePlanC => Ok(PlanCExactSetAuthorityV1::NotAvailablePlanC),
+            Self::PendingCampaignAdmission => {
+                Ok(PlanCExactSetAuthorityV1::PendingCampaignAdmission)
+            }
             Self::Available { member_hashes } => Ok(PlanCExactSetAuthorityV1::Available {
                 exact_set: ComparisonExactSetV1::seal(domain, member_hashes)?,
             }),
@@ -154,6 +160,23 @@ impl PlanCComparisonAuthorityInputV1 {
             transition_receipt: PlanCMemberAuthorityV1::NotAvailablePlanC,
             campaign_evidence_members: PlanCExactSetAuthorityInputV1::NotAvailablePlanC,
             oracle_evidence_members: PlanCExactSetAuthorityInputV1::NotAvailablePlanC,
+        }
+    }
+
+    /// Candidate authority is sealed and Plan C is installed, but the
+    /// canonical Campaign denominator/admission transaction has not committed
+    /// yet. This is intentionally distinct from the historical
+    /// `not_available_plan_c` compatibility state.
+    pub const fn pending_campaign_admission() -> Self {
+        Self {
+            capability_assessments: PlanCExactSetAuthorityInputV1::PendingCampaignAdmission,
+            revision_adjudication: PlanCMemberAuthorityV1::PendingCampaignAdmission,
+            objective_outcomes: PlanCExactSetAuthorityInputV1::PendingCampaignAdmission,
+            claim_component_outcomes: PlanCExactSetAuthorityInputV1::PendingCampaignAdmission,
+            transition_decision: PlanCMemberAuthorityV1::PendingCampaignAdmission,
+            transition_receipt: PlanCMemberAuthorityV1::PendingCampaignAdmission,
+            campaign_evidence_members: PlanCExactSetAuthorityInputV1::PendingCampaignAdmission,
+            oracle_evidence_members: PlanCExactSetAuthorityInputV1::PendingCampaignAdmission,
         }
     }
 
@@ -904,6 +927,19 @@ mod tests {
         assert_eq!(json.matches("not_available_plan_c").count(), 8);
         assert!(!json.contains(":null"));
         assert!(json.contains("candidate_hypothesis_coverage_sampling_degraded"));
+    }
+
+    #[test]
+    fn comparison_record_plan_c_pending_admission_is_not_unavailable() {
+        let mut input = fixture();
+        input.readiness = ComparisonHypothesisReadinessV1::PlanningReady;
+        input.plan_c = PlanCComparisonAuthorityInputV1::pending_campaign_admission();
+        let record = InvestigationComparisonRecordV1::compile(input).expect("fixture compiles");
+        let json = record.canonical_json().expect("record serializes");
+
+        assert_eq!(json.matches("pending_campaign_admission").count(), 8);
+        assert!(!json.contains("not_available_plan_c"));
+        assert!(!json.contains(":null"));
     }
 
     #[test]

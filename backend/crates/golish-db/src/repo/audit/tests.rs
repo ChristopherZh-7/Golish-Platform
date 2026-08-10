@@ -11,8 +11,16 @@ use super::queries::{
 };
 use super::{
     audit_project_path, reclaim_cutoff, DEFAULT_RECLAIM_THRESHOLD_HOURS,
-    EVIDENCE_FACTS_FOR_SESSION_ORG_FRESH_SQL,
+    EVIDENCE_FACTS_FOR_SESSION_ORG_FRESH_SQL, RECENT_EVIDENCE_DETAILED_FOR_WORKER_SQL,
 };
+
+#[test]
+fn recent_worker_evidence_is_bound_to_operation_and_producer() {
+    assert!(RECENT_EVIDENCE_DETAILED_FOR_WORKER_SQL.contains("run_id = $1"));
+    assert!(RECENT_EVIDENCE_DETAILED_FOR_WORKER_SQL
+        .contains("detail->>'producer_worker_run_id' = $2::text"));
+    assert!(!RECENT_EVIDENCE_DETAILED_FOR_WORKER_SQL.contains("session_id ="));
+}
 
 #[test]
 fn audit_command_sql_matches_command_layer() {

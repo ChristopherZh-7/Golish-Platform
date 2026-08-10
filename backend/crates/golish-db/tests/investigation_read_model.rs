@@ -504,7 +504,9 @@ async fn projection_read_head_isolation_materialized_at_time_identity_and_typed_
         db.pool(),
         operation_id,
         InvestigationTimelineQuery {
+            event_kinds: Vec::new(),
             after: None,
+            expected_page_authority: None,
             page_size: 100,
         },
     )

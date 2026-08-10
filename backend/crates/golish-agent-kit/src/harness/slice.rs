@@ -7,8 +7,9 @@
 
 use std::collections::HashSet;
 
-use super::operation_graph::base_operation_graph;
+use super::operation_graph::operation_graph_for_topology;
 use super::resources::load_embedded_profile;
+use super::stage_topology_contract::StageTopologyContract;
 use super::types::StageKind;
 
 /// Resolve the `(entry_stage, allowlist)` for a stage slice against the
@@ -22,11 +23,33 @@ pub fn resolve_slice(
     from: Option<StageKind>,
     to: StageKind,
 ) -> Result<(StageKind, HashSet<StageKind>), String> {
-    let graph = base_operation_graph().map_err(|e| format!("load operation graph: {e}"))?;
+    resolve_slice_for_topology(
+        profile_id,
+        StageTopologyContract::LegacyCandidateVerificationV1,
+        from,
+        to,
+    )
+}
+
+/// Resolve a slice against one exact operation-frozen topology.
+///
+/// Existing-operation paths (resume/fork/executor) must use this function and
+/// pass the validated persisted contract. The legacy [`resolve_slice`] wrapper
+/// remains only for compatibility callers that are explicitly legacy-only.
+pub fn resolve_slice_for_topology(
+    profile_id: &str,
+    topology: StageTopologyContract,
+    from: Option<StageKind>,
+    to: StageKind,
+) -> Result<(StageKind, HashSet<StageKind>), String> {
+    let graph = operation_graph_for_topology(topology)
+        .map_err(|e| format!("load operation graph for {topology}: {e}"))?;
     let profile = load_embedded_profile(profile_id)
         .map_err(|e| format!("load profile {profile_id}: {e}"))?
         .ok_or_else(|| format!("unknown harness profile: {profile_id}"))?;
-    let allowed = profile.allowed_stage_set();
+    let allowed = profile
+        .allowed_stage_set_for_topology(topology)
+        .map_err(|e| format!("project profile {profile_id} for {topology}: {e}"))?;
     let dag = graph.project(&allowed);
     let allowlist = dag
         .slice(from, to)
@@ -39,6 +62,41 @@ pub fn resolve_slice(
         .into_iter()
         .next()
         .ok_or_else(|| "sliced DAG has no entry point".to_string())?;
+    Ok((entry, allowlist))
+}
+
+/// Resolve the pre-create CLI slice without consulting a mutable rollout
+/// default. The DB transaction will freeze exactly one topology; this helper
+/// returns the union of every closed topology projection that accepts the same
+/// requested boundary. The executor immediately reloads the frozen operation
+/// and intersects this superset with its one exact graph.
+pub fn resolve_slice_for_any_topology(
+    profile_id: &str,
+    from: Option<StageKind>,
+    to: StageKind,
+) -> Result<(StageKind, HashSet<StageKind>), String> {
+    let mut resolved = Vec::new();
+    let mut errors = Vec::new();
+    for topology in StageTopologyContract::ALL {
+        match resolve_slice_for_topology(profile_id, topology, from, to) {
+            Ok(slice) => resolved.push((topology, slice)),
+            Err(error) => errors.push(format!("{topology}: {error}")),
+        }
+    }
+    let Some((_, (entry, mut allowlist))) = resolved.pop() else {
+        return Err(format!(
+            "stage slice is invalid for every closed topology: {}",
+            errors.join("; ")
+        ));
+    };
+    for (topology, (other_entry, other_allowlist)) in resolved {
+        if other_entry != entry {
+            return Err(format!(
+                "stage slice entry disagrees across closed topologies: {entry} vs {other_entry} ({topology})"
+            ));
+        }
+        allowlist.extend(other_allowlist);
+    }
     Ok((entry, allowlist))
 }
 
@@ -82,5 +140,50 @@ mod tests {
         let err = resolve_slice("no-such-profile", None, StageKind::TargetIntel)
             .expect_err("unknown profile rejected");
         assert!(err.contains("unknown harness profile"));
+    }
+
+    #[test]
+    fn unified_full_slice_replaces_the_complete_legacy_pair() {
+        let (entry, allowlist) = resolve_slice_for_topology(
+            "red_team",
+            StageTopologyContract::UnifiedInvestigationV1,
+            None,
+            StageKind::Reporting,
+        )
+        .expect("unified slice resolves");
+        assert_eq!(entry, StageKind::Scoping);
+        assert!(allowlist.contains(&StageKind::ApplicationUnderstanding));
+        assert!(allowlist.contains(&StageKind::Investigation));
+        assert!(!allowlist.contains(&StageKind::AttackCandidate));
+        assert!(!allowlist.contains(&StageKind::Verification));
+    }
+
+    #[test]
+    fn pre_create_slice_is_topology_neutral_but_each_exact_slice_is_not() {
+        let (_, allowlist) = resolve_slice_for_any_topology("red_team", None, StageKind::Reporting)
+            .expect("pre-create slice resolves against the closed catalog");
+        for stage in [
+            StageKind::AttackCandidate,
+            StageKind::Verification,
+            StageKind::ApplicationUnderstanding,
+            StageKind::Investigation,
+        ] {
+            assert!(allowlist.contains(&stage), "missing {stage}");
+        }
+
+        assert!(resolve_slice_for_topology(
+            "red_team",
+            StageTopologyContract::LegacyCandidateVerificationV1,
+            Some(StageKind::Investigation),
+            StageKind::Investigation,
+        )
+        .is_err());
+        assert!(resolve_slice_for_topology(
+            "red_team",
+            StageTopologyContract::UnifiedInvestigationV1,
+            Some(StageKind::AttackCandidate),
+            StageKind::AttackCandidate,
+        )
+        .is_err());
     }
 }

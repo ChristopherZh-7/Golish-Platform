@@ -8,7 +8,9 @@ use golish_agent_kit::db_tracking::{DbTracker, ToolCallGuard};
 use golish_agent_kit::db_traits::{
     RuntimeMemoryRepository, RuntimeToolIdentity, RuntimeWorkerFence, WorkerToolMutation,
 };
-use golish_sub_agents::{BoundWorkerChainContext, BoundWorkerToolLifecycle};
+use golish_sub_agents::{
+    BoundWorkerChainContext, BoundWorkerNestedDelegationLifecycle, BoundWorkerToolLifecycle,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -26,6 +28,7 @@ pub(crate) struct RuntimeWorkerToolLifecycle {
     repository: Arc<dyn RuntimeMemoryRepository>,
     bound: BoundWorkerChainContext,
     guards: Mutex<HashMap<Uuid, ToolCallGuard>>,
+    nested: Option<Arc<dyn BoundWorkerNestedDelegationLifecycle>>,
 }
 
 impl RuntimeWorkerToolLifecycle {
@@ -39,6 +42,22 @@ impl RuntimeWorkerToolLifecycle {
             repository,
             bound,
             guards: Mutex::new(HashMap::new()),
+            nested: None,
+        }
+    }
+
+    pub(crate) fn new_with_nested(
+        tracker: DbTracker,
+        repository: Arc<dyn RuntimeMemoryRepository>,
+        bound: BoundWorkerChainContext,
+        nested: Arc<dyn BoundWorkerNestedDelegationLifecycle>,
+    ) -> Self {
+        Self {
+            tracker,
+            repository,
+            bound,
+            guards: Mutex::new(HashMap::new()),
+            nested: Some(nested),
         }
     }
 
@@ -57,6 +76,10 @@ impl RuntimeWorkerToolLifecycle {
 
 #[async_trait]
 impl BoundWorkerToolLifecycle for RuntimeWorkerToolLifecycle {
+    fn nested_delegation_lifecycle(&self) -> Option<Arc<dyn BoundWorkerNestedDelegationLifecycle>> {
+        self.nested.clone()
+    }
+
     async fn begin(
         &self,
         request_id: &str,

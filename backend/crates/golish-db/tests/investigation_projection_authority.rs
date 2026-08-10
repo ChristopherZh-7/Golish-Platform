@@ -219,7 +219,15 @@ async fn force_registry_contract(tx: &mut Transaction<'_, Postgres>, operation_i
         r#"UPDATE operation_state
               SET tool_truth_contract='receipt_v1',
                   investigation_contract_version='hypothesis_registry_v1',
-                  investigation_rollout_mode='registry_authoritative_legacy_projection'
+                  investigation_rollout_mode='registry_authoritative_legacy_projection',
+                  stage_topology_contract='unified_investigation_v1',
+                  stage_topology_canonical_json=stage_topology_canonical_json(
+                      'unified_investigation_v1'
+                  ),
+                  stage_topology_sha256=stage_topology_contract_sha256(
+                      'unified_investigation_v1'
+                  ),
+                  stage_topology_freeze_source='deployment_pair_v1'
             WHERE operation_id=$1"#,
     )
     .bind(operation_id)

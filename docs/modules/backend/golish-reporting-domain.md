@@ -14,6 +14,8 @@
 - TechniqueOutcome 的 authority 同时冻结 exact `StageHandoff` final seal；missing row、重复 ref、row/hash/evidence drift 均不能形成 source snapshot。
 - blocked Cleanup residual 只能从 typed `CleanupBlockedDecisionTruth` 投影 actor、reason、residual 与该 decision 的完整 evidence membership；obligation-creation evidence 不能充当 blocked 决策引用。
 - `ReportClaim` 只保存 typed value 和 citation ids；evidence body 不复制进 claim。
+- Plan D claim value 是 closed enum：revision adjudication / grandfathered legacy Attempt 才能形成 `SecurityVerdict`，final Wave receipt 才能形成 `Coverage`；其余 canonical facts只能形成 observation/method/authorization audit 或明确 limitation，不能从自由文本升级为 verdict。
+- `ReportInputSealV1` 分 revision-adjudication 与 legacy 两条 closed authority contract；两者都绑定 frozen operation scope 中每个组织的 `current_report` Tool Truth exact set、完整 source set 与 server-derived report-input hash。revision 路径冻结每个 current/closed hypothesis head 的最新 `nonterminal|verified|refuted` adjudication、generation 与 final-wave exact set，并聚合 coverage/residual membership hash；`nonterminal` 结构性无 terminal decision 且必须绑定 fixed-point，只授权 coverage/residual/method limitation，只有 verified/refuted terminal member 可形成 `SecurityVerdict`。legacy 只保留 operation-wide seal 的兼容只读并强制 `legacy_coverage_unavailable`。
 - validator 要求每个事实 claim 有同 frozen organization、同 revision、manifest 内 source且可解析到 typed `EvidenceAuditTruth` 的 citation；evidence 必须 exact operation、`audit_role=evidence`、单一 canonical owner，并与 manifest 中的 audit id/hash 完全一致。
 - Candidate 只有经 current verified Finding lineage 才能进入 Findings；blocked/waived cleanup 必须披露 residual。
 - Cleanup `missing_obligation_count`、`nonterminal_obligation_count`、`undisclosed_residual_count` 或 `invalid_terminal_truth_count` 任一非零均 fail closed。
@@ -24,6 +26,8 @@
 | 符号 | 说明 |
 |---|---|
 | `ReportReadModel` / `ReportSourceSnapshot` | 冻结 scope、claims/citations 与完整 canonical source set |
+| `ReportClaimValue` / `SecurityVerdictAuthority` | typed verdict、coverage、audit、limitation及其 closed authority class |
+| `ReportInputSealV1` / `HistoricalArtifactReadAuthorityV0` | finalization 输入封存与历史 artifact 当前读取证明 |
 | `canonical_source_set_hash` | 长度前缀 canonical source 编码的 SHA-256 |
 | `validate_report` | citation、scope、secret、lineage、cleanup、snapshot/current 双轴确定性检查 |
 | `EvidenceAuditTruth` | evidence ledger 的 exact run/role/org/source authority；缺失、跨组织或 hash/source 未绑定时 fail closed |

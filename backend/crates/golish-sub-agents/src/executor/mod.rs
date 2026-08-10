@@ -35,6 +35,7 @@ mod prompt_assembly;
 mod response_parsing;
 mod stream_processing;
 mod tool_setup;
+pub mod verification_campaign;
 
 /// In-memory handoff for the last chain body whose database update completed.
 ///

@@ -23,6 +23,7 @@ pub const CANONICAL_SOURCE_TABLES: &[&str] = &[
     "fingerprints",
     "technique_outcomes",
     "attack_candidate_work_items",
+    "application_model_revisions",
     "findings",
 ];
 pub const MAX_CANONICAL_REFS: usize = 256;
@@ -75,6 +76,9 @@ pub enum CanonicalFactKey {
     },
     AttackCandidateWorkItem {
         work_item_id: Uuid,
+    },
+    ApplicationModelRevision {
+        revision_id: Uuid,
     },
     Finding {
         finding_id: Uuid,
@@ -653,6 +657,73 @@ async fn resolve_one(
             .fetch_optional(&mut *connection)
             .await?
             .map(|row| projection(key, "attack_candidate_work_items", row))
+        }
+        CanonicalFactKey::ApplicationModelRevision { revision_id } => {
+            sqlx::query_as::<_, RawProjection>(
+                r#"SELECT application_model_revision_canonical_content(revision.id),
+                          revision.organization_id,
+                          revision.finalized_at,
+                          application_model_revision_evidence_ids(revision.id)
+                     FROM application_model_revisions AS revision
+                     JOIN application_model_manifests AS manifest
+                       ON manifest.id=revision.manifest_id
+                     JOIN organizations AS org
+                       ON org.id=revision.organization_id
+                    WHERE revision.id=$1
+                      AND (
+                          revision.operation_id=$2
+                          OR EXISTS (
+                              SELECT 1
+                                FROM operation_stage_fork_inputs AS fork_input
+                                JOIN operation_stage_forks AS fork
+                                  ON fork.operation_id=fork_input.operation_id
+                                 AND fork.source_operation_id=
+                                       fork_input.source_operation_id
+                                 AND fork.target_scope_snapshot_id=
+                                       fork_input.target_scope_snapshot_id
+                                 AND fork.entry_stage='attack_candidate'
+                                JOIN application_model_current_revisions AS current_revision
+                                  ON current_revision.manifest_id=revision.manifest_id
+                                 AND current_revision.revision_id=revision.id
+                                 AND current_revision.authority_kind='model'
+                                 AND current_revision.stage_handoff_id=
+                                       fork_input.source_handoff_id
+                                JOIN operation_state AS source_operation
+                                  ON source_operation.operation_id=
+                                       fork_input.source_operation_id
+                                 AND source_operation.superseded_by IS NULL
+                               WHERE fork_input.operation_id=$2
+                                 AND fork_input.source_operation_id=
+                                       revision.operation_id
+                                 AND fork_input.source_scope_snapshot_id=
+                                       revision.scope_snapshot_id
+                                 AND fork_input.organization_id=$3
+                                 AND fork_input.source_stage_kind=
+                                       'application_understanding'
+                          )
+                      )
+                      AND revision.organization_id=$3
+                      AND org.project_path=$4
+                      AND revision.status='final'
+                      AND revision.row_version=1
+                      AND revision.finalized_at IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1
+                            FROM application_model_manifest_inputs AS input
+                            JOIN stage_handoffs AS source_handoff
+                              ON source_handoff.id=input.source_handoff_id
+                           WHERE input.manifest_id=manifest.id
+                             AND source_handoff.invalidated_at IS NOT NULL
+                      )
+                    FOR SHARE OF revision,manifest,org"#,
+            )
+            .bind(revision_id)
+            .bind(operation_id)
+            .bind(expected_organization_id)
+            .bind(project_path_at_freeze)
+            .fetch_optional(&mut *connection)
+            .await?
+            .map(|row| projection(key, "application_model_revisions", row))
         }
         CanonicalFactKey::Finding { finding_id } => sqlx::query_as::<_, RawProjection>(
             r#"SELECT to_jsonb(finding), target.organization_id, finding.updated_at,

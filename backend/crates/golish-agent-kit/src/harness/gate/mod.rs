@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn scoping_human_gate_rule_blocks_without_approval_and_passes_with() {
+    fn scoping_structural_gate_does_not_trust_model_authored_approval_kind() {
         use super::super::stage_spec::load_stage_spec_from_json;
         use super::super::types::StageClaim;
         use golish_pentest::evidence_ledger::EvidenceAuditId;
@@ -442,9 +442,9 @@ mod tests {
         // What the gate hook injects for a profile with require_human_scope_approval.
         spec.gate_rules.push(scoping_human_gate_rule());
 
-        // scope_confirmed only (evidence-backed so the baseline gate passes) — the
-        // injected rule must still BLOCK because there is no human-approval claim.
-        let mut d = StageDeliverable {
+        // A model-authored scope summary is only structural content. Human
+        // approval is verified later from the persisted operation lifecycle.
+        let d = StageDeliverable {
             stage_id: "scoping".to_string(),
             stage_run_id: Uuid::new_v4(),
             claims: vec![StageClaim {
@@ -463,21 +463,8 @@ mod tests {
             candidate_decisions: vec![],
         };
         assert!(
-            !validate_stage_gate(&d, &spec, None).allowed,
-            "scoping must BLOCK without a scope_human_approved claim"
-        );
-
-        // Add the human-approval claim → PASS.
-        d.claims.push(StageClaim {
-            kind: "scope_human_approved".to_string(),
-            subject: "example.com".to_string(),
-            summary: "user approved 3 targets".to_string(),
-            evidence_ids: vec![EvidenceAuditId::new(1)],
-            technique: None,
-        });
-        assert!(
             validate_stage_gate(&d, &spec, None).allowed,
-            "scoping must PASS once the user has approved the scope"
+            "the structural gate must not require a model-authored magic approval kind; the orchestrator separately verifies the persisted review lifecycle"
         );
     }
 

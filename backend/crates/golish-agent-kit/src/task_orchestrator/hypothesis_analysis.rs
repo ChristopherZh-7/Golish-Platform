@@ -571,6 +571,7 @@ pub struct CandidateControllerDecisionArtifact {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateRuntimeSnapshotDisposition {
     SealedReady,
+    SealedAnalysisReadyWithResiduals,
     BlockedAuthorityBundle,
 }
 
@@ -700,6 +701,18 @@ pub struct HypothesisAnalysisStageRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidatePostSealRoute {
+    /// Authoritative-new generations must enter Plan C and may not fall
+    /// through to Reporting before a canonical Campaign admission exists.
+    VerificationCampaignAdmission,
+    /// A generation sealed before the cutover already carries the immutable
+    /// Plan-C-unavailable residual; replay preserves that historical route.
+    HistoricalReportingPlaceholder,
+    /// A server-proven zero-proposal generation has no verification subject.
+    TrueZeroReporting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CandidateGenerationSealOutcome {
     pub generation_id: Uuid,
     pub generation_ordinal: u32,
@@ -711,6 +724,7 @@ pub struct CandidateGenerationSealOutcome {
     pub projection_outbox_batch_id: Uuid,
     pub projection_source_batch_seq: i64,
     pub projection_outbox_member_set_hash: String,
+    pub post_seal_route: CandidatePostSealRoute,
     pub replayed: bool,
 }
 

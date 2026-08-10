@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
+use golish_core::StageTopologyContract;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Executor, PgConnection, PgPool, Postgres};
@@ -56,6 +57,8 @@ pub struct OperationStageForkRow {
     pub target_runtime_memory_contract: String,
     pub source_attack_execution_contract: String,
     pub target_attack_execution_contract: String,
+    pub source_stage_topology_contract: String,
+    pub target_stage_topology_contract: String,
     pub entry_stage: String,
     pub terminal_stage: String,
     pub adopted_stage_kinds: Vec<String>,
@@ -75,6 +78,7 @@ pub struct OperationStageForkInputRow {
     pub source_scope_snapshot_id: Uuid,
     pub target_scope_snapshot_id: Uuid,
     pub source_stage_kind: String,
+    pub source_stage_topology_contract: String,
     pub organization_id: Uuid,
     pub source_stage_execution_id: Uuid,
     pub source_stage_run_unit_id: Uuid,
@@ -216,6 +220,10 @@ struct LockedForkAuthority {
     target_investigation_contract_version: String,
     source_investigation_rollout_mode: String,
     target_investigation_rollout_mode: String,
+    source_stage_topology_contract: String,
+    target_stage_topology_contract: String,
+    source_stage_topology_sha256: String,
+    target_stage_topology_sha256: String,
     adoption_id: Option<Uuid>,
     adoption_receipt_hash: Option<String>,
     adoption_source_tool_truth_contract: Option<String>,
@@ -224,6 +232,8 @@ struct LockedForkAuthority {
     adoption_target_tool_truth_contract: Option<String>,
     adoption_target_investigation_contract_version: Option<String>,
     adoption_target_investigation_rollout_mode: Option<String>,
+    adoption_source_stage_topology_contract: Option<String>,
+    adoption_target_stage_topology_contract: Option<String>,
     source_project_scope_id: Option<Uuid>,
     target_project_scope_id: Option<Uuid>,
     source_superseded_by: Option<Uuid>,
@@ -268,19 +278,23 @@ struct LiveTargetSnapshot {
     project_path_at_fork: String,
 }
 
-fn stage_rank(stage: &str) -> Option<u8> {
-    match stage {
-        "scoping" => Some(1),
-        "target_intel" => Some(2),
-        "external_attack_surface" => Some(3),
-        "enumeration" => Some(4),
-        "vuln_triage" => Some(5),
-        "attack_candidate" => Some(6),
+fn stage_rank(topology: StageTopologyContract, stage: &str) -> Option<u8> {
+    match (topology, stage) {
+        (_, "scoping") => Some(1),
+        (_, "target_intel") => Some(2),
+        (_, "external_attack_surface") => Some(3),
+        (_, "enumeration") => Some(4),
+        (_, "vuln_triage") => Some(5),
+        (StageTopologyContract::LegacyCandidateVerificationV1, "attack_candidate") => Some(6),
+        (StageTopologyContract::UnifiedInvestigationV1, "application_understanding") => Some(6),
+        (StageTopologyContract::LegacyCandidateVerificationV1, "verification") => Some(7),
+        (StageTopologyContract::UnifiedInvestigationV1, "investigation") => Some(7),
+        (StageTopologyContract::UnifiedInvestigationV1, "reporting") => Some(8),
         _ => None,
     }
 }
 
-fn validate_slice(input: &MaterializeOperationStageFork) -> OperationStageForkResult<()> {
+fn validate_slice_identity(input: &MaterializeOperationStageFork) -> OperationStageForkResult<()> {
     if input.operation_id.is_nil()
         || input.source_operation_id.is_nil()
         || input.target_scope_snapshot_id.is_nil()
@@ -292,13 +306,21 @@ fn validate_slice(input: &MaterializeOperationStageFork) -> OperationStageForkRe
             code: "stage_fork_identity_invalid",
         });
     }
-    let entry_rank = stage_rank(&input.entry_stage)
+    Ok(())
+}
+
+fn validate_slice_for_topology(
+    input: &MaterializeOperationStageFork,
+    topology: StageTopologyContract,
+) -> OperationStageForkResult<()> {
+    validate_slice_identity(input)?;
+    let entry_rank = stage_rank(topology, &input.entry_stage)
         .filter(|rank| *rank > 1)
         .ok_or(OperationStageForkError::Conflict {
             code: "stage_fork_entry_invalid",
         })?;
     let terminal_rank =
-        stage_rank(&input.terminal_stage).ok_or(OperationStageForkError::Conflict {
+        stage_rank(topology, &input.terminal_stage).ok_or(OperationStageForkError::Conflict {
             code: "stage_fork_terminal_invalid",
         })?;
     if terminal_rank < entry_rank {
@@ -314,7 +336,7 @@ fn validate_slice(input: &MaterializeOperationStageFork) -> OperationStageForkRe
     let mut previous_rank = 0;
     let mut unique_stages = BTreeSet::new();
     for stage in &input.adopted_stage_kinds {
-        let rank = stage_rank(stage).ok_or(OperationStageForkError::Conflict {
+        let rank = stage_rank(topology, stage).ok_or(OperationStageForkError::Conflict {
             code: "stage_fork_prefix_stage_invalid",
         })?;
         if rank <= previous_rank || rank >= entry_rank || !unique_stages.insert(stage.as_str()) {
@@ -325,6 +347,11 @@ fn validate_slice(input: &MaterializeOperationStageFork) -> OperationStageForkRe
         previous_rank = rank;
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn validate_slice(input: &MaterializeOperationStageFork) -> OperationStageForkResult<()> {
+    validate_slice_for_topology(input, StageTopologyContract::LegacyCandidateVerificationV1)
 }
 
 fn input_manifest(input: &NewOperationStageForkInput) -> Value {
@@ -518,7 +545,7 @@ pub async fn materialize_with_connection(
     connection: &mut PgConnection,
     request: &MaterializeOperationStageFork,
 ) -> OperationStageForkResult<MaterializedOperationStageFork> {
-    validate_slice(request)?;
+    validate_slice_identity(request)?;
 
     let authority = sqlx::query_as::<_, LockedForkAuthority>(
         r#"SELECT source.profile AS source_profile,
@@ -533,6 +560,10 @@ pub async fn materialize_with_connection(
                   target.investigation_contract_version AS target_investigation_contract_version,
                   source.investigation_rollout_mode AS source_investigation_rollout_mode,
                   target.investigation_rollout_mode AS target_investigation_rollout_mode,
+                  source.stage_topology_contract AS source_stage_topology_contract,
+                  target.stage_topology_contract AS target_stage_topology_contract,
+                  source.stage_topology_sha256 AS source_stage_topology_sha256,
+                  target.stage_topology_sha256 AS target_stage_topology_sha256,
                   adoption.adoption_id,
                   adoption.receipt_hash AS adoption_receipt_hash,
                   adoption.source_tool_truth_contract AS adoption_source_tool_truth_contract,
@@ -541,6 +572,8 @@ pub async fn materialize_with_connection(
                   adoption.target_tool_truth_contract AS adoption_target_tool_truth_contract,
                   adoption.target_investigation_contract_version AS adoption_target_investigation_contract_version,
                   adoption.target_investigation_rollout_mode AS adoption_target_investigation_rollout_mode,
+                  adoption.source_stage_topology_contract AS adoption_source_stage_topology_contract,
+                  adoption.target_stage_topology_contract AS adoption_target_stage_topology_contract,
                   source.project_scope_id AS source_project_scope_id,
                   target.project_scope_id AS target_project_scope_id,
                   source.superseded_by AS source_superseded_by,
@@ -568,6 +601,26 @@ pub async fn materialize_with_connection(
     .ok_or(OperationStageForkError::Missing {
         entity: "stage_fork_operation_or_scope",
     })?;
+    let source_topology = StageTopologyContract::try_parse(
+        &authority.source_stage_topology_contract,
+    )
+    .map_err(|_| OperationStageForkError::Conflict {
+        code: "stage_fork_source_topology_unknown",
+    })?;
+    let target_topology = StageTopologyContract::try_parse(
+        &authority.target_stage_topology_contract,
+    )
+    .map_err(|_| OperationStageForkError::Conflict {
+        code: "stage_fork_target_topology_unknown",
+    })?;
+    if authority.source_stage_topology_sha256 != source_topology.contract_sha256()
+        || authority.target_stage_topology_sha256 != target_topology.contract_sha256()
+    {
+        return Err(OperationStageForkError::Conflict {
+            code: "stage_fork_topology_material_mismatch",
+        });
+    }
+    validate_slice_for_topology(request, target_topology)?;
     if authority.source_project_scope_id != Some(request.project_scope_id)
         || authority.target_project_scope_id != Some(request.project_scope_id)
     {
@@ -593,7 +646,8 @@ pub async fn materialize_with_connection(
         && authority.source_investigation_contract_version
             == authority.target_investigation_contract_version
         && authority.source_investigation_rollout_mode
-            == authority.target_investigation_rollout_mode;
+            == authority.target_investigation_rollout_mode
+        && source_topology == target_topology;
     if !joint_pair_is_inherited {
         let adoption_matches = authority.adoption_id.is_some()
             && authority.adoption_source_tool_truth_contract.as_deref()
@@ -615,7 +669,11 @@ pub async fn materialize_with_connection(
             && authority
                 .adoption_target_investigation_rollout_mode
                 .as_deref()
-                == Some(authority.target_investigation_rollout_mode.as_str());
+                == Some(authority.target_investigation_rollout_mode.as_str())
+            && authority.adoption_source_stage_topology_contract.as_deref()
+                == Some(source_topology.as_str())
+            && authority.adoption_target_stage_topology_contract.as_deref()
+                == Some(target_topology.as_str());
         if !adoption_matches {
             return Err(OperationStageForkError::Conflict {
                 code: "STAGE_FORK_OPERATION_CONTRACT_ADOPTION_RECEIPT_REQUIRED",
@@ -739,13 +797,14 @@ pub async fn materialize_with_connection(
               AND handoff.scope_snapshot_id=$2
               AND handoff.from_stage_kind=ANY($3)
               AND handoff.invalidated_at IS NULL
-            ORDER BY operation_stage_fork_stage_rank(handoff.from_stage_kind),
+            ORDER BY operation_stage_rank_for_topology($4,handoff.from_stage_kind),
                      handoff.organization_id,handoff.gate_passed_at,handoff.id
             FOR SHARE OF handoff,run,unit,submission"#,
     )
     .bind(request.source_operation_id)
     .bind(request.source_scope_snapshot_id)
     .bind(&request.adopted_stage_kinds)
+    .bind(source_topology.as_str())
     .fetch_all(&mut *connection)
     .await?;
 
@@ -904,7 +963,7 @@ pub async fn materialize_with_connection(
     }
     new_inputs.sort_by_key(|input| {
         (
-            stage_rank(&input.source_stage_kind).unwrap_or(u8::MAX),
+            stage_rank(source_topology, &input.source_stage_kind).unwrap_or(u8::MAX),
             source_units
                 .iter()
                 .find(|unit| unit.organization_id == input.organization_id)
@@ -934,7 +993,7 @@ pub async fn materialize_with_connection(
     .bind(&authority.canonical_project_path)
     .fetch_all(&mut *connection)
     .await?;
-    if stage_rank(&request.entry_stage).is_some_and(|rank| rank >= 3)
+    if stage_rank(target_topology, &request.entry_stage).is_some_and(|rank| rank >= 3)
         && !live_targets
             .iter()
             .any(|target| target.target_scope_at_fork == "in")
@@ -1002,7 +1061,7 @@ pub async fn materialize_with_connection(
         })
         .collect::<Vec<_>>();
     let manifest = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "operation_id": request.operation_id,
         "source_operation_id": request.source_operation_id,
         "project_scope_id": request.project_scope_id,
@@ -1017,6 +1076,10 @@ pub async fn materialize_with_connection(
         "target_investigation_contract_version": authority.target_investigation_contract_version,
         "source_investigation_rollout_mode": authority.source_investigation_rollout_mode,
         "target_investigation_rollout_mode": authority.target_investigation_rollout_mode,
+        "source_stage_topology_contract": source_topology.as_str(),
+        "target_stage_topology_contract": target_topology.as_str(),
+        "source_stage_topology_sha256": authority.source_stage_topology_sha256,
+        "target_stage_topology_sha256": authority.target_stage_topology_sha256,
         "operation_contract_adoption_id": authority.adoption_id,
         "operation_contract_adoption_receipt_hash": authority.adoption_receipt_hash,
         "entry_stage": request.entry_stage,
@@ -1052,7 +1115,7 @@ pub async fn materialize_with_connection(
         expected_target_count,
         manifest_sha256: sha256_json(&manifest),
         manifest,
-        schema_version: 1,
+        schema_version: 2,
     };
 
     let fork = insert_fork_with_executor(&mut *connection, &new_fork).await?;
@@ -1089,7 +1152,9 @@ pub async fn list_inputs(
     sqlx::query_as(
         r#"SELECT * FROM operation_stage_fork_inputs
             WHERE operation_id=$1
-            ORDER BY operation_stage_fork_stage_rank(source_stage_kind),organization_id"#,
+            ORDER BY operation_stage_rank_for_topology(
+                         source_stage_topology_contract,source_stage_kind
+                     ),organization_id"#,
     )
     .bind(operation_id)
     .fetch_all(pool)
@@ -1211,6 +1276,26 @@ mod tests {
         ))
         .expect_err("prefix order must be canonical");
         assert_eq!(unordered.code(), "stage_fork_prefix_not_canonical");
+    }
+
+    #[test]
+    fn unified_investigation_fork_accepts_reporting_terminal() {
+        assert!(validate_slice_for_topology(
+            &request(
+                "investigation",
+                "reporting",
+                &[
+                    "scoping",
+                    "target_intel",
+                    "external_attack_surface",
+                    "enumeration",
+                    "vuln_triage",
+                    "application_understanding",
+                ],
+            ),
+            StageTopologyContract::UnifiedInvestigationV1,
+        )
+        .is_ok());
     }
 
     #[test]

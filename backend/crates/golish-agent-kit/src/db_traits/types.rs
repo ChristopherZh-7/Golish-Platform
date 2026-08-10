@@ -236,10 +236,16 @@ pub struct OperationStateView {
     pub runtime_memory_contract: crate::runtime_memory::RuntimeMemoryContract,
     /// Tool/evidence authority contract frozen with the operation.
     pub tool_truth_contract: ToolTruthContract,
+    /// Immutable Application Understanding/Candidate topology.
+    pub application_model_contract: golish_core::ApplicationModelContract,
     /// Candidate/Hypothesis Registry schema contract frozen with the operation.
     pub investigation_contract_version: golish_core::InvestigationContractVersion,
     /// Candidate/Hypothesis Registry rollout mode frozen with the operation.
     pub investigation_rollout_mode: golish_core::InvestigationRolloutMode,
+    /// Exact operation-frozen stage topology plus its canonical/hash witness.
+    /// Runtime graph/profile selection must consume this material; it must
+    /// never rederive an existing operation from a mutable deployment default.
+    pub stage_topology_contract: golish_core::FrozenStageTopologyContractMaterial,
     /// Stable project/workspace authorization identity frozen when the runtime
     /// operation is created. Legacy operations may remain unbound.
     pub project_scope_id: Option<Uuid>,
@@ -295,6 +301,40 @@ pub struct ToolTruthDenominatorView {
     pub input_manifest_hash: String,
     pub member_count: i64,
     pub denominator_hash: String,
+}
+
+/// Trusted host request issued only after the deterministic org Gate has
+/// accepted the stage deliverable and terminal producer outcomes are durable.
+/// No model-authored counts, hashes, observations or evidence ids cross this
+/// seam; the app repository re-derives them from the exact denominator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalizeStageToolTruthRequest {
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_kind: String,
+    pub stage_started_at: chrono::DateTime<chrono::Utc>,
+    pub outcome_run_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StageToolTruthCloseoutView {
+    pub denominator_id: Uuid,
+    pub expected_input_count: i64,
+    pub finalized_receipt_count: i64,
+    pub receipt_ids: Vec<Uuid>,
+}
+
+/// One immutable Enumeration root cell read back from the exact
+/// StageTeamUnit denominator. Runtime uses this census to prove that a mutable
+/// coverage projection neither added nor dropped an exact-origin/axis shard.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EnumerationFrozenRootMemberView {
+    pub target_id: Uuid,
+    pub exact_origin: String,
+    pub technique: String,
+    pub expected_capability: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

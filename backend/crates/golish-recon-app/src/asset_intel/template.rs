@@ -13,6 +13,32 @@ use serde_json::Value;
 
 use super::AssetIntelHydrateConfig;
 
+/// Render one host-owned, already-encoded semantic binding. The semantic path
+/// has a single closed placeholder and refuses any leftover template syntax;
+/// legacy hydrate templates continue to use the functions below unchanged.
+#[cfg(test)]
+pub(crate) fn render_semantic_binding(
+    template: &str,
+    placeholder: &str,
+    encoded_literal: &str,
+) -> Result<String, &'static str> {
+    if placeholder.is_empty()
+        || placeholder.contains(['{', '}'])
+        || encoded_literal.trim().is_empty()
+    {
+        return Err("INTEL_SEMANTIC_BINDING_INVALID");
+    }
+    let marker = format!("{{{{{placeholder}}}}}");
+    if template.matches(&marker).count() != 1 {
+        return Err("INTEL_SEMANTIC_TEMPLATE_NOT_CLOSED");
+    }
+    let rendered = template.replacen(&marker, encoded_literal, 1);
+    if rendered.contains("{{") || rendered.contains("}}") {
+        return Err("INTEL_SEMANTIC_TEMPLATE_UNKNOWN_BINDING");
+    }
+    Ok(rendered)
+}
+
 pub(crate) fn render_asset_intel_skill_args(
     skill_args: &str,
     company_name: &str,
@@ -164,12 +190,20 @@ pub(crate) fn render_http_template(
     config: &AssetIntelHydrateConfig,
     secrets: &HashMap<String, String>,
 ) -> String {
+    let semantic_value = config
+        .semantic_pivot
+        .as_ref()
+        .map(|pivot| pivot.value.as_str());
+    let company_binding = semantic_value.unwrap_or(company_name);
+    let domain_binding = semantic_value
+        .or(config.domain.as_deref())
+        .unwrap_or_default();
     let mut rendered = template
-        .replace("{{org}}", company_name)
-        .replace("{{company_name}}", company_name)
+        .replace("{{org}}", company_binding)
+        .replace("{{company_name}}", company_binding)
         // b1 (design 2026-06-24): domain-keyed survey value (empty in the legacy
         // company-name survey).
-        .replace("{{domain}}", config.domain.as_deref().unwrap_or_default())
+        .replace("{{domain}}", domain_binding)
         .replace(
             "{{config.min_ownership_percent}}",
             config.min_ownership_percent.as_deref().unwrap_or_default(),
@@ -182,6 +216,27 @@ pub(crate) fn render_http_template(
         rendered = rendered.replace(&format!("{{{{secret:{key}}}}}"), value);
     }
     rendered
+}
+
+pub(crate) fn render_http_url_template(
+    template: &str,
+    company_name: &str,
+    config: &AssetIntelHydrateConfig,
+    secrets: &HashMap<String, String>,
+    literal_encoder: Option<&str>,
+) -> String {
+    if literal_encoder == Some("url_query_component.v1") {
+        if let Some(pivot) = config.semantic_pivot.as_ref() {
+            let encoded =
+                url::form_urlencoded::byte_serialize(pivot.value.as_bytes()).collect::<String>();
+            let template = template
+                .replace("{{org}}", &encoded)
+                .replace("{{company_name}}", &encoded)
+                .replace("{{domain}}", &encoded);
+            return render_http_template(&template, company_name, config, secrets);
+        }
+    }
+    render_http_template(template, company_name, config, secrets)
 }
 
 pub(crate) fn render_http_json_value(
@@ -223,4 +278,49 @@ pub(crate) fn render_lookup_skill_args(skill_args: &str, keyword: &str, out_dir:
         .replace("{{keyword}}", keyword)
         .replace("{{company_name}}", keyword)
         .replace("{{out_dir}}", &out_dir.to_string_lossy())
+}
+
+#[cfg(test)]
+mod semantic_template_tests {
+    use super::{render_http_url_template, render_semantic_binding};
+    use crate::asset_intel::AssetIntelHydrateConfig;
+    use golish_pentest_domain::models::{AssetIntelPivot, AssetIntelPivotKind};
+    use std::collections::HashMap;
+
+    #[test]
+    fn semantic_template_requires_one_closed_host_binding() {
+        assert_eq!(
+            render_semantic_binding("query={{semantic_query}}", "semantic_query", "x=\"y\"")
+                .unwrap(),
+            "query=x=\"y\""
+        );
+        assert_eq!(
+            render_semantic_binding(
+                "query={{semantic_query}}&leak={{model_dsl}}",
+                "semantic_query",
+                "x=\"y\""
+            ),
+            Err("INTEL_SEMANTIC_TEMPLATE_UNKNOWN_BINDING")
+        );
+    }
+
+    #[test]
+    fn semantic_public_url_uses_one_encoded_query_component() {
+        let config = AssetIntelHydrateConfig {
+            semantic_pivot: Some(
+                AssetIntelPivot::parse(AssetIntelPivotKind::CompanyName, "杭州 默安科技").unwrap(),
+            ),
+            ..Default::default()
+        };
+        assert_eq!(
+            render_http_url_template(
+                "https://api.github.com/search/repositories?q={{company_name}}&per_page=50",
+                "ignored",
+                &config,
+                &HashMap::new(),
+                Some("url_query_component.v1")
+            ),
+            "https://api.github.com/search/repositories?q=%E6%9D%AD%E5%B7%9E+%E9%BB%98%E5%AE%89%E7%A7%91%E6%8A%80&per_page=50"
+        );
+    }
 }

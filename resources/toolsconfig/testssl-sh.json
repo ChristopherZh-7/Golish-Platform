@@ -1,0 +1,32 @@
+{
+  "tool": {
+    "id": "testssl-sh",
+    "pentestPhase": ["vuln_id"],
+    "name": "testssl.sh",
+    "description": "Observe TLS protocols, ciphers and certificate configuration on one exact endpoint.",
+    "executable": "testssl.sh/testssl.sh",
+    "runtime": "native",
+    "launchMode": "cli",
+    "version": "3.3dev-snapshot-2607",
+    "category": "network",
+    "subcategory": "tls",
+    "tier": "recommended",
+    "tags": ["tls", "certificate", "network-observe", "gpl-2.0-only"],
+    "install": {
+      "method": "github",
+      "source": "testssl/testssl.sh",
+      "macos": {"method": "github", "source": "testssl/testssl.sh"},
+      "linux": {"method": "github", "source": "testssl/testssl.sh"},
+      "windows": {"method": "manual", "source": "https://github.com/testssl/testssl.sh"}
+    },
+    "params": [
+      {"label": "Exact host:port", "flag": "", "type": "string", "required": true, "description": "One exact authorized TLS endpoint.", "placeholder": "target.example:443"},
+      {"label": "JSON artifact", "flag": "--jsonfile", "type": "string", "required": true, "description": "Write raw JSON evidence artifact.", "placeholder": "testssl.json"},
+      {"label": "Warnings", "flag": "--warnings", "type": "select", "default": "batch", "options": [{"value": "batch", "label": "Batch"}, {"value": "off", "label": "Off"}]}
+    ],
+    "skills": [
+      {"id": "local-version", "name": "Local version smoke", "description": "No-target executable smoke only.", "args": "--version", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "json", "produces": ["tls_protocol", "cipher", "certificate", "info"], "patterns": [], "fields": {}, "detect": "testssl.sh|Testing protocols|cipher"}
+  }
+}

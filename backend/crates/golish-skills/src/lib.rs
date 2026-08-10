@@ -36,11 +36,16 @@
 
 mod discovery;
 mod matcher;
+mod methodology_catalog;
 mod parser;
 mod types;
 
 pub use discovery::{discover_skills, list_skill_files, read_skill_file};
 pub use matcher::{extract_keywords, SkillMatcher};
+pub use methodology_catalog::{
+    methodology_content_root_sha256, MethodologyCatalogError, MethodologyCatalogV1,
+    METHODOLOGY_MANIFEST_FILE,
+};
 pub use parser::{load_skill_body, load_skill_content, parse_skill_md, validate_skill_name};
 pub use types::{MatchedSkill, SkillFileInfo, SkillFrontmatter, SkillInfo, SkillMetadata};
 

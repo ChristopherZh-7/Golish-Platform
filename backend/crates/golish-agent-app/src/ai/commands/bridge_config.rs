@@ -2718,6 +2718,11 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
     let ready_gate = crate::ai::tracking_bridge::CoreDbReadyGate(state.db_ready.clone());
     bridge.set_db_backend(tracking_backend, ready_gate, chain_persistence);
     bridge.set_runtime_memory_repository(runtime_memory);
+    bridge.set_application_understanding_runtime(std::sync::Arc::new(
+        crate::ai::application_understanding_runtime::PgApplicationUnderstandingStageRuntime::new(
+            state.db_pool.clone(),
+        ),
+    ));
 
     // Candidate Registry owns a separate closed repository/runtime capability.
     // It must not reuse `GolishDbRepoProvider` or the legacy Candidate scheduler:

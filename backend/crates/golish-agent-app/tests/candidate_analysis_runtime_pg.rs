@@ -26,8 +26,9 @@ use golish_agent_kit::{
 use golish_db::{
     models::NewSession,
     repo::{
-        attack_waves, candidate_analysis_runtime as runtime_db, capability_execution_receipts,
-        project_scopes, runtime_memory_tx, sessions, stage_asset_waves,
+        attack_waves, candidate_analysis as candidate_analysis_db,
+        candidate_analysis_runtime as runtime_db, capability_execution_receipts, project_scopes,
+        runtime_memory_tx, sessions, stage_asset_waves,
     },
     DbConfig, GolishDb,
 };
@@ -93,7 +94,10 @@ async fn begin_managed_with_extended_temporal_policy_fixture(
     capability: &str,
     attempt_ordinal: i32,
     destination_policy_id: Uuid,
+    positive_ttl_ms: i64,
 ) -> capability_execution_receipts::CapabilityExecutionReceiptRow {
+    assert!(positive_ttl_ms > 1);
+    let non_positive_ttl_ms = (positive_ttl_ms - 1).min(60_000);
     let destination_policy_hash: String = sqlx::query_scalar(
         r#"SELECT policy_hash FROM capability_execution_destination_policies
             WHERE id=$1 AND denominator_id=$2 AND execution_authority_id=$3
@@ -109,9 +113,9 @@ async fn begin_managed_with_extended_temporal_policy_fixture(
         pool,
         &json!({
             "fact_class":"target_state",
-            "positive_ttl_ms":1_800_000_i64,
-            "negative_ttl_ms":60_000_i64,
-            "refutation_ttl_ms":60_000_i64,
+            "positive_ttl_ms":positive_ttl_ms,
+            "negative_ttl_ms":non_positive_ttl_ms,
+            "refutation_ttl_ms":non_positive_ttl_ms,
             "same_epoch":true,
             "required_recheck_source":"manual_only",
         }),
@@ -144,10 +148,12 @@ async fn begin_managed_with_extended_temporal_policy_fixture(
                id,policy_id,ordinal,fact_class,positive_ttl_ms,negative_ttl_ms,
                refutation_ttl_ms,require_same_target_state_epoch,
                required_recheck_source,member_hash)
-           VALUES($1,$2,0,'target_state',1800000,60000,60000,TRUE,'manual_only',$3)"#,
+           VALUES($1,$2,0,'target_state',$3,$4,$4,TRUE,'manual_only',$5)"#,
     )
     .bind(Uuid::new_v4())
     .bind(policy_id)
+    .bind(positive_ttl_ms)
+    .bind(non_positive_ttl_ms)
     .bind(&member_hash)
     .execute(&mut *tx)
     .await
@@ -239,7 +245,10 @@ async fn seed_fresh_bundle_root(
     organization_id: Uuid,
     project_path: &str,
     family: ToolTruthRootFamilyV1,
+    observations_per_target: usize,
+    positive_ttl_ms: i64,
 ) {
+    assert!(observations_per_target > 0);
     let stage_execution_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO stage_runs(id,operation_id,stage_kind,status) VALUES($1,$2,$3,'started')",
@@ -273,7 +282,30 @@ async fn seed_fresh_bundle_root(
                 wave.wave.id,
             ),
         },
-        compile_bundle_denominator,
+        move |_stage, assets| {
+            Ok(assets
+                .iter()
+                .flat_map(|asset| {
+                    (0..observations_per_target).map(move |observation_ordinal| {
+                        let suffix = if observation_ordinal == 0 {
+                            String::new()
+                        } else {
+                            format!("\u{1f}observation-{observation_ordinal}")
+                        };
+                        capability_execution_receipts::CompiledDenominatorItem {
+                            input_key: format!(
+                                "{}\u{1f}{}\u{1f}GOLISH-INTEL-DNS{suffix}",
+                                asset.target_id, asset.exact_asset
+                            ),
+                            target_id: asset.target_id,
+                            exact_asset: asset.exact_asset.clone(),
+                            technique: "GOLISH-INTEL-DNS".to_owned(),
+                            expected_capability: "intel.dns".to_owned(),
+                        }
+                    })
+                })
+                .collect())
+        },
     )
     .await
     .expect("seal root denominator");
@@ -299,6 +331,7 @@ async fn seed_fresh_bundle_root(
         "intel.dns",
         1,
         policy.id,
+        positive_ttl_ms,
     )
     .await;
     let input_keys: Vec<String> = sqlx::query_scalar(
@@ -656,6 +689,36 @@ struct FutureRuntimeFixture {
 }
 
 async fn seed_future_runtime_upstream_fixture(pool: &PgPool, label: &str) -> FutureRuntimeFixture {
+    seed_future_runtime_upstream_fixture_with_target_count(pool, label, 1, 1, true).await
+}
+
+async fn seed_future_runtime_upstream_fixture_with_target_count(
+    pool: &PgPool,
+    label: &str,
+    target_count: usize,
+    observations_per_target: usize,
+    include_legacy_candidate_stage: bool,
+) -> FutureRuntimeFixture {
+    seed_future_runtime_upstream_fixture_with_temporal_ttl(
+        pool,
+        label,
+        target_count,
+        observations_per_target,
+        include_legacy_candidate_stage,
+        1_800_000,
+    )
+    .await
+}
+
+async fn seed_future_runtime_upstream_fixture_with_temporal_ttl(
+    pool: &PgPool,
+    label: &str,
+    target_count: usize,
+    observations_per_target: usize,
+    include_legacy_candidate_stage: bool,
+    positive_ttl_ms: i64,
+) -> FutureRuntimeFixture {
+    assert!(target_count > 0, "Candidate fixture requires a target");
     install_future_candidate_deployment_fixture(pool).await;
     let operation_id = Uuid::new_v4();
     let organization_id = Uuid::new_v4();
@@ -690,8 +753,17 @@ async fn seed_future_runtime_upstream_fixture(pool: &PgPool, label: &str) -> Fut
             title: Some("Candidate E2E".to_owned()),
             input: "candidate runtime".to_owned(),
             profile: "assessment".to_owned(),
-            entry_stage: "attack_candidate".to_owned(),
+            entry_stage: if include_legacy_candidate_stage {
+                "attack_candidate".to_owned()
+            } else {
+                "application_understanding".to_owned()
+            },
             project_scope_id,
+            application_model_contract: if include_legacy_candidate_stage {
+                golish_core::ApplicationModelContract::LegacyNoModel
+            } else {
+                golish_core::ApplicationModelContract::ApplicationModelV1
+            },
             cli_scope: None,
         },
     )
@@ -894,80 +966,131 @@ async fn seed_future_runtime_upstream_fixture(pool: &PgPool, label: &str) -> Fut
     .await
     .expect("insert vuln triage handoff");
 
-    let wave_run_id = Uuid::new_v5(
-        &Uuid::NAMESPACE_OID,
-        format!("{operation_id}:candidate-wave:0").as_bytes(),
-    );
-    let wave_unit_id = Uuid::new_v5(
-        &Uuid::NAMESPACE_OID,
-        format!("{wave_run_id}:{organization_id}").as_bytes(),
-    );
-    let policy_snapshot = json!({
-        "max_attempts_total":200,"max_candidates_total":100,
-        "max_chain_depth":3,"max_waves":3
-    });
-    let policy_hash =
-        "sha256:66e50329b4bb217eb060bcccb38f78f4b0eafc163471bebd6554d271d1a6b326".to_owned();
-    let mut wave_tx = pool
-        .begin()
+    if include_legacy_candidate_stage {
+        let wave_run_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!("{operation_id}:candidate-wave:0").as_bytes(),
+        );
+        let wave_unit_id = Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!("{wave_run_id}:{organization_id}").as_bytes(),
+        );
+        let policy_snapshot = json!({
+            "max_attempts_total":200,"max_candidates_total":100,
+            "max_chain_depth":3,"max_waves":3
+        });
+        let policy_hash =
+            "sha256:66e50329b4bb217eb060bcccb38f78f4b0eafc163471bebd6554d271d1a6b326".to_owned();
+        let mut wave_tx = pool
+            .begin()
+            .await
+            .expect("begin normal Candidate admission");
+        attack_waves::open_from_vuln_triage_handoff(
+            &mut wave_tx,
+            &attack_waves::OpenAttackWaveUnit {
+                wave_run_id,
+                wave_unit_id,
+                operation_id,
+                scope_snapshot_id,
+                organization_id,
+                entry_stage_execution_id: source_stage_execution_id,
+                entry_stage_run_unit_id: source_stage_run_unit_id,
+                entry_deliverable_submission_id: source_submission_id,
+                generation: 0,
+                ordinal: 0,
+                policy_snapshot,
+                policy_hash,
+                max_waves: 3,
+                max_candidates_total: 100,
+                max_chain_depth: 3,
+                max_attempts_total: 200,
+            },
+        )
         .await
-        .expect("begin normal Candidate admission");
-    attack_waves::open_from_vuln_triage_handoff(
-        &mut wave_tx,
-        &attack_waves::OpenAttackWaveUnit {
-            wave_run_id,
-            wave_unit_id,
-            operation_id,
-            scope_snapshot_id,
-            organization_id,
-            entry_stage_execution_id: source_stage_execution_id,
-            entry_stage_run_unit_id: source_stage_run_unit_id,
-            entry_deliverable_submission_id: source_submission_id,
-            generation: 0,
-            ordinal: 0,
-            policy_snapshot,
-            policy_hash,
-            max_waves: 3,
-            max_candidates_total: 100,
-            max_chain_depth: 3,
-            max_attempts_total: 200,
-        },
-    )
-    .await
-    .expect("admit operation through normal attack Wave API");
-    wave_tx
-        .commit()
-        .await
-        .expect("commit normal Candidate admission");
+        .expect("admit operation through normal attack Wave API");
+        wave_tx
+            .commit()
+            .await
+            .expect("commit normal Candidate admission");
 
-    sqlx::query(
-        r#"INSERT INTO stage_run_units(
-               id,operation_id,stage_execution_id,scope_snapshot_id,organization_id,
-               stage_kind,generation,specialist,status,started_at)
-           VALUES($1,$2,$3,$4,$5,'attack_candidate',0,'candidate_controller','running',NOW())"#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(operation_id)
-    .bind(candidate_stage_execution_id)
-    .bind(scope_snapshot_id)
-    .bind(organization_id)
-    .execute(pool)
-    .await
-    .expect("insert normally admitted Candidate stage unit");
-    sqlx::query(
-        r#"INSERT INTO targets(
-               id,name,target_type,value,scope,project_path,organization_id,source)
-           VALUES($1,'candidate-e2e.example.test','domain','candidate-e2e.example.test',
-                  'in',$2,$3,'candidate_e2e_fixture')"#,
-    )
-    .bind(Uuid::new_v4())
-    .bind(&project_path)
-    .bind(organization_id)
-    .execute(pool)
-    .await
-    .expect("insert authority target");
-    for family in ToolTruthRootFamilyV1::ALL {
-        seed_fresh_bundle_root(pool, operation_id, organization_id, &project_path, family).await;
+        sqlx::query(
+            r#"INSERT INTO stage_run_units(
+                   id,operation_id,stage_execution_id,scope_snapshot_id,organization_id,
+                   stage_kind,generation,specialist,status,started_at)
+               VALUES($1,$2,$3,$4,$5,'attack_candidate',0,'candidate_controller','running',NOW())"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(operation_id)
+        .bind(candidate_stage_execution_id)
+        .bind(scope_snapshot_id)
+        .bind(organization_id)
+        .execute(pool)
+        .await
+        .expect("insert normally admitted Candidate stage unit");
+    }
+    for target_ordinal in 0..target_count {
+        let authority_target_id = Uuid::new_v4();
+        let host = format!("candidate-e2e-{target_ordinal}.example.test");
+        let origin = format!("https://{host}:443");
+        sqlx::query(
+            r#"INSERT INTO targets(
+                   id,name,target_type,value,scope,project_path,organization_id,source,ports)
+               VALUES($1,$2,'domain',$2,'in',$3,$4,'candidate_e2e_fixture',$5)"#,
+        )
+        .bind(authority_target_id)
+        .bind(&host)
+        .bind(&project_path)
+        .bind(organization_id)
+        .bind(json!([{
+            "port":443,
+            "state":"open",
+            "service":"https",
+            "url":format!("{origin}/")
+        }]))
+        .execute(pool)
+        .await
+        .expect("insert authority target");
+        let authority_web_origin_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO web_origins(
+                   id,organization_id,project_path,scheme,host,host_type,port,origin,
+                   source,confidence,last_confirmed_at)
+               VALUES($1,$2,$3,'https',$4,'domain',443,$5,'httpx',1.0,NOW())"#,
+        )
+        .bind(authority_web_origin_id)
+        .bind(organization_id)
+        .bind(&project_path)
+        .bind(&host)
+        .bind(&origin)
+        .execute(pool)
+        .await
+        .expect("insert EAS-confirmed candidate fixture origin");
+        sqlx::query(
+            r#"INSERT INTO web_origin_observations(
+                   id,organization_id,project_path,web_origin_id,target_id,status_code,
+                   confidence,source,raw)
+               VALUES($1,$2,$3,$4,$5,200,1.0,'httpx','{}')"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(organization_id)
+        .bind(&project_path)
+        .bind(authority_web_origin_id)
+        .bind(authority_target_id)
+        .execute(pool)
+        .await
+        .expect("bind candidate fixture target to exact origin");
+    }
+    for family in ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS {
+        seed_fresh_bundle_root(
+            pool,
+            operation_id,
+            organization_id,
+            &project_path,
+            family,
+            observations_per_target,
+            positive_ttl_ms,
+        )
+        .await;
     }
     seed_managed_feed_authority(pool).await;
 
@@ -1491,6 +1614,100 @@ async fn future_authority_fixture_keeps_extended_window_and_all_guards_enabled()
 
 #[tokio::test]
 #[serial]
+async fn candidate_snapshot_preserves_each_target_state_from_a_multi_target_receipt() {
+    let (mut db, _data_dir) = fixture("candidate-temporal-multi-target").await;
+    let seeded = seed_future_runtime_upstream_fixture_with_target_count(
+        db.pool(),
+        "candidate-temporal-multi-target",
+        2,
+        2,
+        false,
+    )
+    .await;
+    let snapshot = candidate_analysis_db::freeze_candidate_snapshot(
+        db.pool(),
+        candidate_analysis_db::FreezeCandidateSnapshotInput {
+            stable_consumer_request_id: Uuid::new_v4(),
+            operation_id: seeded.operation_id,
+            scope_snapshot_id: seeded.scope_snapshot_id,
+            organization_id: seeded.organization_id,
+        },
+    )
+    .await
+    .expect("freeze every target-state decision without collapsing the receipt");
+    let (decision_count, receipt_count, min_targets, max_targets): (i64, i64, i64, i64) =
+        sqlx::query_as(
+            r#"WITH per_receipt AS (
+                   SELECT receipt_id,count(*)::BIGINT AS decisions,
+                          count(DISTINCT target_scope_identity_hash)::BIGINT AS targets
+                     FROM candidate_analysis_temporal_validity_census_members
+                    WHERE snapshot_id=$1
+                    GROUP BY receipt_id
+               )
+               SELECT sum(decisions)::BIGINT,count(*)::BIGINT,
+                      min(targets)::BIGINT,max(targets)::BIGINT
+                 FROM per_receipt"#,
+        )
+        .bind(snapshot.snapshot_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("inspect per-target Candidate temporal authority");
+    assert_eq!(decision_count, 12);
+    assert_eq!(receipt_count, 3);
+    assert_eq!((min_targets, max_targets), (2, 2));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn candidate_snapshot_preserves_each_stale_observation_from_one_bundle_member() {
+    let (mut db, _data_dir) = fixture("candidate-stale-multi-observation").await;
+    let seeded = seed_future_runtime_upstream_fixture_with_temporal_ttl(
+        db.pool(),
+        "candidate-stale-multi-observation",
+        2,
+        2,
+        false,
+        1_000,
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+
+    let snapshot = candidate_analysis_db::freeze_candidate_snapshot(
+        db.pool(),
+        candidate_analysis_db::FreezeCandidateSnapshotInput {
+            stable_consumer_request_id: Uuid::new_v4(),
+            operation_id: seeded.operation_id,
+            scope_snapshot_id: seeded.scope_snapshot_id,
+            organization_id: seeded.organization_id,
+        },
+    )
+    .await
+    .expect("freeze every stale observation without collapsing its bundle member");
+
+    let closure: (i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+             (SELECT count(*) FROM candidate_analysis_temporal_validity_census_members
+               WHERE snapshot_id=$1),
+             (SELECT count(*) FROM candidate_analysis_stale_evidence_residuals
+               WHERE snapshot_id=$1),
+             (SELECT count(DISTINCT temporal_census_member_id)
+                FROM candidate_analysis_stale_evidence_residuals WHERE snapshot_id=$1),
+             (SELECT count(DISTINCT bundle_member_id)
+                FROM candidate_analysis_stale_evidence_residuals WHERE snapshot_id=$1),
+             (SELECT count(*) FROM candidate_analysis_revalidation_obligations
+               WHERE snapshot_id=$1)"#,
+    )
+    .bind(snapshot.snapshot_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect stale residual and revalidation provenance");
+    assert_eq!(closure, (12, 12, 12, 3, 12));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn candidate_stage_work_rejects_non_server_creator_before_provider_work() {
     let (mut db, _data_dir) = fixture("candidate-stage-creator-guard").await;
     let seeded =
@@ -2000,7 +2217,7 @@ async fn production_runtime_reaches_generation_seal_through_recursive_gate() {
             &authority_request,
             |_tx, all_fresh| {
                 Box::pin(async move {
-                    assert_eq!(all_fresh.checked().roots().len(), 4);
+                    assert_eq!(all_fresh.checked().roots().len(), 3);
                     Ok(all_fresh.bundle_seal_id())
                 })
             },

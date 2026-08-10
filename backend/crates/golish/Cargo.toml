@@ -64,6 +64,7 @@ golish-db = { path = "../golish-db" }
 golish-graphiti = { path = "../golish-graphiti" }
 golish-memory-app = { workspace = true }
 golish-reporting-app = { workspace = true }
+golish-reporting-domain = { workspace = true }
 golish-js-analyzer = { workspace = true }
 golish-intel-providers = { workspace = true }
 golish-integrations = { workspace = true }
@@ -160,7 +161,6 @@ default = []
 [dev-dependencies]
 proptest.workspace = true
 serial_test.workspace = true
-golish-reporting-domain.workspace = true
 insta = { version = "1.34", features = ["json"] }
 
 [target.'cfg(unix)'.dev-dependencies]

@@ -8,18 +8,26 @@
 //! - [`TextEmbedder`] — text embedding for semantic memory search
 
 pub mod hypothesis_registry;
+pub mod investigation_analysis_host;
+pub mod investigation_nested_dispatch;
 pub mod memory;
 pub mod repo;
 pub mod runtime_memory;
 pub mod tracking;
 pub mod types;
+pub mod unified_investigation;
+pub mod verification_campaign;
 
 pub use hypothesis_registry::*;
+pub use investigation_analysis_host::*;
+pub use investigation_nested_dispatch::*;
 pub use memory::*;
 pub use repo::*;
 pub use runtime_memory::*;
 pub use tracking::*;
 pub use types::*;
+pub use unified_investigation::*;
+pub use verification_campaign::*;
 
 use async_trait::async_trait;
 

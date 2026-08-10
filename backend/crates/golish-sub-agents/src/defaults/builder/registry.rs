@@ -4,14 +4,16 @@ use crate::definition::SubAgentDefinition;
 use crate::schemas::IMPLEMENTATION_PLAN_FULL_EXAMPLE;
 
 use super::super::prompts::{
-    build_adviser_prompt, build_attack_analyst_prompt, build_browser_prompt,
-    build_candidate_hypothesis_analyst_prompt, build_candidate_hypothesis_controller_prompt,
-    build_candidate_verifier_prompt, build_coder_prompt, build_enricher_prompt,
-    build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
-    build_merge_conflict_critic_prompt, build_orchestrator_prompt, build_pentester_prompt,
-    build_planner_prompt, build_post_exploit_operator_prompt, build_prober_prompt,
-    build_recon_prompt, build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
-    build_researcher_prompt_fallback, build_vuln_scanner_prompt,
+    build_adviser_prompt, build_application_understanding_company_synthesizer_prompt,
+    build_application_understanding_shard_modeler_prompt, build_attack_analyst_prompt,
+    build_browser_prompt, build_candidate_hypothesis_analyst_prompt,
+    build_candidate_hypothesis_controller_prompt, build_candidate_verifier_prompt,
+    build_coder_prompt, build_enricher_prompt, build_enumerator_prompt, build_installer_prompt,
+    build_memorist_prompt, build_merge_conflict_critic_prompt, build_orchestrator_prompt,
+    build_pentester_prompt, build_planner_prompt, build_post_exploit_operator_prompt,
+    build_prober_prompt, build_recon_prompt, build_refiner_prompt, build_reflector_prompt,
+    build_reporter_prompt, build_researcher_prompt_fallback, build_resolution_analyst_prompt,
+    build_vuln_scanner_prompt,
 };
 
 /// Create default sub-agents with prompts loaded from the template registry.
@@ -160,6 +162,46 @@ pub async fn create_default_sub_agents_from_registry(
         .with_delegatable_agents(vec!["enricher".into(), "memorist".into()]),
     );
 
+    // Unified Investigation remains a registry-backed cognitive role; AU uses
+    // two closed static roles over host-frozen projections.
+    agents.push(
+        SubAgentDefinition::new(
+            "investigation",
+            "Investigation Primary",
+            "Organization-isolated Investigation Primary with dynamic cognitive delegation and no raw action authority.",
+            format!(
+                "{}\n\n{}",
+                tmpl_or_fallback!("orchestrator", build_orchestrator_prompt()),
+                "You are the unique Primary for one organization-bound Investigation task. Use update_plan to create and revise a bounded plan, and dynamically delegate only the specialists needed for current evidence gaps. Workers may return strategy, evidence interpretation, and typed action intent only. Neither you nor nested workers may directly perform HTTP, browser, CLI, credential, pentest, action execution, Finding writes, or canonical hypothesis mutation. Database facts and Evidence Ledger are authoritative; RAG/KG/methodology are advisory. A hypothesis click is observe-only and cannot schedule work. Finish only through typed host receipts and the deterministic Investigation gate."
+            ),
+        )
+        .with_tools(vec![
+            "update_plan".into(),
+            "query_target_data".into(),
+            "list_in_scope_targets".into(),
+            "list_recent_evidence".into(),
+            "search_knowledge_base".into(),
+            "read_knowledge".into(),
+            "graph_search".into(),
+            "graph_neighbors".into(),
+            "graph_attack_paths".into(),
+            "submit_stage_deliverable".into(),
+        ])
+        .with_readonly(true)
+        .with_max_iterations(50)
+        .with_idle_timeout(300)
+        .with_delegatable_agents(vec![
+            "pentester".into(),
+            "researcher".into(),
+            "browser".into(),
+            "coder".into(),
+            "installer".into(),
+            "enricher".into(),
+            "memorist".into(),
+            "adviser".into(),
+        ]),
+    );
+
     agents.push(
         SubAgentDefinition::new(
             "attack_analyst",
@@ -173,6 +215,33 @@ pub async fn create_default_sub_agents_from_registry(
             "submit_stage_deliverable".into(),
         ])
         .with_max_iterations(30)
+        .with_idle_timeout(180),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
+            "application_understanding_shard_modeler",
+            "Application Understanding Shard Modeler",
+            "Closed semantic modeler for one host-frozen application shard. It cannot collect data or cross identity boundaries.",
+            build_application_understanding_shard_modeler_prompt(),
+        )
+        .with_tools(vec!["submit_result".into()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_max_tokens(32_768)
+        .with_idle_timeout(180),
+    );
+    agents.push(
+        SubAgentDefinition::new(
+            "application_understanding_company_synthesizer",
+            "Application Understanding Company Synthesizer",
+            "Closed company-level synthesizer over host-validated shard outputs. It cannot collect data or cross organization boundaries.",
+            build_application_understanding_company_synthesizer_prompt(),
+        )
+        .with_tools(vec!["submit_result".into()])
+        .with_readonly(true)
+        .with_max_iterations(8)
+        .with_max_tokens(32_768)
         .with_idle_timeout(180),
     );
 
@@ -287,6 +356,22 @@ pub async fn create_default_sub_agents_from_registry(
 
     agents.push(
         SubAgentDefinition::new(
+            "resolution_analyst",
+            "Resolution Analyst",
+            "Bounded evidence-anchored analyst for one server-assigned unresolved JS/API cluster. It cannot browse, probe, read arbitrary files, publish canonical truth, or submit a stage deliverable.",
+            build_resolution_analyst_prompt(),
+        )
+        .with_tools(vec![
+            "enum_js_get_resolution_cluster".into(),
+            "enum_js_submit_resolution".into(),
+        ])
+        .with_readonly(true)
+        .with_max_iterations(4)
+        .with_idle_timeout(120),
+    );
+
+    agents.push(
+        SubAgentDefinition::new(
             "enumerator",
             "Enumerator",
             "Active content-enumeration mapper for the enumeration stage. Turns the live web services external_attack_surface mapped (host + ports + service) into concrete testable units by enumerating directories/paths, request parameters, and JS/API endpoints — actively but without exploitation. NON-EXPLOIT: no vulnerability scanning or exploitation — that stays with the Pentester. The stage_run tool fans one Enumerator out per org.",
@@ -305,7 +390,9 @@ pub async fn create_default_sub_agents_from_registry(
             "wait_for_background_jobs".into(),
             "browser_collect_js_api".into(),
             "js_extract_apis".into(),
+            "enum_reduce_parameters_v2".into(),
             "route_probe_paths".into(),
+            "enum_review_coverage_v2".into(),
             "list_recent_evidence".into(),
             "submit_stage_deliverable".into(),
             "search_knowledge_base".into(),
@@ -509,5 +596,8 @@ pub async fn create_default_sub_agents_from_registry(
         .as_pipeline_only(),
     );
 
+    // Campaign authority roles always use the host-reviewed static prompts;
+    // prompt-registry overrides cannot widen this closed surface.
+    agents.extend(super::verification_campaign_agent_definitions());
     agents
 }

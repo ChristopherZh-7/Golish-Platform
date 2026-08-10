@@ -246,6 +246,7 @@ pub fn format_for_summarizer(events: &[TranscriptEvent]) -> String {
                         .unwrap_or_else(|| "?".to_string())
                 ));
             }
+            AiEvent::InvestigationProjectionChanged { .. } => {}
             AiEvent::HarnessTrace {
                 stage,
                 agent_path,

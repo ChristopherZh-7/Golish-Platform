@@ -173,6 +173,7 @@ async fn complete_migrations_enable_runtime_sampling_and_new_operation_freezes_i
             input: "freeze sampling runtime contract".to_string(),
             profile: "assessment".to_string(),
             entry_stage: "scoping".to_string(),
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             project_scope_id: v2_project.project_scope_id,
             cli_scope: None,
         },
@@ -749,6 +750,7 @@ async fn stage_team_repo_closes_dynamic_queue_and_recovers_expired_aggregator() 
         stage_execution_id: roots.stage_execution_id,
         stage_run_unit_id: seeded.unit.id,
         stage_team_plan_id: seeded.plan.id,
+        exact_work_item_id: None,
         lease_owner: "team-fixture".to_string(),
         lease_seconds: 60,
         session_id: roots.session_id,
@@ -1181,6 +1183,7 @@ async fn stage_team_dynamic_request_replays_after_parent_work_item_retry() {
         stage_execution_id: roots.stage_execution_id,
         stage_run_unit_id: seeded.unit.id,
         stage_team_plan_id: seeded.plan.id,
+        exact_work_item_id: None,
         lease_owner: "team-request-replay-fixture".to_string(),
         lease_seconds: 60,
         session_id: roots.session_id,
@@ -1356,6 +1359,7 @@ async fn exact_resume_source_claim_allows_only_one_open_turn_contender() {
             input: "resume exact graph checkpoint".to_string(),
             profile: "assessment".to_string(),
             entry_stage: "scoping".to_string(),
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             project_scope_id: project_scope.project_scope_id,
             cli_scope: None,
         },
@@ -1639,6 +1643,7 @@ async fn create_sealed_runtime_roots_with_contract_and_children(
             input: "run target intelligence".to_string(),
             profile: "assessment".to_string(),
             entry_stage: "target_intel".to_string(),
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             project_scope_id: project_scope.project_scope_id,
             cli_scope: None,
         },
@@ -2786,6 +2791,116 @@ async fn expired_company_controller_reclaims_same_worker_and_message_chain() {
 
 #[tokio::test]
 #[serial]
+async fn interrupted_company_controller_browser_reconciles_on_exact_chain() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded =
+        runtime_memory_tx::seed_stage_team_runtime(db.pool(), &stage_team_controller_seed(&roots))
+            .await
+            .expect("seed browser-recovery Controller Team")
+            .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "interrupted-controller-browser");
+    let controller = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Company Controller")
+    .expect("Controller is runnable");
+    let active_tool_id = tool_calls::record_tracked_start(
+        db.pool(),
+        "controller-interrupted-browser",
+        roots.session_id,
+        Some(roots.operation_id),
+        None,
+        "browser_collect_js_api",
+        &serde_json::json!({
+            "target_id": Uuid::new_v4(),
+            "target_url": "https://browser-recovery.example.test",
+            "max_actions": 0
+        }),
+        Some(&tool_calls::RuntimeToolIdentity {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: Some(seeded.unit.id),
+            worker_run_id: Some(controller.worker.id),
+            organization_id: Some(roots.organization_id),
+            attempt_epoch: Some(controller.worker.attempt_epoch),
+            lease_token: controller.worker.lease_token,
+        }),
+    )
+    .await
+    .expect("record exact browser collection tool");
+    runtime_memory_tx::begin_worker_tool(
+        db.pool(),
+        &stage_team_fence(&roots, &seeded, &controller),
+        active_tool_id,
+    )
+    .await
+    .expect("bind browser tool to Controller");
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(controller.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire interrupted Controller browser lease");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age interrupted Controller browser task");
+
+    let startup = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("park interrupted Controller browser during startup reconciliation");
+    assert_eq!(startup.workers_recovery_required, 1);
+
+    let resumed = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow { claim },
+    )
+    .await
+    .expect("reconcile interrupted Controller browser")
+    .expect("same Controller is claimable after browser reconciliation");
+    assert_eq!(resumed.work_item.id, controller.work_item.id);
+    assert_eq!(resumed.worker.id, controller.worker.id);
+    assert_eq!(resumed.message_chain_id, controller.message_chain_id);
+    assert_eq!(
+        resumed.worker.attempt_epoch,
+        controller.worker.attempt_epoch + 1
+    );
+    assert_eq!(resumed.worker.active_tool_call_id, None);
+    assert_eq!(
+        resumed.worker.checkpoint["stage_team_interrupted_tool_recovery"]["tool_name"],
+        "browser_collect_js_api"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status::text FROM tool_calls WHERE id=$1")
+            .bind(active_tool_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load reconciled browser tool status"),
+        "failed"
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn stage_team_repair_epoch_dispatch_accepts_child_from_stable_company_controller() {
     let (mut db, _data_dir) = fixture().await;
     let roots = create_sealed_runtime_roots_with_contract(
@@ -3475,6 +3590,7 @@ fn stage_team_claim_input(
         stage_execution_id: roots.stage_execution_id,
         stage_run_unit_id: seeded.unit.id,
         stage_team_plan_id: seeded.plan.id,
+        exact_work_item_id: None,
         lease_owner: owner.to_string(),
         lease_seconds: 60,
         session_id: roots.session_id,
@@ -3580,6 +3696,106 @@ async fn persist_stage_team_submission(
     .await
     .expect("finish Controller submission tool");
     (submission, worker)
+}
+
+#[tokio::test]
+#[serial]
+async fn runtime_tool_start_uses_unit_before_stage_lock_order() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(
+        db.pool(),
+        &stage_team_lifecycle_seed(&roots, 2),
+    )
+    .await
+    .expect("seed lock-order Team")
+    .remove(0);
+    let claimed = runtime_memory_tx::claim_stage_work_item(
+        db.pool(),
+        &stage_team_claim_input(&roots, &seeded, "tool-start-lock-order"),
+    )
+    .await
+    .expect("claim lock-order worker")
+    .expect("lock-order worker exists");
+
+    let mut heartbeat_order_tx = db.pool().begin().await.expect("begin lock-order tx");
+    sqlx::query("SELECT id FROM stage_run_units WHERE id=$1 FOR UPDATE")
+        .bind(seeded.unit.id)
+        .fetch_one(&mut *heartbeat_order_tx)
+        .await
+        .expect("hold unit lock before tool start");
+
+    let pool = db.pool().clone();
+    let runtime = tool_calls::RuntimeToolIdentity {
+        operation_id: roots.operation_id,
+        stage_execution_id: roots.stage_execution_id,
+        stage_run_unit_id: Some(seeded.unit.id),
+        worker_run_id: Some(claimed.worker.id),
+        organization_id: Some(roots.organization_id),
+        attempt_epoch: Some(claimed.worker.attempt_epoch),
+        lease_token: claimed.worker.lease_token,
+    };
+    let session_id = roots.session_id;
+    let operation_id = roots.operation_id;
+    let start = tokio::spawn(async move {
+        tool_calls::record_tracked_start(
+            &pool,
+            "runtime-tool-lock-order",
+            session_id,
+            Some(operation_id),
+            None,
+            "query_target_data",
+            &serde_json::json!({}),
+            Some(&runtime),
+        )
+        .await
+    });
+
+    // The runtime-aware start must be waiting on the already-held Unit before
+    // it can touch StageExecution/Worker FK rows. A legacy direct INSERT took
+    // the StageExecution lock first and deadlocked at this exact seam.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sqlx::query("SELECT id FROM stage_runs WHERE id=$1 FOR UPDATE")
+        .bind(roots.stage_execution_id)
+        .fetch_one(&mut *heartbeat_order_tx)
+        .await
+        .expect("unit owner can lock stage without a reverse-lock deadlock");
+    heartbeat_order_tx
+        .commit()
+        .await
+        .expect("release ordered runtime locks");
+
+    let tool_call_id = tokio::time::timeout(std::time::Duration::from_secs(5), start)
+        .await
+        .expect("runtime tool start did not stall")
+        .expect("runtime tool start task joined")
+        .expect("runtime tool start committed");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM tool_calls WHERE id=$1 AND status='running'"
+        )
+        .bind(tool_call_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("count exact running tool"),
+        1
+    );
+    tool_calls::record_tracked_finish(
+        db.pool(),
+        tool_call_id,
+        roots.session_id,
+        "finished",
+        "{}",
+        1,
+    )
+    .await
+    .expect("finish lock-order tool");
+
+    db.stop().await;
 }
 
 #[tokio::test]

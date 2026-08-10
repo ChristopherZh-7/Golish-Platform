@@ -692,6 +692,7 @@ mod load_from_db_tests {
         }
         async fn passive_scans_insert(
             &self,
+            _operation_id: Option<Uuid>,
             _target_id: Uuid,
             _project_path: &str,
             _scan_type: &str,

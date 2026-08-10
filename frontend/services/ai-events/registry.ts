@@ -21,7 +21,7 @@ import {
   handleSystemHooksInjected,
   handleTextDelta,
 } from "./core-handlers";
-import { handleHarnessTrace } from "./harness-handlers";
+import { handleHarnessTrace, handleInvestigationProjectionChanged } from "./harness-handlers";
 import {
   handlePlanUpdated,
   handleServerToolStarted,
@@ -121,6 +121,7 @@ export const eventHandlerRegistry: EventHandlerRegistry = {
 
   // Harness observability events (stage-run per-org progress → tool-call detail)
   harness_trace: handleHarnessTrace,
+  investigation_projection_changed: handleInvestigationProjectionChanged,
 
   // Plan events
   plan_updated: handlePlanUpdated,

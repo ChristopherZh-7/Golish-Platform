@@ -18,12 +18,26 @@ use super::technique_resolver::{
 };
 use super::{load_embedded_stage_spec, StageKind};
 
-const RECEIPT_STAGES: [StageKind; 4] = [
-    StageKind::TargetIntel,
+const RECEIPT_STAGES: [StageKind; 3] = [
     StageKind::ExternalAttackSurface,
     StageKind::Enumeration,
     StageKind::VulnTriage,
 ];
+
+/// Stages whose execution authority is an exact asset × technique census.
+///
+/// Target Intel deliberately is not in this set. Its current contract is one
+/// adaptive company-scoped Goal with a semantic frontier, immutable
+/// observations, attribution/reachability receipts, and an independent Goal
+/// review. Requiring a fixed technique denominator here would silently restore
+/// the retired six-axis runtime and prevents a freshly confirmed company from
+/// opening its first semantic frontier.
+pub const fn requires_fixed_tool_truth_denominator(stage: StageKind) -> bool {
+    matches!(
+        stage,
+        StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenominatorAsset {
@@ -82,7 +96,20 @@ pub fn build_denominator_items_from_spec(
 
     let classes = assets
         .iter()
-        .map(|asset| classify_stage_asset(stage, Some(&asset.asset_type), &asset.exact_asset))
+        .map(|asset| {
+            // Enumeration freezes exact HTTP(S) origins after EAS. An origin
+            // whose host is an IP literal is still a web subject here; treating
+            // it as a bare IP at the scope-wide resolver would drop PARAM before
+            // the per-asset web-aware applicability can restore all four lanes.
+            if stage == StageKind::Enumeration
+                && asset.asset_type.eq_ignore_ascii_case("url")
+                && golish_pentest_domain::canonical_web_origin(&asset.exact_asset).is_some()
+            {
+                golish_pentest_domain::AssetClass::Url
+            } else {
+                classify_stage_asset(stage, Some(&asset.asset_type), &asset.exact_asset)
+            }
+        })
         .collect::<Vec<_>>();
     let resolved = resolve_expected_techniques(stage, &classes);
     let techniques = if resolved.is_empty() {
@@ -514,16 +541,65 @@ mod tests {
     }
 
     #[test]
-    fn denominator_items_are_asset_times_expected_technique() {
+    fn fixed_denominator_items_are_asset_times_expected_technique() {
         let assets = vec![
             asset("example.test", "domain", true),
             asset("198.51.100.10", "ip", false),
         ];
-        let items = build_denominator_items(StageKind::TargetIntel, &assets).unwrap();
-        assert_eq!(items.len(), 9);
+        let items = build_denominator_items(StageKind::ExternalAttackSurface, &assets).unwrap();
+        assert!(!items.is_empty());
         assert!(items
             .windows(2)
             .all(|pair| pair[0].input_key < pair[1].input_key));
+    }
+
+    #[test]
+    fn target_intel_goal_has_no_fixed_technique_denominator() {
+        let spec = crate::harness::load_embedded_stage_spec(StageKind::TargetIntel).unwrap();
+        assert!(spec.expected_techniques.is_empty());
+        assert!(!requires_fixed_tool_truth_denominator(
+            StageKind::TargetIntel
+        ));
+        assert!(matches!(
+            build_denominator_items(
+                StageKind::TargetIntel,
+                &[asset("example.test", "domain", true)]
+            ),
+            Err(ToolTruthDenominatorError::EmptyAuthoritativeInput)
+        ));
+    }
+
+    #[test]
+    fn enumeration_ip_literal_web_origin_keeps_all_four_frozen_lanes() {
+        let items = build_denominator_items(
+            StageKind::Enumeration,
+            &[asset("http://127.0.0.1:51311", "url", true)],
+        )
+        .expect("an EAS-confirmed exact Web Origin is a four-lane Enumeration root");
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.technique.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "GOLISH-ENUM-DIR",
+                "GOLISH-ENUM-JS",
+                "GOLISH-ENUM-JSAPI",
+                "GOLISH-ENUM-PARAM",
+            ])
+        );
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| (item.technique.as_str(), item.expected_capability.as_str(),))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("GOLISH-ENUM-DIR", "enum.preflight_web_origins"),
+                ("GOLISH-ENUM-JS", "enum.collect_browser_surface"),
+                ("GOLISH-ENUM-JSAPI", "enum.extract_js_apis"),
+                ("GOLISH-ENUM-PARAM", "enum.collect_browser_surface"),
+            ])
+        );
     }
 
     #[test]

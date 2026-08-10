@@ -69,6 +69,11 @@ pub(crate) struct StreamProcessOutcome {
     /// loop uses this to retry (bounded) rather than silently accept the
     /// truncated output.
     pub mid_stream_error: Option<String>,
+    /// E3 · a retriable provider error arrived as the first and only stream
+    /// chunk.  This is distinct from `mid_stream_error`: there is no partial
+    /// assistant output to preserve or continue, so the turn executor retries
+    /// the exact same completion request without mutating chat history.
+    pub empty_stream_error: Option<String>,
 }
 
 /// Outcome enum for the agentic loop: either keep going with the accumulated
@@ -229,6 +234,28 @@ where
                         .unwrap_or(false);
 
                     if is_server_tool {
+                        if ctx.target_intel_goal_shadow.is_some() {
+                            let violation = serde_json::json!({
+                                "tool_name": tool_call.function.name.clone(),
+                                "call_id": tool_call.call_id.clone(),
+                                "reason": "provider_server_search_bypasses_host_evidence_adapter"
+                            });
+                            if let Some(adapter) = ctx.intel_public_adapter.as_ref() {
+                                let _ = golish_agent_kit::tool_executors::record_intel_public_policy_violation(
+                                    adapter.as_ref(),
+                                    &violation,
+                                )
+                                .await;
+                            }
+                            tracing::warn!(
+                                target: "harness::target_intel_goal_shadow",
+                                tool = %tool_call.function.name,
+                                "fixture rejected provider server-side tool item before model visibility"
+                            );
+                            return Err(anyhow::anyhow!(
+                                "INTEL_PROVIDER_SERVER_SEARCH_POLICY_VIOLATION"
+                            ));
+                        }
                         tracing::info!(
                             "Server tool detected: {} ({})",
                             tool_call.function.name,
@@ -404,10 +431,31 @@ where
     text_content = cleaned_text;
     *accumulated_response = cleaned_accumulated;
 
-    // No usable content + chunk errors observed: surface the error and break.
+    // No usable content + chunk errors observed. A transient provider failure
+    // (DeepSeek and other OpenAI-compatible gateways commonly deliver a 503 as
+    // the first SSE item after the HTTP stream was created) must retry through
+    // the same bounded resilience budget as a truncated stream. It is not a
+    // stream-start error, so `start_completion_stream` cannot catch it.
     if text_content.is_empty() && thinking_content.is_empty() && tool_calls_to_execute.is_empty() {
         if let Some(ref err_msg) = last_stream_chunk_error {
             let classification = classify_stream_start_error(err_msg);
+            if classification.retriable {
+                tracing::warn!(
+                    error = %err_msg,
+                    "[resilience] retriable provider error produced no stream content; flagging exact-request retry"
+                );
+                return Ok(StreamOutcome::Continue(StreamProcessOutcome {
+                    has_tool_calls: false,
+                    tool_calls_to_execute: Vec::new(),
+                    text_content: String::new(),
+                    thinking_content: String::new(),
+                    thinking_signature: None,
+                    thinking_id: None,
+                    repetition_detected: false,
+                    mid_stream_error: None,
+                    empty_stream_error: Some(err_msg.clone()),
+                }));
+            }
             let _ = ctx.events.event_tx.send(AiEvent::Error {
                 message: classification.user_message.clone(),
                 error_type: classification.error_type.to_string(),
@@ -462,6 +510,7 @@ where
         thinking_id,
         repetition_detected,
         mid_stream_error,
+        empty_stream_error: None,
     }))
 }
 

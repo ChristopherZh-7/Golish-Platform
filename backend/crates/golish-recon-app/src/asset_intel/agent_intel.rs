@@ -173,6 +173,14 @@ pub struct PassiveIntelSummary {
     /// Never serialized into the model-visible tool result.
     #[serde(skip)]
     pub(crate) tool_truth_provider_evidence: Vec<Value>,
+    /// Exact normalized provider candidates for the host-owned IntelGoal
+    /// observation lifecycle. Never serialized directly to the model.
+    #[serde(skip)]
+    pub(crate) current_run_candidates: OrganizationCandidates,
+    /// Exact current-run non-address facts that may become typed semantic
+    /// pivots. They are kept separate from the cumulative organization profile.
+    #[serde(skip)]
+    pub(crate) current_run_profile_fields: Vec<super::ObservedProfileField>,
 }
 
 fn append_summary_error(error: &mut Option<String>, message: impl Into<String>) {
@@ -213,6 +221,31 @@ pub async fn run_passive_intel(
     phase: PassiveIntelPhase,
     config: AssetIntelHydrateConfig,
 ) -> Result<PassiveIntelSummary, GolishError> {
+    run_passive_intel_with_promotion_policy(pool, tools, organization_id, phase, config, true).await
+}
+
+/// IntelGoalV1 collection boundary. Provider data is returned as observations;
+/// it cannot create a formal Target until attribution and fresh reachability
+/// are recorded by the semantic host.
+pub(crate) async fn run_passive_intel_observation_only(
+    pool: Arc<sqlx::PgPool>,
+    tools: ToolsConfigState,
+    organization_id: Uuid,
+    phase: PassiveIntelPhase,
+    config: AssetIntelHydrateConfig,
+) -> Result<PassiveIntelSummary, GolishError> {
+    run_passive_intel_with_promotion_policy(pool, tools, organization_id, phase, config, false)
+        .await
+}
+
+async fn run_passive_intel_with_promotion_policy(
+    pool: Arc<sqlx::PgPool>,
+    tools: ToolsConfigState,
+    organization_id: Uuid,
+    phase: PassiveIntelPhase,
+    config: AssetIntelHydrateConfig,
+    promote_formal_targets: bool,
+) -> Result<PassiveIntelSummary, GolishError> {
     let should_auto_expand_domains = phase == PassiveIntelPhase::Enrich
         && config
             .domain
@@ -226,6 +259,7 @@ pub async fn run_passive_intel(
         organization_id,
         phase,
         config.clone(),
+        promote_formal_targets,
     )
     .await?;
 
@@ -259,6 +293,7 @@ pub async fn run_passive_intel(
                 organization_id,
                 phase,
                 expansion_config,
+                promote_formal_targets,
             )
             .await
             {
@@ -340,6 +375,7 @@ async fn run_passive_intel_once(
     organization_id: Uuid,
     phase: PassiveIntelPhase,
     config: AssetIntelHydrateConfig,
+    promote_formal_targets: bool,
 ) -> Result<PassiveIntelSummary, GolishError> {
     let org = golish_db::repo::organizations::get_one(pool.as_ref(), organization_id)
         .await?
@@ -495,7 +531,7 @@ async fn run_passive_intel_once(
     let mut landed_service_assets = 0usize;
     let mut landing_statuses = Vec::new();
     let mut landing_errors = Vec::new();
-    if phase == PassiveIntelPhase::Enrich {
+    if phase == PassiveIntelPhase::Enrich && promote_formal_targets {
         match golish_db::repo::organizations::get_one(pool.as_ref(), organization_id).await {
             Ok(Some(fresh)) => {
                 // Passive-intel pairing closure (design 2026-06-17 §2 ③–⑤):
@@ -709,12 +745,14 @@ async fn run_passive_intel_once(
             }
         }
     }
-    let mut technique_status = derive_intel_technique_statuses(
-        &provider_capabilities,
-        &run.provider_status,
-        &run.evidence,
-    );
-    technique_status.extend(landing_statuses);
+    let mut technique_status = if promote_formal_targets {
+        derive_intel_technique_statuses(&provider_capabilities, &run.provider_status, &run.evidence)
+    } else {
+        Vec::new()
+    };
+    if promote_formal_targets {
+        technique_status.extend(landing_statuses);
+    }
     technique_status.sort_by(|left, right| {
         (&left.source, &left.technique).cmp(&(&right.source, &right.technique))
     });
@@ -732,6 +770,8 @@ async fn run_passive_intel_once(
         .map(|status| status.provider_id.clone())
         .collect();
     let tool_truth_provider_evidence = run.evidence.clone();
+    let current_run_candidates = run.candidates.clone();
+    let current_run_profile_fields = run.observed_profile_fields.clone();
     Ok(PassiveIntelSummary {
         run_id: run.run_id,
         company: org.name,
@@ -758,6 +798,8 @@ async fn run_passive_intel_once(
         error: landing_error,
         current_run_domain_roots,
         tool_truth_provider_evidence,
+        current_run_candidates,
+        current_run_profile_fields,
     })
 }
 
@@ -1295,6 +1337,8 @@ mod tests {
             error: None,
             current_run_domain_roots: vec!["private.example".into()],
             tool_truth_provider_evidence: vec![],
+            current_run_candidates: OrganizationCandidates::default(),
+            current_run_profile_fields: vec![],
         };
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["company"], "Acme");

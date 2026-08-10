@@ -12,6 +12,7 @@ import type {
   DetailViewMode,
   ExecutionMode,
   InputMode,
+  InvestigationRefreshHint,
   RenderMode,
   ReportingReadModelHint,
   Session,
@@ -43,6 +44,70 @@ function latestStageRunRequestId(state: SessionStoreDraft, sessionId: string): s
     }
   }
   return undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== "string") return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function exactSelector(record: Record<string, unknown> | null, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function timelineOwnsInvestigationHint(
+  state: SessionStoreDraft,
+  sessionId: string,
+  hint: InvestigationRefreshHint
+): boolean {
+  let execution: (typeof state.timelines)[string][number] | undefined;
+  const timeline = state.timelines[sessionId] ?? [];
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    const block = timeline[index];
+    if (
+      block.type === "ai_tool_execution" &&
+      block.data.requestId === hint.stageRunRequestId &&
+      block.data.toolName === "stage_run"
+    ) {
+      execution = block;
+      break;
+    }
+  }
+  if (!execution || execution.type !== "ai_tool_execution") return false;
+  const args = recordValue(execution.data.args);
+  const result = recordValue(execution.data.result);
+  const selectors = [args, result];
+  const stages = selectors
+    .map((record) => exactSelector(record, "stage", "stage_id"))
+    .filter((stage): stage is string => stage !== null);
+  const operations = selectors
+    .map((record) => exactSelector(record, "operationId", "operation_id"))
+    .filter((operation): operation is string => operation !== null);
+  const executions = selectors
+    .map((record) => exactSelector(record, "stageExecutionId", "stage_execution_id"))
+    .filter((stageExecution): stageExecution is string => stageExecution !== null);
+  return (
+    stages.length > 0 &&
+    stages.every((stage) => stage === "investigation") &&
+    operations.length > 0 &&
+    operations.every((operation) => operation === hint.operationId) &&
+    executions.length > 0 &&
+    executions.every((stageExecution) => stageExecution === hint.stageExecutionId)
+  );
 }
 
 function emptyStageRun(
@@ -349,6 +414,47 @@ export function createSessionCoreActions(
           refreshVersion:
             previous?.operationId === hint.operationId ? previous.refreshVersion + 1 : 1,
         };
+      }),
+
+    setInvestigationRefreshHint: (sessionId: string, hint: InvestigationRefreshHint | null) =>
+      set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session) return;
+        if (!hint) {
+          delete session.investigationRefreshHint;
+          return;
+        }
+        if (
+          session.detailViewMode !== "tool-detail" ||
+          session.toolDetailRequestIds?.[0] !== hint.stageRunRequestId ||
+          !hint.operationId.trim() ||
+          !hint.stageExecutionId.trim() ||
+          !hint.stageRunRequestId.trim() ||
+          !Number.isSafeInteger(hint.changeSeq) ||
+          hint.changeSeq < 0
+        ) {
+          return;
+        }
+        const selectedRun = session.stageRuns?.[hint.stageRunRequestId];
+        const rows = selectedRun?.rows ?? [];
+        const rowsOwnHint =
+          rows.length > 0 &&
+          rows.every(
+            (row) =>
+              row.stage === "investigation" &&
+              row.operationId === hint.operationId &&
+              row.stageExecutionId === hint.stageExecutionId
+          );
+        if (!rowsOwnHint && !timelineOwnsInvestigationHint(state, sessionId, hint)) {
+          return;
+        }
+        const previous = session.investigationRefreshHint;
+        const sameIdentity =
+          previous?.operationId === hint.operationId &&
+          previous.stageExecutionId === hint.stageExecutionId &&
+          previous.stageRunRequestId === hint.stageRunRequestId;
+        if (sameIdentity && previous.changeSeq >= hint.changeSeq) return;
+        session.investigationRefreshHint = { ...hint };
       }),
 
     upsertStageRunRow: (

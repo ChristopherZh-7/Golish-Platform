@@ -70,6 +70,10 @@ pub enum CanonicalFactKey {
     AttackCandidateWorkItem {
         work_item_id: Uuid,
     },
+    /// One immutable finalized Application Model revision.
+    ApplicationModelRevision {
+        revision_id: Uuid,
+    },
     Finding {
         finding_id: Uuid,
     },

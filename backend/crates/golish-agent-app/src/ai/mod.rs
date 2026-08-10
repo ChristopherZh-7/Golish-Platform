@@ -6,6 +6,9 @@
 //! `golish-agent-runtime`, `golish-agent-bridge`, `golish-prompts`,
 //! `golish-events`), mirroring exactly what the umbrella used to expose.
 
+pub mod application_model_gate;
+pub(crate) mod application_understanding_projection;
+pub mod application_understanding_runtime;
 pub mod candidate_analysis_gate;
 pub mod candidate_analysis_projection;
 pub mod candidate_analysis_runtime;
@@ -16,12 +19,15 @@ pub mod embedder_bridge;
 pub mod graph_bridge;
 pub mod harness_submit_tool;
 pub mod harness_trace_tool;
+pub mod investigation_projection_event_bridge;
 pub mod knowledge_policy_adapter;
 pub mod llm_one_shot;
 pub mod provider_bootstrap;
 pub mod session_bridge;
 pub mod sidecar_bridge;
 pub mod start_operation_tool;
+pub mod target_intel_goal_cutover;
+pub mod target_intel_goal_shadow;
 pub mod task_operation;
 pub mod tracking_bridge;
 
@@ -49,6 +55,10 @@ pub use golish_prompts::{
     build_summarizer_user_prompt, codex_prompt, contributors, generate_summary, prompt_registry,
     summarizer, system_prompt, PromptContributorRegistry, SummaryResponse,
     SUMMARIZER_SYSTEM_PROMPT,
+};
+pub use investigation_projection_event_bridge::{
+    CommittedInvestigationProjectionRefresh, InvestigationProjectionEventBridge,
+    InvestigationProjectionPublishOutcome, InvestigationProjectionReceiptSource,
 };
 
 /// Task orchestration facade: runtime types from [`golish_agent_kit`]

@@ -2,12 +2,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use golish_db::models::NewSession;
-use golish_db::repo::{project_scopes, report_revisions, runtime_memory_tx, sessions};
+use golish_db::repo::{
+    capability_execution_receipts, legacy_report_authority, legacy_security_verdict,
+    project_scopes, report_input_authority, report_input_seals, report_revisions,
+    report_source_manifest, runtime_memory_tx, sessions,
+};
 use golish_db::{DbConfig, GolishDb};
-use golish_reporting_domain::ReportSourceSnapshot;
+use golish_memory_domain::source_ref::CanonicalRowId;
+use golish_reporting_domain::{
+    ReportSourceKind, ReportSourceSnapshot, ReportSourceVersion, ReportValidationResult,
+};
 use serial_test::serial;
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+#[path = "support/tool_truth_authority_fixture.rs"]
+mod tool_truth_authority_fixture;
 
 fn reserve_local_port() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0))
@@ -78,6 +88,7 @@ async fn frozen_scope(db: &GolishDb, project_path: &str) -> FrozenScope {
             profile: "assessment".to_string(),
             entry_stage: "target_intel".to_string(),
             project_scope_id: project_scope.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: None,
         },
     )
@@ -149,6 +160,269 @@ async fn frozen_scope(db: &GolishDb, project_path: &str) -> FrozenScope {
         snapshot_id,
         organization_id,
     }
+}
+
+fn tagged_digest(nibble: char) -> String {
+    format!("sha256:{}", nibble.to_string().repeat(64))
+}
+
+async fn seed_report_finalization_authority(
+    db: &GolishDb,
+    scope: FrozenScope,
+    revision_id: Uuid,
+) -> ReportSourceSnapshot {
+    let project_path: String = sqlx::query_scalar(
+        "SELECT project_path_at_freeze FROM operation_org_scope_snapshots WHERE id=$1",
+    )
+    .bind(scope.snapshot_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load report finalization fixture project path");
+    let _ = tool_truth_authority_fixture::seed_all_fresh_tool_truth_roots(
+        db.pool(),
+        scope.operation_id,
+        scope.organization_id,
+        &project_path,
+    )
+    .await;
+    let authority_request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v5(
+            &revision_id,
+            format!("report-tool-truth:{}", scope.organization_id).as_bytes(),
+        ),
+        operation_id: scope.operation_id,
+        organization_id: scope.organization_id,
+        consumer_kind:
+            capability_execution_receipts::ToolTruthAuthorityBundleConsumerV1::CurrentReport,
+    };
+    capability_execution_receipts::with_all_fresh_tool_truth_authority_bundle(
+        db.pool(),
+        &authority_request,
+        |_tx, _authority| Box::pin(async { Ok::<(), golish_db::DbError>(()) }),
+    )
+    .await
+    .expect("seal all-fresh CurrentReport Tool Truth authority");
+
+    let evidence_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO audit_log(
+               action,category,details,project_path,source,status,detail,run_id,audit_role
+           ) VALUES(
+               'report-finalization-authority','harness','retained report authority',$1,
+               'harness','completed',$2,$3,'evidence'
+           ) RETURNING id"#,
+    )
+    .bind(&project_path)
+    .bind(serde_json::json!({"organization_id":scope.organization_id}))
+    .bind(scope.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("insert retained report authority evidence");
+    let target_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id,source
+           ) VALUES($1,'Legacy report target','url',
+                    'https://legacy-report.example.test/login','in',$2,$3,
+                    'legacy_report_authority_fixture')"#,
+    )
+    .bind(target_id)
+    .bind(&project_path)
+    .bind(scope.organization_id)
+    .execute(db.pool())
+    .await
+    .expect("insert legacy report authority target");
+    let candidate_id = Uuid::new_v4();
+    let attempt_id = Uuid::new_v4();
+    let hypothesis_root_id = Uuid::new_v4();
+    let hypothesis_revision_id = Uuid::new_v4();
+    let target_identity_hash = tagged_digest('6');
+    let candidate_plan_hash = tagged_digest('7');
+    let mut legacy_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin legacy report authority");
+    sqlx::query("SET LOCAL session_replication_role = 'replica'")
+        .execute(&mut *legacy_tx)
+        .await
+        .expect("isolate legacy authority parent fixture");
+    sqlx::query(
+        r#"INSERT INTO attack_hypotheses(
+               root_id,operation_id,organization_id,root_kind,
+               identity_ingredients,identity_ingredients_hash
+           ) VALUES($1,$2,$3,'initial',$4,$5)"#,
+    )
+    .bind(hypothesis_root_id)
+    .bind(scope.operation_id)
+    .bind(scope.organization_id)
+    .bind(serde_json::json!({"fixture":"report-finalization-authority"}))
+    .bind(tagged_digest('b'))
+    .execute(&mut *legacy_tx)
+    .await
+    .expect("insert report finalization hypothesis root");
+    sqlx::query(
+        r#"INSERT INTO attack_hypothesis_revisions(
+               revision_id,root_id,operation_id,organization_id,revision_ordinal,
+               semantic_key,semantic_key_hash,subject_kind,subject_identity_hash,
+               target_live_id,target_type_at_time,target_value_at_time,
+               predicate_schema,predicate_version,normalized_arguments,trust_boundary,
+               polarity,epistemic_state,lifecycle_state,planning_readiness,
+               structured_claim,assumptions,missing_facts,priority,risk_impact,
+               origin_decision_hash,revision_ingredients_hash,revision_hash
+           ) VALUES(
+               $1,$2,$3,$4,0,$5,$6,'url',$7,$8,'url',
+               'https://legacy-report.example.test/login','legacy_report_fixture',1,$9,
+               'external','positive','refuted','closed','deferred',$10,'[]','[]',0,$11,
+               $12,$13,$14
+           )"#,
+    )
+    .bind(hypothesis_revision_id)
+    .bind(hypothesis_root_id)
+    .bind(scope.operation_id)
+    .bind(scope.organization_id)
+    .bind(serde_json::json!({
+        "target":"https://legacy-report.example.test/login",
+        "predicate":"legacy_report_fixture",
+    }))
+    .bind(tagged_digest('c'))
+    .bind(&target_identity_hash)
+    .bind(target_id)
+    .bind(serde_json::json!({}))
+    .bind(serde_json::json!({"disposition":"refuted"}))
+    .bind(serde_json::json!({"impact":"none"}))
+    .bind(tagged_digest('d'))
+    .bind(tagged_digest('e'))
+    .bind(tagged_digest('f'))
+    .execute(&mut *legacy_tx)
+    .await
+    .expect("insert report finalization hypothesis revision");
+    sqlx::query(
+        r#"INSERT INTO attack_candidates(
+               candidate_id,operation_id,organization_id,target,hypothesis,
+               hypothesis_hash,technique,rationale,priority,wave,disposition,
+               operation_uuid,scope_snapshot_id,wave_run_id,wave_unit_id,
+               source_work_item_id,decision_stage_execution_id,
+               decision_stage_run_unit_id,decision_deliverable_submission_id,
+               decision_stage_kind,target_live_id,target_id_at_time,live_target_id,
+               canonical_target_snapshot,target_type_at_time,
+               target_value_at_time,target_identity_hash,execution_plan,
+               candidate_plan_hash,risk_class,hypothesis_revision_id
+           ) VALUES(
+               $1,$2,$3,'https://legacy-report.example.test/login',
+               'legacy report authority hypothesis',$4,'WSTG-INFO-01',
+               'report finalization fixture','medium',0,'refuted',$5,$6,$7,$8,
+               $9,$10,$11,$12,'attack_candidate',$13,$13,$13,$18,'url',
+               'https://legacy-report.example.test/login',$14,$15,$16,
+               'deterministic_safe',$17
+           )"#,
+    )
+    .bind(candidate_id)
+    .bind(scope.operation_id.to_string())
+    .bind(scope.organization_id)
+    .bind(tagged_digest('8'))
+    .bind(scope.operation_id)
+    .bind(scope.snapshot_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(target_id)
+    .bind(&target_identity_hash)
+    .bind(serde_json::json!({"schema_version":"report-finalization-fixture-v1"}))
+    .bind(&candidate_plan_hash)
+    .bind(hypothesis_revision_id)
+    .bind(serde_json::json!({
+        "targetIdAtTime":target_id,
+        "targetTypeAtTime":"url",
+        "targetValueAtTime":"https://legacy-report.example.test/login",
+        "targetIdentityHash":target_identity_hash,
+    }))
+    .execute(&mut *legacy_tx)
+    .await
+    .expect("insert retained legacy Candidate authority parent");
+    sqlx::query(
+        r#"INSERT INTO candidate_attempts(
+               id,candidate_id,approval_id,operation_id,scope_snapshot_id,
+               wave_run_id,wave_unit_id,organization_id,target_live_id,
+               target_type_at_time,target_value_at_time,target_identity_hash,
+               candidate_plan_hash,ordinal,status,result_json,result_hash,terminal_at
+           ) VALUES(
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,'url',
+               'https://legacy-report.example.test/login',$10,$11,0,'refuted',
+               $12,$13,NOW()
+           )"#,
+    )
+    .bind(attempt_id)
+    .bind(candidate_id)
+    .bind(Uuid::new_v4())
+    .bind(scope.operation_id)
+    .bind(scope.snapshot_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(scope.organization_id)
+    .bind(target_id)
+    .bind(&target_identity_hash)
+    .bind(&candidate_plan_hash)
+    .bind(serde_json::json!({"disposition":"refuted"}))
+    .bind(tagged_digest('9'))
+    .execute(&mut *legacy_tx)
+    .await
+    .expect("insert retained legacy terminal Attempt");
+    sqlx::query(
+        "INSERT INTO candidate_attempt_evidence(attempt_id,evidence_id,role) VALUES($1,$2,'proof')",
+    )
+    .bind(attempt_id)
+    .bind(evidence_id)
+    .execute(&mut *legacy_tx)
+    .await
+    .expect("link exact evidence to legacy Attempt");
+    sqlx::query("SET LOCAL session_replication_role = 'origin'")
+        .execute(&mut *legacy_tx)
+        .await
+        .expect("restore legacy authority fixture guards");
+    legacy_security_verdict::seal_legacy_attempt_authority_on(
+        &mut legacy_tx,
+        legacy_security_verdict::SealLegacyAttemptAuthorityV1 {
+            operation_id: scope.operation_id,
+            project_scope_id: scope.project_scope_id,
+            organization_id: scope.organization_id,
+            attempt_id,
+            hypothesis_revision_id,
+            adapter_version: "report-finalization-test-v1".to_owned(),
+            adapter_digest: tagged_digest('a'),
+        },
+    )
+    .await
+    .expect("seal retained legacy Attempt authority");
+    legacy_report_authority::seal_legacy_report_authority_on(
+        &mut legacy_tx,
+        legacy_report_authority::SealLegacyReportAuthorityV1 {
+            operation_id: scope.operation_id,
+            project_scope_id: scope.project_scope_id,
+            adapter_version: "report-finalization-test-v1".to_owned(),
+            adapter_digest: tagged_digest('a'),
+        },
+    )
+    .await
+    .expect("seal operation-wide legacy report authority");
+    legacy_tx
+        .commit()
+        .await
+        .expect("commit retained legacy report authority");
+
+    ReportSourceSnapshot::freeze(
+        "fixture",
+        vec![ReportSourceVersion {
+            kind: ReportSourceKind::EvidenceAudit,
+            authority_class: Default::default(),
+            id: CanonicalRowId::Int64(evidence_id),
+            row_version: 0,
+            content_hash: [0x55; 32],
+        }],
+    )
+    .expect("freeze a non-empty report source snapshot")
 }
 
 async fn report_revision_fixture(
@@ -242,6 +516,113 @@ async fn report_revision_fixture(
         section_id,
         row_version,
     }
+}
+
+async fn authority_complete_report_revision_fixture(
+    db: &GolishDb,
+    scope: FrozenScope,
+) -> (ReportRevisionFixture, ReportSourceSnapshot) {
+    let report_id = Uuid::new_v4();
+    let revision_id = Uuid::new_v4();
+    let section_id = Uuid::new_v4();
+    let snapshot = seed_report_finalization_authority(db, scope, revision_id).await;
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin authority-complete report revision fixture");
+    sqlx::query(
+        r#"INSERT INTO reports(
+               report_id,operation_id,project_scope_id,scope_snapshot_id,scope_snapshot_hash
+           ) VALUES($1,$2,$3,$4,$5)"#,
+    )
+    .bind(report_id)
+    .bind(scope.operation_id)
+    .bind(scope.project_scope_id)
+    .bind(scope.snapshot_id)
+    .bind("3".repeat(64))
+    .execute(&mut *tx)
+    .await
+    .expect("insert authority-complete report");
+    let building = report_revisions::begin_revision(
+        &mut tx,
+        &report_revisions::BeginReportRevision {
+            revision_id,
+            report_id,
+            revision_number: 1,
+            expected_report_current_revision_id: None,
+            snapshot: snapshot.clone(),
+        },
+    )
+    .await
+    .expect("begin report revision with a non-empty canonical manifest");
+    sqlx::query(
+        r#"INSERT INTO report_sections(
+               section_id,revision_id,organization_id_at_time,
+               organization_name_at_snapshot,section_kind,ordinal,content_hash
+           ) VALUES($1,$2,$3,'Report Org','findings',0,$4)"#,
+    )
+    .bind(section_id)
+    .bind(revision_id)
+    .bind(scope.organization_id)
+    .bind("5".repeat(64))
+    .execute(&mut *tx)
+    .await
+    .expect("insert authority-complete report section");
+    let draft_row_version: i64 = sqlx::query_scalar(
+        "UPDATE report_revisions SET validation_status='draft' WHERE revision_id=$1 RETURNING row_version",
+    )
+    .bind(revision_id)
+    .fetch_one(&mut *tx)
+    .await
+    .expect("move authority-complete revision to draft");
+    assert!(draft_row_version > building.row_version);
+    let seal = report_input_authority::seal_current_report_input_authority_on(
+        &mut tx,
+        scope.operation_id,
+        revision_id,
+        &snapshot,
+    )
+    .await
+    .expect("freeze current report input authority");
+    report_input_seals::seal_report_input_on(
+        &mut tx,
+        scope.operation_id,
+        revision_id,
+        &snapshot,
+        &seal,
+    )
+    .await
+    .expect("persist the immutable report input seal");
+    let validated = report_revisions::validate_revision(
+        &mut tx,
+        &report_revisions::ValidateReportRevision {
+            report_id,
+            revision_id,
+            expected_row_version: draft_row_version,
+            expected_source_set_hash: snapshot.source_set_hash,
+            validation_result: ReportValidationResult {
+                revision_id,
+                claim_count: 0,
+                citation_count: 0,
+                source_count: snapshot.ordered_sources.len(),
+            },
+        },
+    )
+    .await
+    .expect("validate authority-complete report revision");
+    tx.commit()
+        .await
+        .expect("commit authority-complete report revision fixture");
+    (
+        ReportRevisionFixture {
+            report_id,
+            revision_id,
+            section_id,
+            row_version: validated.row_version,
+        },
+        snapshot,
+    )
 }
 
 #[tokio::test]
@@ -345,18 +726,13 @@ async fn plain_sql_cannot_finalize_a_validated_current_revision() {
 async fn repository_finalize_commits_artifact_and_exact_outbox_with_final_transition() {
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/repository-final").await;
-    let revision = report_revision_fixture(&db, scope, true).await;
+    let (revision, snapshot) = authority_complete_report_revision_fixture(&db, scope).await;
     let principal_id: Uuid = sqlx::query_scalar(
         "SELECT id FROM operator_principals WHERE principal_kind='local_operator' AND active",
     )
     .fetch_one(db.pool())
     .await
     .expect("load active local principal");
-    let snapshot = ReportSourceSnapshot {
-        transaction_snapshot: "fixture".to_string(),
-        ordered_sources: Vec::new(),
-        source_set_hash: [0x44; 32],
-    };
     let mut tx = db
         .pool()
         .begin()
@@ -504,6 +880,16 @@ async fn reporting_schema_installs_retained_read_model_and_blob_tables() {
         "report_claim_citations",
         "report_artifact_blobs",
         "report_revision_artifacts",
+        "report_input_tool_truth_authority_sets",
+        "report_input_tool_truth_authority_members",
+        "report_input_revision_adjudication_sets",
+        "report_input_revision_adjudication_members",
+        "report_input_open_headers",
+        "report_input_seals",
+        "report_input_seal_members",
+        "report_authority_invalidation_events",
+        "historical_report_artifact_receipts",
+        "historical_report_artifact_read_attestations",
     ] {
         let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
             .bind(format!("public.{table}"))
@@ -773,6 +1159,16 @@ async fn finalized_content_is_immutable_and_blob_is_shareable_across_revisions()
     let revision_two = Uuid::new_v4();
     let section_id = Uuid::new_v4();
     let claim_id = Uuid::new_v4();
+    let snapshot = seed_report_finalization_authority(&db, scope, revision_one).await;
+    let source_evidence_id = match snapshot.ordered_sources[0].id {
+        CanonicalRowId::Int64(value) => value,
+        _ => panic!("report finalization fixture source must be audit evidence"),
+    };
+    let revision_one_source_hash = snapshot
+        .source_set_hash
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
 
     let mut tx = db.pool().begin().await.expect("begin report history");
     sqlx::query(
@@ -788,7 +1184,10 @@ async fn finalized_content_is_immutable_and_blob_is_shareable_across_revisions()
     .execute(&mut *tx)
     .await
     .expect("insert report");
-    for (revision_id, number) in [(revision_one, 1), (revision_two, 2)] {
+    for (revision_id, number, source_set_hash) in [
+        (revision_one, 1, revision_one_source_hash.clone()),
+        (revision_two, 2, "4".repeat(64)),
+    ] {
         sqlx::query(
             r#"INSERT INTO report_revisions(
                    revision_id,report_id,revision_number,transaction_snapshot,
@@ -798,11 +1197,14 @@ async fn finalized_content_is_immutable_and_blob_is_shareable_across_revisions()
         .bind(revision_id)
         .bind(report_id)
         .bind(number)
-        .bind("4".repeat(64))
+        .bind(source_set_hash)
         .execute(&mut *tx)
         .await
         .expect("insert report revision");
     }
+    report_source_manifest::insert_snapshot(&mut tx, revision_one, &snapshot)
+        .await
+        .expect("insert first revision's non-empty canonical manifest");
     sqlx::query(
         r#"INSERT INTO report_sections(
                section_id,revision_id,organization_id_at_time,
@@ -831,6 +1233,26 @@ async fn finalized_content_is_immutable_and_blob_is_shareable_across_revisions()
     .await
     .expect("insert report claim");
     sqlx::query(
+        r#"INSERT INTO report_claim_citations(
+               citation_id,revision_id,claim_id,citation_ordinal,source_type,
+               source_kind,source_id_kind,source_id_value,source_row_version,
+               source_hash,evidence_audit_id,organization_id_at_time,display_label
+           ) VALUES(
+               $1,$2,$3,0,'canonical_fact','evidence_audit','int64',$4,0,
+               decode($5,'hex'),$6,$7,'retained report authority evidence'
+           )"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(revision_one)
+    .bind(claim_id)
+    .bind(source_evidence_id.to_string())
+    .bind("55".repeat(32))
+    .bind(source_evidence_id)
+    .bind(scope.organization_id)
+    .execute(&mut *tx)
+    .await
+    .expect("cite the retained non-empty report source");
+    sqlx::query(
         r#"INSERT INTO report_artifact_blobs(
                content_key,sha256,storage_path,byte_len
            ) VALUES('sha256/aa/shared.md',$1,'.golish/reports/blobs/shared.md',12)"#,
@@ -848,33 +1270,48 @@ async fn finalized_content_is_immutable_and_blob_is_shareable_across_revisions()
     .execute(&mut *tx)
     .await
     .expect("attach shared blob to the unpublished successor");
-    sqlx::query(
-        r#"UPDATE report_revisions
-              SET validation_status='validated',validated_at=NOW()
-            WHERE revision_id IN ($1,$2)"#,
+    let draft_row_version: i64 = sqlx::query_scalar(
+        "UPDATE report_revisions SET validation_status='draft' WHERE revision_id=$1 RETURNING row_version",
     )
     .bind(revision_one)
-    .bind(revision_two)
-    .execute(&mut *tx)
+    .fetch_one(&mut *tx)
     .await
-    .expect("terminalize both report validations");
-    sqlx::query("UPDATE reports SET current_revision_id=$2 WHERE report_id=$1")
-        .bind(report_id)
-        .bind(revision_one)
-        .execute(&mut *tx)
-        .await
-        .expect("make first revision current");
-    let revision_one_version: i64 =
-        sqlx::query_scalar("SELECT row_version FROM report_revisions WHERE revision_id=$1")
-            .bind(revision_one)
-            .fetch_one(&mut *tx)
-            .await
-            .expect("load validated first revision version");
-    let snapshot = ReportSourceSnapshot {
-        transaction_snapshot: "fixture".to_string(),
-        ordered_sources: Vec::new(),
-        source_set_hash: [0x44; 32],
-    };
+    .expect("move first revision to draft");
+    let authority_seal = report_input_authority::seal_current_report_input_authority_on(
+        &mut tx,
+        scope.operation_id,
+        revision_one,
+        &snapshot,
+    )
+    .await
+    .expect("freeze first revision's current authority");
+    report_input_seals::seal_report_input_on(
+        &mut tx,
+        scope.operation_id,
+        revision_one,
+        &snapshot,
+        &authority_seal,
+    )
+    .await
+    .expect("seal first revision's canonical input set");
+    let validated = report_revisions::validate_revision(
+        &mut tx,
+        &report_revisions::ValidateReportRevision {
+            report_id,
+            revision_id: revision_one,
+            expected_row_version: draft_row_version,
+            expected_source_set_hash: snapshot.source_set_hash,
+            validation_result: ReportValidationResult {
+                revision_id: revision_one,
+                claim_count: 1,
+                citation_count: 1,
+                source_count: snapshot.ordered_sources.len(),
+            },
+        },
+    )
+    .await
+    .expect("validate first revision through the repository protocol");
+    let revision_one_version = validated.row_version;
     report_revisions::finalize_revision_with_artifacts_and_outbox(
         &mut tx,
         &report_revisions::FinalizeReportRevision {

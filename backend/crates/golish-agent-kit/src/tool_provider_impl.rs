@@ -9,14 +9,17 @@ use rig::completion::request::ToolDefinition;
 use crate::db_tracking::DbTracker;
 use crate::tool_definitions::{filter_tools_by_allowed, get_all_tool_definitions};
 use crate::tool_executors::{
-    execute_knowledge_base_tool, execute_memory_tool, execute_web_fetch_tool,
-    normalize_run_pty_cmd_args,
+    execute_intel_public_tool, execute_knowledge_base_tool, execute_memory_tool,
+    execute_web_fetch_tool, intel_public_tool_definitions, normalize_run_pty_cmd_args,
+    IntelPublicEvidenceAdapter,
 };
 
 /// Default tool provider that uses golish-ai's tool definitions and executors.
 pub struct DefaultToolProvider<'a> {
     db_tracker: Option<&'a DbTracker>,
     web_fetcher: Option<Arc<dyn WebFetchProvider>>,
+    intel_public_adapter: Option<Arc<dyn IntelPublicEvidenceAdapter>>,
+    intel_public_fixture_enabled: bool,
 }
 
 impl<'a> DefaultToolProvider<'a> {
@@ -24,6 +27,8 @@ impl<'a> DefaultToolProvider<'a> {
         Self {
             db_tracker: None,
             web_fetcher: None,
+            intel_public_adapter: None,
+            intel_public_fixture_enabled: false,
         }
     }
 
@@ -31,11 +36,32 @@ impl<'a> DefaultToolProvider<'a> {
         Self {
             db_tracker,
             web_fetcher: None,
+            intel_public_adapter: None,
+            intel_public_fixture_enabled: false,
         }
     }
 
     pub fn with_web_fetcher(mut self, fetcher: Option<Arc<dyn WebFetchProvider>>) -> Self {
         self.web_fetcher = fetcher;
+        self
+    }
+
+    pub fn with_intel_public_adapter(
+        mut self,
+        adapter: Option<Arc<dyn IntelPublicEvidenceAdapter>>,
+    ) -> Self {
+        self.intel_public_adapter = adapter;
+        self.intel_public_fixture_enabled = self.intel_public_adapter.is_some();
+        self
+    }
+
+    pub fn with_intel_public_fixture(
+        mut self,
+        enabled: bool,
+        adapter: Option<Arc<dyn IntelPublicEvidenceAdapter>>,
+    ) -> Self {
+        self.intel_public_fixture_enabled = enabled;
+        self.intel_public_adapter = adapter;
         self
     }
 }
@@ -73,6 +99,20 @@ impl ToolProvider for DefaultToolProvider<'_> {
                 false,
             )
         }
+    }
+
+    fn intel_public_tool_definitions(&self) -> Option<Vec<ToolDefinition>> {
+        self.intel_public_fixture_enabled
+            .then(intel_public_tool_definitions)
+    }
+
+    async fn execute_intel_public_tool(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
+        let adapter = self.intel_public_adapter.as_ref()?;
+        Some(execute_intel_public_tool(adapter.as_ref(), tool_name, args).await)
     }
 
     async fn execute_memory_tool(

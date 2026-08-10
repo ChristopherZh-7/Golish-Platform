@@ -291,7 +291,7 @@ space-guard-install:
         "StandardErrorPath": str(Path.home() / ".golish/cargo-space-guard.log"),
         "EnvironmentVariables": {
             "PATH": f"{Path.home()}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
-            "GOLISH_MIN_FREE_GB": "80",
+            "GOLISH_MIN_FREE_GB": "30",
             "GOLISH_TARGET_CAP": "30GB",
         },
     }
@@ -300,7 +300,7 @@ space-guard-install:
     PY
     launchctl bootout "gui/$(id -u)/com.golish.cargo-space-guard" >/dev/null 2>&1 || true
     launchctl bootstrap "gui/$(id -u)" "$plist"
-    echo "✓ Cargo space guard installed (80GB free-space floor, checked every 10 minutes)."
+    echo "✓ Cargo space guard installed (30GB free-space floor, checked every 10 minutes)."
 
 space-guard-uninstall:
     #!/usr/bin/env bash

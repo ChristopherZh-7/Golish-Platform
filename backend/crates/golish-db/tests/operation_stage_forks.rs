@@ -262,6 +262,7 @@ async fn stage_fork_shared_db_candidate_materializes_contracts_prefix_targets_an
             profile: "red_team".to_string(),
             entry_stage: "scoping".to_string(),
             project_scope_id: project.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: None,
         },
     )
@@ -554,6 +555,7 @@ async fn stage_fork_shared_db_candidate_materializes_contracts_prefix_targets_an
             profile: "red_team".to_string(),
             entry_stage: "attack_candidate".to_string(),
             project_scope_id: project.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: Some(runtime_memory_tx::CliRuntimeScopeRow {
                 root_organization_id,
                 include_subsidiaries: false,
@@ -692,7 +694,7 @@ async fn stage_fork_shared_db_candidate_materializes_contracts_prefix_targets_an
     )
     .await
     .expect("write exact adjacent adoption receipt");
-    assert_eq!(adopted_pair.joint_rank, 1);
+    assert_eq!(adopted_pair.joint_rank(), 1);
     operation_rollout::choose_stage_fork_pair_and_write_adoption(
         &mut adoption_tx,
         source_operation_id,
@@ -810,6 +812,7 @@ async fn stage_fork_shared_db_candidate_materializes_contracts_prefix_targets_an
             profile: "red_team".to_string(),
             entry_stage: "attack_candidate".to_string(),
             project_scope_id: project.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: Some(runtime_memory_tx::CliRuntimeScopeRow {
                 root_organization_id,
                 include_subsidiaries: false,
@@ -1190,6 +1193,7 @@ async fn stage_fork_shared_db_candidate_materializes_contracts_prefix_targets_an
             profile: "red_team".to_string(),
             entry_stage: "attack_candidate".to_string(),
             project_scope_id: project.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: Some(runtime_memory_tx::CliRuntimeScopeRow {
                 root_organization_id,
                 include_subsidiaries: false,

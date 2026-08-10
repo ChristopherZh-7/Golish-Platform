@@ -36,7 +36,7 @@ use golish_agent_kit::harness::org_gate::{
     trusted_vuln_surface_not_applicable_from_snapshot,
     validated_enumeration_axis_from_coverage_snapshot,
     validated_exact_web_origin_axis_from_coverage_snapshot, vuln_not_applicable_from_outcomes,
-    TargetIntelOrganizationContext, STAGE_RUN_PASS_TOKEN_KIND,
+    STAGE_RUN_PASS_TOKEN_KIND,
 };
 use golish_agent_kit::harness::{
     completed_from_guarded_outcomes, load_embedded_stage_spec, validate_stage_gate_with_context,
@@ -489,6 +489,8 @@ fn canonicalize_model_submit_args(mut args: Value) -> Value {
         "evidence_refs",
         "findings",
         "coverage",
+        "candidate_decisions",
+        "candidate_decision_groups",
         "skipped_checks",
         "required_checks_done",
     ] {
@@ -634,6 +636,47 @@ fn drop_disallowed_findings(deliverable: &mut StageDeliverable, findings_allowed
     count
 }
 
+/// Normalize the only model-controlled syntax around a server-authored
+/// `stage_run` pass token. The final closeout still recomputes the token from
+/// `org_stage_completions`, so accepting prose around one unambiguous SHA-256
+/// value does not grant the model any completion authority.
+fn normalize_embedded_stage_run_pass_tokens(
+    deliverable: &mut StageDeliverable,
+) -> std::result::Result<(), &'static str> {
+    for claim in &mut deliverable.claims {
+        if claim.kind != STAGE_RUN_PASS_TOKEN_KIND {
+            continue;
+        }
+
+        let trimmed = claim.summary.trim();
+        if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+            claim.summary = trimmed.to_ascii_lowercase();
+            continue;
+        }
+
+        let candidates = trimmed
+            .split(|c: char| !c.is_ascii_hexdigit())
+            .filter(|token| token.len() == 64)
+            .map(str::to_ascii_lowercase)
+            .collect::<HashSet<_>>();
+        match candidates.len() {
+            0 => {}
+            1 => {
+                claim.summary = candidates
+                    .into_iter()
+                    .next()
+                    .expect("one embedded stage_run pass token");
+            }
+            _ => {
+                return Err(
+                    "stage_run_pass_token summary contains multiple different 64-hex tokens; copy exactly one closeout_claim from the latest stage_run result",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Return the sole non-blank aggregate pass token. Other model-authored claims
 /// are intentionally ignored later, but multiple competing token claims are
 /// ambiguous and therefore cannot enter the coordinator closeout seam.
@@ -702,6 +745,9 @@ impl SubmitStageDeliverableTool {
         let Some(groups) = object.remove("candidate_decision_groups") else {
             return Ok(());
         };
+        if groups.is_null() || groups.as_array().is_some_and(Vec::is_empty) {
+            return Ok(());
+        }
         if object.get("stage_id").and_then(Value::as_str)
             != Some(StageKind::AttackCandidate.as_str())
         {
@@ -1619,6 +1665,12 @@ impl SubmitStageDeliverableTool {
         stage: StageKind,
         authoritative: bool,
     ) -> Result<GateContext, String> {
+        if stage == StageKind::TargetIntel {
+            return Err(
+                "Target Intel legacy coverage preview is retired; IntelGoalV1 review/finalization owns completion"
+                    .to_string(),
+            );
+        }
         let active_session_id = if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
             Some(
                 self.session_id
@@ -1854,17 +1906,6 @@ impl SubmitStageDeliverableTool {
                 let target_types = repo.in_scope_target_types(Some(org_id)).await;
                 expected_techniques = stage_gate_expected_techniques(stage, &target_types);
             }
-            if stage == StageKind::TargetIntel {
-                let organization_context = TargetIntelOrganizationContext::new(org_id);
-                organization_context.inject_asset(&mut in_scope_assets);
-                if authoritative {
-                    organization_context.inject_type(&mut typed_assets);
-                }
-                not_applicable_coverage.extend(organization_context.not_applicable_coverage());
-            }
-            // DB business truth must be projected after the synthetic Target
-            // Intel organization row is added. Otherwise an organization-only
-            // engagement never queries WHOIS/ASN/OSINT truth at submit time.
             if !in_scope_assets.is_empty() {
                 facts.extend(
                     repo.db_truth_facts_with_run_start(
@@ -2074,7 +2115,7 @@ impl Tool for SubmitStageDeliverableTool {
                 },
                 "claims": {
                     "type": "array",
-                    "description": "Business observations. Do not look up or invent evidence_ids; omit them unless a previous tool/result explicitly gave you a real ledger id. When a claim evidences one of the stage's expected techniques, set `technique` to that REGISTERED id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset`. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
+                    "description": "Business observations. Do not look up or invent evidence_ids; omit them unless a previous tool/result explicitly gave you a real ledger id. When a coverage-based stage claim evidences one of that stage's expected techniques, set `technique` to the REGISTERED id (e.g. WSTG-INPV-05) and use the SAME `subject` string as the matching coverage cell's `asset`. Target Intel has no technique matrix: its completion claim omits `technique` and is reviewed from durable Goal state. Unregistered technique ids are rejected. Enumeration claim kinds should summarize content mapping, e.g. web_root_enumerated, directories_discovered, api_endpoints_discovered, params_discovered, js_candidates_reviewed.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -2154,7 +2195,7 @@ impl Tool for SubmitStageDeliverableTool {
                         "type": "object",
                         "properties": {
                             "asset": { "type": "string", "description": "Asset identifier (host / URL). Match a claim's `subject`." },
-                            "technique": { "type": "string", "description": "REGISTERED technique id (e.g. GOLISH-INTEL-DNS, WSTG-INPV-05)." },
+                            "technique": { "type": "string", "description": "REGISTERED technique id for a coverage-based stage (e.g. WSTG-INPV-05). Target Intel does not use this field." },
                             "status": { "type": "string", "enum": ["found", "checked_empty", "blocked", "not_applicable"], "description": "Terminal state for this (asset × technique)." },
                             "evidence_refs": { "type": "array", "items": { "type": "integer" }, "description": "Optional internal ledger ids. Usually omit unless real ids are explicitly available." },
                             "note": { "type": "string", "description": "Required for blocked/not_applicable: why." },
@@ -2241,6 +2282,12 @@ impl Tool for SubmitStageDeliverableTool {
                     ),
                 }));
             }
+            if let Err(reason) = normalize_embedded_stage_run_pass_tokens(&mut deliverable) {
+                return Ok(json!({
+                    "status": "rejected",
+                    "reason": reason,
+                }));
+            }
             if kind == StageKind::Enumeration && !deliverable.coverage.is_empty() {
                 return Ok(json!({
                     "status": "needs_fix",
@@ -2288,18 +2335,76 @@ impl Tool for SubmitStageDeliverableTool {
                 // the stage-close口径 (env GOLISH_SUBMIT_PREVIEW_AUTHORITATIVE_CONTEXT=0 reverts).
                 self.backfill_required_checks_done_from_evidence(&mut deliverable, &spec)
                     .await;
-                let coordinator_pass_token = spec
+                let pass_token_claim_count = deliverable
+                    .claims
+                    .iter()
+                    .filter(|claim| claim.kind == STAGE_RUN_PASS_TOKEN_KIND)
+                    .count();
+                let mut coordinator_pass_token = spec
                     .specialist
                     .as_ref()
                     .and_then(|_| unique_stage_run_pass_token(&deliverable));
-                let is_aggregate_coordinator_closeout = coordinator_pass_token.is_some()
-                    && (self.runtime_memory_repo.is_none()
-                        || golish_core::current_agent_tool_context().is_some_and(|context| {
-                            matches!(context.source, golish_core::events::ToolSource::Main)
-                                && context.stage_run_unit_id.is_none()
-                                && context.worker_lease.is_none()
-                                && context.candidate_attempt.is_none()
+                let coordinator_context =
+                    golish_core::current_agent_tool_context().filter(|context| {
+                        matches!(context.source, golish_core::events::ToolSource::Main)
+                            && context.stage_run_unit_id.is_none()
+                            && context.worker_lease.is_none()
+                            && context.candidate_attempt.is_none()
+                    });
+                if pass_token_claim_count > 0 && coordinator_pass_token.is_none() {
+                    return Ok(json!({
+                        "status": "rejected",
+                        "reason": "aggregate closeout contains blank or competing stage_run_pass_token claims"
+                    }));
+                }
+                if kind == StageKind::Investigation
+                    && spec.specialist.is_some()
+                    && pass_token_claim_count == 0
+                    && coordinator_context.is_some()
+                {
+                    let sourced_operation_id = match self.operation_id_source.as_ref() {
+                        Some(source) => *source.read().await,
+                        None => None,
+                    };
+                    let context_operation_id = coordinator_context
+                        .as_ref()
+                        .and_then(|context| context.operation_id);
+                    let operation_id =
+                        sourced_operation_id
+                            .or(context_operation_id)
+                            .ok_or_else(|| {
+                                anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                                    code: "missing_operation_id",
+                                })
+                            })?;
+                    if sourced_operation_id.is_some_and(|trusted| trusted != operation_id)
+                        || context_operation_id.is_some_and(|trusted| trusted != operation_id)
+                    {
+                        return Err(anyhow::Error::new(RuntimeMemoryError::IdentityMismatch {
+                            code: "submission_operation_identity_mismatch",
                         }));
+                    }
+                    let repo = self
+                        .runtime_memory_repo
+                        .as_ref()
+                        .ok_or_else(|| anyhow::Error::new(RuntimeMemoryError::Unavailable))?;
+                    if let Some(token) = repo
+                        .load_investigation_coordinator_pass_token(operation_id)
+                        .await
+                        .map_err(anyhow::Error::new)?
+                    {
+                        deliverable.claims.push(StageClaim {
+                            kind: STAGE_RUN_PASS_TOKEN_KIND.to_string(),
+                            subject: kind.as_str().to_string(),
+                            summary: token.clone(),
+                            evidence_ids: Vec::new(),
+                            technique: None,
+                        });
+                        coordinator_pass_token = Some(token);
+                    }
+                }
+                let is_aggregate_coordinator_closeout = coordinator_pass_token.is_some()
+                    && (self.runtime_memory_repo.is_none() || coordinator_context.is_some());
                 // Persist after deterministic server normalization so the
                 // immutable row is the exact payload graded at stage close, not
                 // an earlier model draft. A Gate BLOCK still retains this row.
@@ -2336,6 +2441,31 @@ impl Tool for SubmitStageDeliverableTool {
                             "fabricated_evidence_refs": fabricated,
                             "available_evidence_ids": available,
                             "note": "fix these and call submit_stage_deliverable again."
+                        }),
+                        trusted_capture.as_ref(),
+                    ));
+                }
+                if kind == StageKind::TargetIntel {
+                    let fabricated = self.fabricated_refs(&deliverable).await;
+                    if fabricated.is_empty() {
+                        return Ok(Self::attach_submission_identity(
+                            json!({
+                                "status": "accepted",
+                                "note": "IntelGoalV1 completion claim captured; the independent reviewer and DB finalizer own the authoritative closeout decision."
+                            }),
+                            trusted_capture.as_ref(),
+                        ));
+                    }
+                    let available = self.available_real_ids().await;
+                    return Ok(Self::attach_submission_identity(
+                        json!({
+                            "status": "needs_fix",
+                            "reasons": [format!(
+                                "cited evidence ids {fabricated:?} do not exist in the evidence ledger"
+                            )],
+                            "fabricated_evidence_refs": fabricated,
+                            "available_evidence_ids": available,
+                            "note": "IntelGoalV1 does not use a six-axis coverage preview, but every cited evidence id must still be real."
                         }),
                         trusted_capture.as_ref(),
                     ));
@@ -2572,6 +2702,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RuntimeMemoryRepository for TrustedSubmissionRepo {
+        async fn load_investigation_coordinator_pass_token(
+            &self,
+            _operation_id: Uuid,
+        ) -> std::result::Result<Option<String>, RuntimeMemoryError> {
+            Ok(Some(
+                "d55ac9531bfc2be20957253fd262e78be30113cc2b9a3d22856ec4e49839bed5".to_string(),
+            ))
+        }
+
         async fn project_scope_register_first_open(
             &self,
             _canonical_path: &str,
@@ -2791,13 +2930,16 @@ mod tests {
             worker_lease: None,
             candidate_attempt: None,
         };
+        let pass_token = "d55ac9531bfc2be20957253fd262e78be30113cc2b9a3d22856ec4e49839bed5";
         let args = json!({
             "stage_id": "target_intel",
             "claims": [
                 {
                     "kind": "stage_run_pass_token",
                     "subject": "target_intel",
-                    "summary": "deterministic-token"
+                    "summary": format!(
+                        "Target Intel is complete. Server-authored closeout pass token: {pass_token}. Durable state and reviewer verdict are sealed."
+                    )
                 },
                 {
                     "kind": "model_authored_extra",
@@ -2834,8 +2976,94 @@ mod tests {
         assert!(deliverable.required_checks_done.is_empty());
         assert_eq!(
             golish_agent_kit::harness::org_gate::extract_pass_token(&deliverable).as_deref(),
-            Some("deterministic-token")
+            Some(pass_token)
         );
+    }
+
+    #[tokio::test]
+    async fn investigation_coordinator_derives_omitted_pass_token_from_publication() {
+        let operation_id = Uuid::new_v4();
+        let stage_execution_id = Uuid::new_v4();
+        let root_org_id = Uuid::new_v4();
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let repo = Arc::new(TrustedSubmissionRepo {
+            contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract::DualWriteV2Preferred,
+            submission_id: Uuid::new_v4(),
+            writes: Arc::clone(&writes),
+        });
+        let stage = Arc::new(RwLock::new(Some(StageKind::Investigation)));
+        let legacy_sink = Arc::new(RwLock::new(None));
+        let tool = SubmitStageDeliverableTool::new(stage, Arc::clone(&legacy_sink))
+            .with_operation_id_source(Arc::new(RwLock::new(Some(operation_id))))
+            .with_runtime_memory_repository(repo);
+        let context = golish_core::AgentToolContext {
+            request_id: "investigation-coordinator-omitted-token".to_string(),
+            tool_call_record_id: Some(Uuid::new_v4()),
+            tool_name: "submit_stage_deliverable".to_string(),
+            source: golish_core::events::ToolSource::Main,
+            operation_id: Some(operation_id),
+            stage_execution_id: Some(stage_execution_id),
+            stage_run_unit_id: None,
+            organization_id: Some(root_org_id),
+            worker_lease: None,
+            candidate_attempt: None,
+        };
+
+        let output = golish_core::with_agent_tool_context(
+            Some(context),
+            tool.execute(
+                json!({
+                    "stage_id": "investigation",
+                    "claims": [{
+                        "kind": "model_authored_extra",
+                        "subject": "http://127.0.0.1",
+                        "summary": "must be discarded from aggregate closeout"
+                    }]
+                }),
+                Path::new("."),
+            ),
+        )
+        .await
+        .expect("server-derived Investigation coordinator closeout");
+
+        assert_eq!(output["status"], "accepted", "{output:?}");
+        assert!(
+            writes.lock().expect("trusted submission writes").is_empty(),
+            "aggregate closeout must not create another per-unit submission"
+        );
+        let legacy = legacy_sink
+            .read()
+            .await
+            .clone()
+            .expect("aggregate closeout capture");
+        let deliverable: StageDeliverable =
+            serde_json::from_str(&legacy).expect("aggregate closeout deliverable");
+        assert_eq!(deliverable.stage_run_id, stage_execution_id);
+        assert_eq!(deliverable.claims.len(), 1);
+        assert_eq!(deliverable.claims[0].kind, STAGE_RUN_PASS_TOKEN_KIND);
+        assert_eq!(
+            deliverable.claims[0].summary,
+            "d55ac9531bfc2be20957253fd262e78be30113cc2b9a3d22856ec4e49839bed5"
+        );
+    }
+
+    #[test]
+    fn embedded_stage_run_pass_token_normalization_rejects_ambiguous_values() {
+        let first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let mut deliverable: StageDeliverable = serde_json::from_value(json!({
+            "stage_id": "target_intel",
+            "claims": [{
+                "kind": "stage_run_pass_token",
+                "subject": "target_intel",
+                "summary": format!("old={first} current={second}")
+            }]
+        }))
+        .expect("deliverable");
+
+        let error = normalize_embedded_stage_run_pass_tokens(&mut deliverable)
+            .expect_err("different embedded tokens must remain ambiguous");
+        assert!(error.contains("multiple different 64-hex tokens"));
     }
 
     #[tokio::test]
@@ -2949,6 +3177,50 @@ mod tests {
             skipped_desc.contains("Scope decisions"),
             "schema should discourage using skipped_checks for normal scope exclusions: {skipped_desc}"
         );
+    }
+
+    #[test]
+    fn canonicalize_treats_null_candidate_fields_as_absent() {
+        let canonical = canonicalize_model_submit_args(json!({
+            "stage_id": "scoping",
+            "claims": [],
+            "candidate_decisions": null,
+            "candidate_decision_groups": null
+        }));
+
+        assert!(canonical.get("candidate_decisions").is_none());
+        assert!(canonical.get("candidate_decision_groups").is_none());
+    }
+
+    #[tokio::test]
+    async fn non_candidate_stage_ignores_empty_groups_but_rejects_business_groups() {
+        let tool = SubmitStageDeliverableTool::new(handles().0, handles().1);
+        for empty in [Value::Null, json!([])] {
+            let mut args = json!({
+                "stage_id": "scoping",
+                "claims": [],
+                "candidate_decision_groups": empty
+            });
+            tool.expand_candidate_decision_groups(&mut args)
+                .await
+                .expect("empty optional groups are absent on Scoping");
+            assert!(args.get("candidate_decision_groups").is_none());
+        }
+
+        let mut args = json!({
+            "stage_id": "scoping",
+            "claims": [],
+            "candidate_decision_groups": [{
+                "work_item_keys": ["surface_analysis:sha256:b950"],
+                "decision": "no_candidate",
+                "rationale": "not valid outside Candidate"
+            }]
+        });
+        let error = tool
+            .expand_candidate_decision_groups(&mut args)
+            .await
+            .expect_err("non-empty Candidate business data must stay stage-confined");
+        assert!(error.contains("available only for attack_candidate"));
     }
 
     #[test]
@@ -4727,7 +4999,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn target_intel_organization_only_preview_matches_org_gate_context() {
+    async fn target_intel_submission_bypasses_retired_coverage_preview() {
         use golish_agent_kit::harness::EvidenceOutcome;
 
         let org_id = uuid::Uuid::from_u128(7);
@@ -4773,57 +5045,22 @@ mod tests {
             .with_session_id("pentest-chat-org-only")
             .with_org_id_source(Arc::new(RwLock::new(Some(org_id))));
 
-        let context = tool
+        let error = tool
             .gate_context(StageKind::TargetIntel, true)
             .await
-            .expect("organization-only Target Intel preview context");
-
-        assert_eq!(context.in_scope_assets, Some(vec![org_key.clone()]));
-        assert_eq!(
-            context
-                .asset_types
-                .as_ref()
-                .and_then(|types| types.get(&org_key))
-                .map(String::as_str),
-            Some("organization")
-        );
-        let not_applicable = context
-            .not_applicable_coverage
-            .as_ref()
-            .expect("organization-only context must carry deterministic N/A cells");
-        for technique in [
-            "GOLISH-INTEL-DNS",
-            "GOLISH-INTEL-CT",
-            "GOLISH-INTEL-SUBDOMAIN",
-        ] {
-            assert!(
-                not_applicable.contains(&(org_key.clone(), technique.to_string())),
-                "organization context must mark {technique} not_applicable"
-            );
-        }
-        for technique in [
-            "GOLISH-INTEL-WHOIS",
-            "GOLISH-INTEL-ASN",
-            "GOLISH-INTEL-OSINT",
-        ] {
-            assert!(
-                context.evidence_facts.as_ref().is_some_and(|facts| facts
-                    .iter()
-                    .any(|fact| fact.asset == org_key && fact.technique == technique)),
-                "organization context must query DB truth for {technique}"
-            );
-        }
+            .expect_err("Target Intel must never rebuild the retired coverage matrix");
+        assert!(error.contains("legacy coverage preview is retired"));
 
         let out = tool
             .execute(
                 json!({
                     "stage_id": "target_intel",
                     "claims": [{
-                        "kind": "organization_intel",
+                        "kind": "completion_checkpoint",
                         "subject": org_key,
-                        "summary": "organization context collected",
+                        "summary": "controller requests independent IntelGoalV1 review",
                         "evidence_ids": [100],
-                        "technique": "GOLISH-INTEL-OSINT"
+                        "technique": null
                     }],
                     "evidence_refs": [100, 101],
                     "coverage": []
@@ -4831,11 +5068,11 @@ mod tests {
                 Path::new("/tmp"),
             )
             .await
-            .expect("organization-only slim submit preview");
+            .expect("IntelGoalV1 completion claim submission");
         assert_eq!(
             out["status"].as_str(),
             Some("accepted"),
-            "organization-only coverage=[] must preview the same way as the final org gate: {out:?}"
+            "the independent reviewer/finalizer, not a six-axis preview, owns closeout: {out:?}"
         );
     }
 
@@ -5064,7 +5301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn submit_preview_authoritative_flag_gates_asset_types_and_expected_techniques() {
+    async fn target_intel_preview_is_retired_for_both_authority_flag_values() {
         let (stage, sink) = handles();
         let repo = TypedAxisMock {
             assets: vec!["moresec.cn".into()],
@@ -5077,35 +5314,13 @@ mod tests {
             .with_session_id("pentest-chat-1")
             .with_org_id_source(org_src);
 
-        // flag OFF = prior behaviour: asset axis still fed, but asset_types /
-        // expected_techniques stay None (preview keeps value-inference + static spec).
-        let off = tool
-            .gate_context(StageKind::TargetIntel, false)
-            .await
-            .unwrap();
-        assert!(
-            off.in_scope_assets.is_some(),
-            "asset axis still fed when off"
-        );
-        assert!(
-            off.asset_types.is_none(),
-            "asset_types omitted when flag off"
-        );
-        assert!(
-            off.expected_techniques.is_none(),
-            "expected_techniques omitted when flag off"
-        );
-
-        // flag ON = authoritative口径: both populated (matches stage-close gate).
-        let on = tool
-            .gate_context(StageKind::TargetIntel, true)
-            .await
-            .unwrap();
-        assert!(on.asset_types.is_some(), "asset_types fed when flag on");
-        assert!(
-            on.expected_techniques.is_some(),
-            "dynamic expected_techniques fed when flag on"
-        );
+        for authoritative in [false, true] {
+            let error = tool
+                .gate_context(StageKind::TargetIntel, authoritative)
+                .await
+                .expect_err("Target Intel coverage preview must stay retired");
+            assert!(error.contains("IntelGoalV1 review/finalization"));
+        }
     }
 
     // 设计 2026-07-01 §5.3 · the submit preview must feed EAS/httpx-proven IP web

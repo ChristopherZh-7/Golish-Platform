@@ -6,7 +6,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 target_dir="$repo_root/backend/target"
-min_free_gb="${GOLISH_MIN_FREE_GB:-80}"
+min_free_gb="${GOLISH_MIN_FREE_GB:-30}"
 target_cap="${GOLISH_TARGET_CAP:-30GB}"
 lock_dir="${TMPDIR:-/tmp}/golish-cargo-space-guard.lock"
 

@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{Executor, PgPool, Postgres};
+use sqlx::{Executor, PgConnection, PgPool, Postgres};
 use uuid::Uuid;
 
 use super::runtime_memory_tx::{RuntimeMemoryStoreError, RuntimeMemoryStoreResult};
@@ -385,6 +385,22 @@ pub async fn list_latest_final_sealed_for_sources(
     organization_id: Uuid,
     source_stage_kinds: &[String],
 ) -> RuntimeMemoryStoreResult<Vec<FinalSealedStageHandoffRow>> {
+    let mut connection = pool.acquire().await?;
+    list_latest_final_sealed_for_sources_with_connection(
+        &mut connection,
+        operation_id,
+        organization_id,
+        source_stage_kinds,
+    )
+    .await
+}
+
+pub(crate) async fn list_latest_final_sealed_for_sources_with_connection(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    organization_id: Uuid,
+    source_stage_kinds: &[String],
+) -> RuntimeMemoryStoreResult<Vec<FinalSealedStageHandoffRow>> {
     if source_stage_kinds.is_empty() {
         return Ok(Vec::new());
     }
@@ -464,7 +480,7 @@ pub async fn list_latest_final_sealed_for_sources(
         .bind(operation_id)
         .bind(organization_id)
         .bind(source_stage_kinds)
-        .fetch_all(pool)
+        .fetch_all(&mut *connection)
         .await?;
     let current_stages = rows
         .iter()
@@ -538,12 +554,14 @@ pub async fn list_latest_final_sealed_for_sources(
                         AND handoff.id IS NOT NULL
                     )
                )
-             ORDER BY operation_stage_fork_stage_rank(input.source_stage_kind)"#;
+             ORDER BY operation_stage_rank_for_topology(
+                          input.source_stage_topology_contract,input.source_stage_kind
+                      )"#;
         let inherited = sqlx::query_as::<_, FinalSealedStageHandoffRow>(fork_sql)
             .bind(operation_id)
             .bind(organization_id)
             .bind(&missing)
-            .fetch_all(pool)
+            .fetch_all(&mut *connection)
             .await?;
         rows.extend(inherited);
     }

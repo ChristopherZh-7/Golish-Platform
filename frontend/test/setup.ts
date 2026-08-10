@@ -1,7 +1,13 @@
-import "@testing-library/jest-dom/vitest";
+import * as jestDomMatchers from "@testing-library/jest-dom/matchers";
+import type {} from "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { enableMapSet } from "immer";
-import { afterEach, vi } from "vitest";
+import { afterEach, expect, vi } from "vitest";
+
+// Extend the exact Vitest expect instance used by this workspace. Importing
+// the jest-dom Vitest side-effect can resolve a second Vitest instance when a
+// git worktree has an independent pnpm virtual store.
+expect.extend(jestDomMatchers);
 
 // Enable Immer MapSet plugin for Set/Map support in store
 enableMapSet();

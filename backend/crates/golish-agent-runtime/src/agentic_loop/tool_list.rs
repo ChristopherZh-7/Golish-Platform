@@ -80,8 +80,120 @@ pub(crate) async fn build_tool_list(
     // for the depth-0 primary while a stage is active. Read-only: no scan/write.
     if sub_agent_context.depth == 0 {
         add_read_only_target_query_tools_for_stage(&mut tools, ctx.harness_stage);
+        confine_target_intel_primary_tools(&mut tools, ctx.harness_stage);
     }
+    confine_unified_investigation_cognitive_tools(&mut tools, ctx.harness_stage);
+    configure_target_intel_fixture_public_tools(&mut tools, ctx);
     tools
+}
+
+/// Unified Investigation actors are cognition-only profiles. A role name such
+/// as `pentester`, `browser`, `coder`, or `installer` must never recover that
+/// role's ordinary raw executor surface while it is bound to this stage. The
+/// only mutable operations retained here are orchestration/delegation and the
+/// typed stage submission boundary; external actions are compiled and executed
+/// by the host-owned Verification Operator outside these actors.
+fn confine_unified_investigation_cognitive_tools(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    stage: Option<golish_agent_kit::harness::StageKind>,
+) {
+    if stage != Some(golish_agent_kit::harness::StageKind::Investigation) {
+        return;
+    }
+    tools.retain(|tool| {
+        matches!(
+            tool.name.as_str(),
+            "stage_run"
+                | "update_plan"
+                | "query_target_data"
+                | "list_in_scope_targets"
+                | "list_recent_evidence"
+                | "search_memories"
+                | "search_knowledge_base"
+                | "read_knowledge"
+                | "graph_search"
+                | "graph_neighbors"
+                | "graph_attack_paths"
+                | "harness_trace"
+                | "submit_result"
+                | "submit_stage_deliverable"
+        ) || tool.name.starts_with("sub_agent_")
+    });
+}
+
+fn configure_target_intel_fixture_public_tools(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    ctx: &AgenticLoopContext<'_>,
+) {
+    let enabled = ctx
+        .target_intel_goal_shadow
+        .is_some_and(|fixture| fixture.strict_passive_public_tools_enabled())
+        // Existing/production operations hard-skip before an adapter or
+        // provider request can be selected.
+        && ctx.harness_operation_id.is_none();
+    apply_target_intel_fixture_public_tools(tools, enabled);
+}
+
+fn apply_target_intel_fixture_public_tools(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    enabled: bool,
+) {
+    if !enabled {
+        return;
+    }
+    tools.retain(|tool| {
+        !matches!(
+            tool.name.as_str(),
+            "web_search" | "web_fetch" | "intel_public_search" | "intel_public_fetch"
+        )
+    });
+    tools.extend(golish_agent_kit::tool_executors::intel_public_tool_definitions());
+    tools.push(recon_search_intel_fixture_definition());
+    tools.push(rig::completion::ToolDefinition {
+        name: golish_sub_agents::STAGE_TEAM_SPAWN_INTEL_SUBAGENTS.to_string(),
+        description: "Fixture/dev-only Goal-owner primitive for dynamic generic Intel workers. The model supplies only display name, exact task prompt, and subject refs; the host stamps role, kind, tools and terminal contract.".to_string(),
+        parameters: golish_sub_agents::target_intel_spawn_subagents_schema(),
+    });
+    tools.push(rig::completion::ToolDefinition {
+        name: golish_sub_agents::STAGE_TEAM_REQUEST_INTEL_REVIEW.to_string(),
+        description: "Fixture/dev-only observe-only review request. The model supplies only its bounded completion claim; the host freezes state/actions/contract and invokes a read-only reviewer.".to_string(),
+        parameters: golish_sub_agents::target_intel_request_review_schema(),
+    });
+}
+
+fn recon_search_intel_fixture_definition() -> rig::completion::ToolDefinition {
+    rig::completion::ToolDefinition {
+        name: "recon_search_intel".to_string(),
+        description: "Fixture/dev-only semantic Target Intel collection. The model supplies only organization, semantic pivot, and intent; provider selection, query compilation, evidence and projection remain host-owned. Identity-anchored brand/domain/email/GitHub/repository/app hypotheses are passive candidate-only searches and grant no scope, reachability, promotion, or active authorization.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "organization_id": { "type": "string", "format": "uuid" },
+                "pivot": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "company_name", "brand", "domain", "hostname", "ip", "cidr",
+                                "asn", "certificate", "icp", "email_domain", "github_org",
+                                "repository", "app_id"
+                            ]
+                        },
+                        "value": { "type": "string", "minLength": 1, "maxLength": 512 }
+                    },
+                    "required": ["kind", "value"]
+                },
+                "intent": {
+                    "type": "string",
+                    "enum": ["discover_related_assets", "verify_attribution", "enrich_known_asset"]
+                }
+            },
+            "required": ["organization_id", "pivot", "intent"]
+        }),
+    }
 }
 
 /// Surface the read-only target/coverage query tools
@@ -101,7 +213,9 @@ fn add_read_only_target_query_tools_for_stage(
     tools: &mut Vec<rig::completion::ToolDefinition>,
     harness_stage: Option<golish_agent_kit::harness::StageKind>,
 ) {
-    if harness_stage.is_none() {
+    if harness_stage.is_none()
+        || harness_stage == Some(golish_agent_kit::harness::StageKind::TargetIntel)
+    {
         return;
     }
     // `query_target_data(target_id)` needs ids; `list_in_scope_targets` is its
@@ -135,6 +249,25 @@ fn add_read_only_target_query_tools_for_stage(
             );
         }
     }
+}
+
+/// Target Intel's depth-0 actor is only a host-stage coordinator. The actual
+/// Goal owner is the durable Company Controller created by `stage_run`; DB
+/// coverage/worklist reads and direct recon entry points belong to the retired
+/// formulaic flow and must not leak back into the primary tool surface.
+fn confine_target_intel_primary_tools(
+    tools: &mut Vec<rig::completion::ToolDefinition>,
+    harness_stage: Option<golish_agent_kit::harness::StageKind>,
+) {
+    if harness_stage != Some(golish_agent_kit::harness::StageKind::TargetIntel) {
+        return;
+    }
+    tools.retain(|tool| {
+        matches!(
+            tool.name.as_str(),
+            "stage_run" | "update_plan" | "submit_stage_deliverable"
+        )
+    });
 }
 
 /// Remove `manage_targets` from the exposed list when the active harness stage is
@@ -200,6 +333,7 @@ fn hide_direct_work_tools_for_specialist_stage(
         "recon_lookup_whois",
         "recon_list_providers",
         "recon_map_assets",
+        "recon_search_intel",
     ];
 
     let before = tools.len();
@@ -351,6 +485,47 @@ mod tests {
             description: "d".to_string(),
             parameters: serde_json::json!({ "type": "object", "properties": {} }),
         }
+    }
+
+    #[test]
+    fn root_fixture_receives_only_host_owned_intel_public_tools() {
+        let mut tools = vec![td("web_search"), td("web_fetch"), td("query_target_data")];
+        apply_target_intel_fixture_public_tools(&mut tools, true);
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"intel_public_search"));
+        assert!(names.contains(&"intel_public_fetch"));
+        assert!(!names.contains(&"web_search"));
+        assert!(!names.contains(&"web_fetch"));
+        assert!(names.contains(&"query_target_data"));
+    }
+
+    #[test]
+    fn unified_investigation_profiles_never_receive_raw_action_tools() {
+        use golish_agent_kit::harness::StageKind;
+
+        let mut tools = vec![
+            td("update_plan"),
+            td("query_target_data"),
+            td("sub_agent_pentester"),
+            td("web_fetch"),
+            td("browser_navigate"),
+            td("pentest_run"),
+            td("vault"),
+            td("record_finding"),
+            td("write_file"),
+        ];
+        confine_unified_investigation_cognitive_tools(&mut tools, Some(StageKind::Investigation));
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec!["update_plan", "query_target_data", "sub_agent_pentester"]
+        );
     }
 
     /// D1 · a stage with no scan-surface tool types (scoping: whitelist is the
@@ -568,16 +743,15 @@ mod tests {
         );
     }
 
-    /// The depth-0 stage orchestrator must be handed the read-only target query
-    /// tools (`query_target_data` + `list_in_scope_targets`) while a harness
-    /// stage is active so it can self-check coverage instead of guessing the
-    /// matrix; the additions are idempotent and a no-op without an active stage.
+    /// Ordinary depth-0 stage orchestrators get DB-backed query/worklist tools.
+    /// Target Intel is excluded because its Goal owner plans from semantic
+    /// search/frontier receipts and delegates review to the host-owned reviewer.
     #[test]
     fn read_only_query_tools_surfaced_for_active_stage_orchestrator() {
         use golish_agent_kit::harness::StageKind;
 
         let mut tools = vec![td("submit_stage_deliverable"), td("update_plan")];
-        add_read_only_target_query_tools_for_stage(&mut tools, Some(StageKind::TargetIntel));
+        add_read_only_target_query_tools_for_stage(&mut tools, Some(StageKind::Enumeration));
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(
             names.contains(&"query_target_data"),
@@ -606,7 +780,7 @@ mod tests {
 
         // Idempotent: a second pass (or a tool already present) adds no dupes.
         let before = tools.len();
-        add_read_only_target_query_tools_for_stage(&mut tools, Some(StageKind::TargetIntel));
+        add_read_only_target_query_tools_for_stage(&mut tools, Some(StageKind::Enumeration));
         assert_eq!(
             tools.len(),
             before,
@@ -617,6 +791,38 @@ mod tests {
         let mut none = vec![td("submit_stage_deliverable")];
         add_read_only_target_query_tools_for_stage(&mut none, None);
         assert_eq!(none.len(), 1, "no stage → no additions");
+
+        let mut target_intel = vec![td("stage_run"), td("update_plan")];
+        add_read_only_target_query_tools_for_stage(&mut target_intel, Some(StageKind::TargetIntel));
+        assert_eq!(
+            target_intel.len(),
+            2,
+            "Target Intel must not recover the retired coverage/worklist surface"
+        );
+    }
+
+    #[test]
+    fn target_intel_primary_is_stage_run_only() {
+        use golish_agent_kit::harness::StageKind;
+
+        let mut tools = vec![
+            td("stage_run"),
+            td("update_plan"),
+            td("submit_stage_deliverable"),
+            td("manage_organizations"),
+            td("query_target_data"),
+            td("stage_worklist_next"),
+            td("recon_search_intel"),
+        ];
+        confine_target_intel_primary_tools(&mut tools, Some(StageKind::TargetIntel));
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            ["stage_run", "update_plan", "submit_stage_deliverable"]
+        );
     }
 
     use golish_agent_kit::execution_mode::ExecutionMode;
@@ -840,24 +1046,20 @@ mod tests {
             "target_intel primary must keep submit for pass-token closeout; got: {:?}",
             names
         );
-        assert!(
-            names.iter().any(|n| n == "manage_organizations"),
-            "target_intel primary may need org ids for stage_run args; got: {:?}",
-            names
-        );
-        for control_tool in ["wait_for_background_jobs", "check_job", "kill_job"] {
-            assert!(
-                names.iter().any(|n| n == control_tool),
-                "specialist stage primary must keep background job control tool {control_tool}; got: {:?}",
-                names
-            );
-        }
         for forbidden in [
+            "manage_organizations",
             "manage_targets",
             "recon_list_providers",
             "recon_discover_subsidiaries",
             "recon_map_assets",
             "recon_lookup_whois",
+            "query_target_data",
+            "check_stage_asset_coverage",
+            "stage_worklist_status",
+            "stage_worklist_next",
+            "wait_for_background_jobs",
+            "check_job",
+            "kill_job",
         ] {
             assert!(
                 !names.iter().any(|n| n == forbidden),

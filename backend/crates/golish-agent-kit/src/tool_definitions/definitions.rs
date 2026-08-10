@@ -69,7 +69,7 @@ pub fn get_ask_human_tool_definition() -> ToolDefinition {
                 },
                 "context": {
                     "type": "string",
-                    "description": "Free-form context for most input types. For 'unit_review' pass a small JSON object {\"organization_id\":\"<uuid>\"} — the review table loads that org's discovered subsidiary candidates from the DB itself (do NOT hand-copy the candidate array; that is fragile). A JSON array of {\"name\":...} items is still accepted as a fallback. For 'scope_review' pass the target items as a JSON array."
+                    "description": "Free-form context for most input types. During Scoping, the subsidiary-scope 'choice' MUST pass exactly {\"decision\":\"subsidiary_scope\",\"organization_id\":\"<confirmed-root-uuid>\"}; use canonical options root_only, include_51, and include_100. For 'unit_review' pass a small JSON object {\"organization_id\":\"<uuid>\"} — the review table loads that org's discovered subsidiary candidates from the DB itself (do NOT hand-copy the candidate array; that is fragile). A JSON array of {\"name\":...} items is still accepted as a fallback. For 'scope_review' pass the target items as a JSON array."
                 }
             },
             "required": ["question", "input_type"]

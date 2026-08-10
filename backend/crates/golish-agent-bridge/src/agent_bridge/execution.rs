@@ -53,8 +53,12 @@ impl AgentBridge {
         prompt: &str,
         turn_instructions: &str,
     ) -> Result<String> {
-        self.execute_with_context_inner(prompt, SubAgentContext::default(), Some(turn_instructions))
-            .await
+        Box::pin(self.execute_with_context_inner(
+            prompt,
+            SubAgentContext::default(),
+            Some(turn_instructions),
+        ))
+        .await
     }
 
     /// Execute a prompt in an isolated conversation context.
@@ -90,8 +94,13 @@ impl AgentBridge {
             ));
         }
 
-        self.run_with_isolated_history(self.execute_with_context_inner(prompt, context, None))
-            .await
+        // Keep the provider-dispatch-heavy primary future behind a heap/pin
+        // boundary. Passing it inline makes every generic history wrapper and
+        // TaskMode caller reserve its generated state in the same synchronous
+        // poll stack; in debug builds those frames can exceed the 32 MiB worker
+        // stack before the first provider response is processed.
+        let primary = Box::pin(self.execute_with_context_inner(prompt, context, None));
+        self.run_with_isolated_history(primary).await
     }
 
     /// Restore a backup left by an aborted/panicked isolated execution.
@@ -244,7 +253,13 @@ impl AgentBridge {
                 let (accumulated_response, reasoning, final_history, token_usage) =
                     golish_core::with_agent_session(
                         self.event_session_id().map(str::to_string),
-                        run_agentic_loop(&va, &system_prompt, initial_history, context, &loop_ctx),
+                        Box::pin(run_agentic_loop(
+                            &va,
+                            &system_prompt,
+                            initial_history,
+                            context,
+                            &loop_ctx,
+                        )),
                     )
                     .await?;
                 Ok(self.finalize_execution(accumulated_response, reasoning, final_history, token_usage, start_time).await)
@@ -255,7 +270,13 @@ impl AgentBridge {
                 let (accumulated_response, reasoning, final_history, token_usage) =
                     golish_core::with_agent_session(
                         self.event_session_id().map(str::to_string),
-                        run_agentic_loop_generic(&m, &system_prompt, initial_history, context, &loop_ctx),
+                        Box::pin(run_agentic_loop_generic(
+                            &m,
+                            &system_prompt,
+                            initial_history,
+                            context,
+                            &loop_ctx,
+                        )),
                     )
                     .await?;
                 Ok(self.finalize_execution(accumulated_response, reasoning, final_history, token_usage, start_time).await)
@@ -285,7 +306,7 @@ impl AgentBridge {
         prompt: &str,
         context: SubAgentContext,
     ) -> Result<String> {
-        self.execute_with_context_inner(prompt, context, None).await
+        Box::pin(self.execute_with_context_inner(prompt, context, None)).await
     }
 
     async fn execute_with_context_inner(
@@ -313,26 +334,13 @@ impl AgentBridge {
         // E3 · keep a copy of the context for a possible fallback-model retry
         // (the primary dispatch moves `context` into the chosen variant arm).
         let failover_context = context.clone();
-        let client = self.llm.client.read().await;
-
-        let result = golish_llm_providers::dispatch_llm_client_split!(&*client,
-            vertex_anthropic(va) => {
-                let va = va.clone();
-                drop(client);
-                self.run_anthropic_thinking_turn(&va, prompt, start_time, context, turn_instructions).await
-            },
-            generic(m) => {
-                let m = m.clone();
-                drop(client);
-                self.run_generic_turn(&m, prompt, start_time, context, turn_instructions).await
-            },
-            mock => {
-                drop(client);
-                Err(anyhow::anyhow!(
-                    "Mock client cannot execute - use for testing infrastructure only"
-                ))
-            },
-        );
+        // Keep provider dispatch in a separate boxed poll boundary. Every
+        // concrete provider arm is monomorphized in debug builds; unwinding
+        // this native frame before failover prevents the two dispatch trees
+        // from accumulating on one synchronous poll stack.
+        let result =
+            Box::pin(self.execute_primary_model(prompt, start_time, context, turn_instructions))
+                .await;
 
         // E3 · provider failover: if the primary model run failed with a
         // recoverable error and a distinct fallback model is configured, rebuild
@@ -346,13 +354,13 @@ impl AgentBridge {
         let result = match result {
             Ok(response) => Ok(response),
             Err(primary_error) => {
-                self.maybe_failover_to_fallback_model(
+                Box::pin(self.maybe_failover_to_fallback_model(
                     primary_error,
                     prompt,
                     start_time,
                     failover_context,
                     turn_instructions,
-                )
+                ))
                 .await
             }
         };
@@ -385,6 +393,50 @@ impl AgentBridge {
         result
     }
 
+    /// Dispatch one primary-model turn behind its own native poll boundary.
+    async fn execute_primary_model(
+        &self,
+        prompt: &str,
+        start_time: std::time::Instant,
+        context: SubAgentContext,
+        turn_instructions: Option<&str>,
+    ) -> Result<String> {
+        let client = self.llm.client.read().await;
+
+        golish_llm_providers::dispatch_llm_client_split!(&*client,
+            vertex_anthropic(va) => {
+                let va = va.clone();
+                drop(client);
+                Box::pin(self.run_anthropic_thinking_turn(
+                    &va,
+                    prompt,
+                    start_time,
+                    context,
+                    turn_instructions,
+                ))
+                .await
+            },
+            generic(m) => {
+                let m = m.clone();
+                drop(client);
+                Box::pin(self.run_generic_turn(
+                    &m,
+                    prompt,
+                    start_time,
+                    context,
+                    turn_instructions,
+                ))
+                .await
+            },
+            mock => {
+                drop(client);
+                Err(anyhow::anyhow!(
+                    "Mock client cannot execute - use for testing infrastructure only"
+                ))
+            },
+        )
+    }
+
     // ========================================================================
     // Private execution helpers (DRY shared body for all model variants)
     // ========================================================================
@@ -411,13 +463,13 @@ impl AgentBridge {
         let (accumulated_response, reasoning, final_history, token_usage) =
             golish_core::with_agent_session(
                 self.event_session_id().map(str::to_string),
-                run_agentic_loop_generic(
+                Box::pin(run_agentic_loop_generic(
                     model,
                     &system_prompt,
                     initial_history,
                     context,
                     &loop_ctx,
-                ),
+                )),
             )
             .await?;
 
@@ -497,11 +549,25 @@ impl AgentBridge {
         golish_llm_providers::dispatch_llm_client_split!(&*fallback_client,
             vertex_anthropic(va) => {
                 let va = va.clone();
-                self.run_anthropic_thinking_turn(&va, prompt, start_time, context, turn_instructions).await
+                Box::pin(self.run_anthropic_thinking_turn(
+                    &va,
+                    prompt,
+                    start_time,
+                    context,
+                    turn_instructions,
+                ))
+                .await
             },
             generic(m) => {
                 let m = m.clone();
-                self.run_generic_turn(&m, prompt, start_time, context, turn_instructions).await
+                Box::pin(self.run_generic_turn(
+                    &m,
+                    prompt,
+                    start_time,
+                    context,
+                    turn_instructions,
+                ))
+                .await
             },
             mock => Err(anyhow::anyhow!(
                 "Fallback model resolved to a mock client - check GOLISH_LLM_FALLBACK_MODEL"
@@ -533,7 +599,13 @@ impl AgentBridge {
         let (accumulated_response, reasoning, final_history, token_usage) =
             golish_core::with_agent_session(
                 self.event_session_id().map(str::to_string),
-                run_agentic_loop(model, &system_prompt, initial_history, context, &loop_ctx),
+                Box::pin(run_agentic_loop(
+                    model,
+                    &system_prompt,
+                    initial_history,
+                    context,
+                    &loop_ctx,
+                )),
             )
             .await?;
 
@@ -595,9 +667,12 @@ mod isolated_history_tests {
     use std::sync::Arc;
 
     use async_trait::async_trait;
+    use golish_agent_kit::task_orchestrator::{AgentExecutor, ExecutionContext};
     use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
+    use golish_llm_providers::LlmClient;
 
     use super::AgentBridge;
+    use crate::bridge_executor::BridgeAgentExecutor;
 
     #[derive(Debug)]
     struct MockRuntime;
@@ -637,7 +712,7 @@ mod isolated_history_tests {
 
     async fn real_bridge() -> (tempfile::TempDir, Arc<AgentBridge>) {
         let workspace = tempfile::tempdir().expect("temp workspace");
-        let bridge = AgentBridge::new_openrouter_with_runtime(
+        let mut bridge = AgentBridge::new_openrouter_with_runtime(
             workspace.path().to_path_buf(),
             "test-model",
             "test-key",
@@ -646,6 +721,25 @@ mod isolated_history_tests {
         )
         .await
         .expect("test bridge");
+        // A test that replaces the client with Mock must never rebuild a real
+        // provider through the failover path.
+        bridge.llm.model_factory = None;
+        (workspace, Arc::new(bridge))
+    }
+
+    async fn real_generic_bridge() -> (tempfile::TempDir, Arc<AgentBridge>) {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let mut bridge = AgentBridge::new_openai_with_runtime(
+            workspace.path().to_path_buf(),
+            "test-model",
+            "test-key",
+            Some("http://127.0.0.1:1/v1"),
+            None,
+            Arc::new(MockRuntime),
+        )
+        .await
+        .expect("test generic bridge");
+        bridge.llm.model_factory = None;
         (workspace, Arc::new(bridge))
     }
 
@@ -719,6 +813,87 @@ mod isolated_history_tests {
             .clear_top_level_request_state(&request)
             .await
             .unwrap();
+    }
+
+    /// Poll the exact TaskMode executor -> isolated history -> provider
+    /// dispatch chain on the production 32 MiB worker-stack budget. The Mock
+    /// arm performs no provider request, but shares the generated dispatch state
+    /// machine with all real provider arms; an inline poll-frame regression
+    /// aborts before this expected error can be returned.
+    #[test]
+    fn taskmode_mock_executor_fits_stage_run_worker_stack() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("taskmode-stack-regression")
+            .thread_stack_size(32 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .expect("32 MiB test runtime");
+
+        runtime.block_on(async {
+            let (_workspace, bridge) = real_bridge().await;
+            *bridge.llm.client.write().await = LlmClient::Mock;
+
+            let result = tokio::spawn(async move {
+                let executor = BridgeAgentExecutor::new(bridge)
+                    .await
+                    .expect("TaskMode executor");
+                executor
+                    .execute_subtask(
+                        "Scope & Authorization Confirmation",
+                        "Confirm exact authorized scope without invoking a provider.",
+                        &ExecutionContext::default(),
+                        Some("pentester"),
+                    )
+                    .await
+            })
+            .await
+            .expect("TaskMode primary must fit the stage-run worker stack");
+            let error = result.expect_err("Mock provider must stop before external I/O");
+
+            assert!(
+                error.to_string().contains("Mock client cannot execute"),
+                "unexpected executor error: {error:#}"
+            );
+        });
+    }
+
+    /// Exercise a real generic provider arm rather than the early-returning
+    /// Mock arm. The endpoint is loopback-only and closed, so there is no
+    /// external request; reaching the expected connection failure proves the
+    /// provider poll itself fits the 32 MiB stage-run worker stack.
+    #[test]
+    fn taskmode_generic_provider_fits_stage_run_worker_stack() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("taskmode-generic-stack-regression")
+            .thread_stack_size(32 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .expect("32 MiB test runtime");
+
+        runtime.block_on(async {
+            let (_workspace, bridge) = real_generic_bridge().await;
+            let _result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                tokio::spawn(async move {
+                    let executor = BridgeAgentExecutor::new(bridge)
+                        .await
+                        .expect("TaskMode executor");
+                    executor
+                        .execute_subtask(
+                            "Scope & Authorization Confirmation",
+                            "Confirm exact authorized scope without using external services.",
+                            &ExecutionContext::default(),
+                            Some("pentester"),
+                        )
+                        .await
+                }),
+            )
+            .await
+            .expect("loopback provider failure must be prompt")
+            .expect("TaskMode primary must fit the stage-run worker stack");
+        });
     }
 
     #[tokio::test]

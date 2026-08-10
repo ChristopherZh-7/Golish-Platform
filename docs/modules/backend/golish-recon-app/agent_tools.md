@@ -55,3 +55,10 @@
 ```bash
 cd backend && cargo nextest run -p golish-recon-app agent_tools
 ```
+
+## `recon_search_intel` semantic Goal path（2026-08-02）
+
+- `recon_search_intel_parameters()` 的顶层及 `pivot` 对象均为 closed schema；模型只能提交 `organization_id + pivot {kind,value} + intent`。
+- provider选择、scope authorization、artifact/evidence、landing/candidate disposition与 duplicate authority 均不属于模型参数。
+- 每个请求在 provider dispatch 前必须精确归到 frozen company identity、匹配 `target_type+value` 的正式 in-scope Target，或同 operation 的 prior Observation。Prior Observation 只能继续被动 discovery/verification 且保持 `candidate_only`；它不能授权 `enrich_known_asset` 或 active scope。IP 不能因同值 URL/domain Target 获得授权。
+- production Goal operation 通过 `ReconSearchIntelTool` 走 observation-only collect，再由 `land_semantic_goal_observations` 写 value-redacted artifact、query/observation/reachability evidence、immutable semantic receipt 与 work journal；legacy `recon_map_assets` 保持独立兼容路径。

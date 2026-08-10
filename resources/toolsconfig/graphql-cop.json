@@ -1,0 +1,33 @@
+{
+  "tool": {
+    "id": "graphql-cop",
+    "pentestPhase": ["vuln_id"],
+    "name": "GraphQL Cop",
+    "description": "Run bounded GraphQL configuration and common weakness checks against an exact endpoint.",
+    "executable": "graphql-cop/graphql-cop.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "version": "1.16",
+    "category": "web",
+    "subcategory": "graphql",
+    "tier": "recommended",
+    "tags": ["graphql", "active", "jit-required", "mit"],
+    "install": {
+      "method": "github",
+      "source": "dolevf/graphql-cop",
+      "macos": {"method": "github", "source": "dolevf/graphql-cop"},
+      "linux": {"method": "github", "source": "dolevf/graphql-cop"},
+      "windows": {"method": "github", "source": "dolevf/graphql-cop"}
+    },
+    "params": [
+      {"label": "GraphQL endpoint", "flag": "-t", "type": "string", "required": true, "description": "Exact authorized GraphQL endpoint.", "placeholder": "https://target.example/graphql"},
+      {"label": "Output format", "flag": "-o", "type": "select", "required": true, "default": "json", "options": [{"value": "json", "label": "JSON"}, {"value": "text", "label": "Text"}]},
+      {"label": "Header credential reference", "flag": "-H", "type": "string", "description": "Host-injected exact credential grant only.", "placeholder": "credential-ref"}
+    ],
+    "skills": [
+      {"id": "local-version", "name": "Local version smoke", "description": "No-target executable smoke only.", "args": "--version", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "json", "produces": ["observation", "info"], "patterns": [], "fields": {}, "detect": "graphql-cop|GraphQL Cop"}
+  }
+}

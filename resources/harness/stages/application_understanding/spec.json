@@ -1,0 +1,31 @@
+{
+  "$schema": "../../../../docs/design/2026-08-02-rag-first-unified-investigation-stage.md#5-stage-与operation-graph",
+  "$comment": "Schema-neutral Application Understanding catalog entry for unified Investigation. It is not selected by current production profiles and owns no runtime dispatch in this slice.",
+
+  "id": "application_understanding",
+  "kind": "application_understanding",
+  "risk_level": "low",
+
+  "requires_stages": ["vuln_triage"],
+  "allowed_next_stages": ["investigation"],
+
+  "allowed_tool_types": [],
+  "deliverable_schema": "ApplicationModelProposalDraft",
+  "gate_validator": "validate_application_model_gate",
+  "findings_allowed": false,
+  "specialist": "application_understanding",
+  "coverage_axis": ["APPLICATION_MODEL"],
+
+  "gate_rules": [],
+  "min_invocations": {},
+  "max_other_skips": 0,
+  "human_approval": { "required_before": [] },
+  "agent_continuity": "single_session",
+
+  "inherits_evidence_from": [
+    {
+      "stage_kind": "vuln_triage",
+      "evidence_kinds": ["formulaic_observation"]
+    }
+  ]
+}

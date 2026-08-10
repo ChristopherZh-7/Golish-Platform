@@ -197,4 +197,20 @@ cd backend && cargo nextest run -p golish-agent-runtime agentic_loop
 - `candidate_analysis_agent_runner` 只执行注入的typed model client，并在provider dispatch前验证role/binding与submit-only schema；任何通用工具、未知authority字段或终态/server-only state都直接拒绝。它不访问网络provider本身，也没有scanner/browser/feed-refresh handle。
 - `stage_team_scheduler::candidate_artifact_receipt_output` 只把artifact id/hash包装为`artifact_recorded`通用业务收据；该disposition不代表found/checked-empty、Gate PASS或canonical hypothesis truth。
 - `stage_run_call` 对Candidate在任何legacy contract/seed/manifest/provider读取前重新加载exact `operation_state`，只按冻结mode的`policy().canonical_writer`二分Legacy/Registry；dispatcher不match五个mode，也不读request/deployment default。production已由app注入closed runtime Arc；缺operation/repo/row、读取失败、operation/stage错配或runtime/executor缺失仍返回稳定code、`provider_dispatched=false`。Registry分支绝不穿透旧Candidate scheduler。
-- Registry返回`AnalysisArtifactsReady`后必须继续经app finalizer的同一RR pre-Gate snapshot、pure Gate和DB apply事务；Stage Team receipt、trace与agent prose都不是truth。semantic summary必须与leaf/node raw covered/missed/proposal/blocker/observation exact sets相等；Plan C/D不在loop中。
+- Registry返回`AnalysisArtifactsReady`后必须继续经app finalizer的同一RR pre-Gate snapshot、pure Gate和DB apply事务；Stage Team receipt、trace与agent prose都不是truth。semantic summary必须与leaf/node raw covered/missed/proposal/blocker/observation exact sets相等。authoritative generation非零时下一跳只能是Campaign admission，不能构造`not_available_plan_c` Reporting捷径。
+
+## Authoritative Verification stage routing（Plan C，2026-08-02）
+
+- `stage_run_call.rs`在Verification入口重新读取exact operation state。`registry_authoritative_legacy_projection|new_only`只调用`drive_authoritative_verification_campaigns`；legacy modes保留旧scheduler，unknown/contract/stage/repo错配全部在provider dispatch前fail closed。
+- Pending JIT authorization返回typed halt与Prepared Action ids并结束当前request；模型不得把pending当PASS。Verification只有在Campaign、revision adjudication与Wave fixed point三层 durable truth全部闭合时才返回`passed=true`。
+- provider调用前必须先冻结本round的bounded 1–3 lane census；runtime只把redacted request packet交给closed role SubAgent executor，最多3路并发且无briefing、无外部工具、无delegation。completed artifact必须通过campaign/round/lane/objective/role/input typed校验；failed/timed_out/cancelled以独立append-only terminal保存且没有artifact。strategy dispatch只消费全终态的order-independent census hash；pending/invalid/foreign consult一律停止，不能由Lead prose替代。
+- Candidate post-seal route是closed enum：authoritative非零generation必须admit Campaign；历史legacy placeholder可继续Reporting；true-zero只在零hypothesis时直接Reporting。任一route/count/mode组合异常均fail closed。
+- unified Investigation 的 Main read session 在任何认知 dispatch 前冻结 ContextPack、local methodology hit set、omission census 与 exact hashes；resume 只复用该 sealed authority，不能因 KG/Memory 或本地 corpus 后续变化重取并冒充原上下文。methodology RAG 只把 content-addressed hash/ref citation送入模型，不携带 target/raw；corpus未配置时封 `local_corpus_not_configured` residual。
+- Analysis/Verification synthesis 的 accepted output denominator 由 exact task-plan WorkItem manifest决定，包含合法 nested Worker、排除 Primary、旧 epoch 与 exhausted recovery output；retry 以 immutable WorkItem 绑定最终 terminal Worker，不错误绑定首个 dispatch Worker。post-synthesis checkpoint recovery只解析唯一 typed `submit_result`，不重跑模型；normal Primary 与 deterministic v2 recovery均要求 sealed witness。
+- Reporting runtime只消费 frozen closure publication与 canonical report authority，生成简洁、证据关联的总结即可；不要求模板替换链，也不以模板 artifact 作为阶段 PASS 条件。
+
+## Target Intel fixture tool isolation（2026-08-02）
+
+- `AgenticLoopContext` 可携带显式 `TargetIntelGoalShadowFixture` 与同一 host-owned `IntelPublicEvidenceAdapter`；production bridge固定传 `None`，不得从 profile、env或历史 operation推断开启。
+- fixture root tool list 移除 legacy `web_search/web_fetch`，只暴露 `intel_public_search/intel_public_fetch` 与 closed `recon_search_intel`；provider server-side search在 request construction与returned item两处 fail closed。
+- Pentest/existing operation在创建 adapter、client或provider请求前 hard-skip；fixture外工具列表与执行路径不变。

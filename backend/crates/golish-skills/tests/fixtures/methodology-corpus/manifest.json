@@ -1,0 +1,43 @@
+{
+  "schema_version": "methodology_corpus_manifest.v1",
+  "corpus_id": "corpus:40cc9673aebd462977d6522375221cfb9a2808c71492120da7d6e5e65f38b0df",
+  "source_kind": "golish_builtin",
+  "upstream_url": null,
+  "upstream_revision": "synthetic-fixture-v1",
+  "license_spdx": "Apache-2.0",
+  "license_text_sha256": "sha256:22dcc3cb67282a6afa04bad5b051215fa9b0a887040551a900dce7f0d1e6ab8c",
+  "signature_state": "verified",
+  "trust_store_epoch": 1,
+  "document_count": 2,
+  "content_root_sha256": "sha256:5621707049d5d6689ea38ed1034db987cd33d0982aebf0345587569657a8fdc7",
+  "parser_contract_version": "golish-methodology-skill-parser@1",
+  "index_contract_version": "golish-methodology-tag-index@1",
+  "ingested_at": "2026-08-02T00:00:00Z",
+  "superseded_at": null,
+  "documents": [
+    {
+      "document_id": "document:6cd05e058545c9a523d38a086cc2185d7a7285da4d340b3af0851d95e4fe6121",
+      "relative_path": "skills/auth-testing/SKILL.md",
+      "content_sha256": "sha256:b93464f528c2cc587619d4ab4432cfc7d1643c5f7da9aaafabb87a35f39a97f3",
+      "tags": [
+        "auth",
+        "authentication",
+        "session",
+        "trust-boundary",
+        "wstg-athn"
+      ]
+    },
+    {
+      "document_id": "document:36d6539b96dc81b43cc8cf3e91eadc5bfe20694009e1265ed8c1044ecac57ace",
+      "relative_path": "skills/config-exposure/SKILL.md",
+      "content_sha256": "sha256:58620387e4e4bbfea33987a99ec08ee20c0c2b6283f81170494a9e9912500f74",
+      "tags": [
+        "configuration",
+        "exposure",
+        "fingerprint",
+        "prerequisite",
+        "wstg-conf"
+      ]
+    }
+  ]
+}

@@ -47,10 +47,37 @@ pub mod stage_refiner;
 mod subtask_phases;
 pub mod tool_truth_revalidation;
 mod types;
+pub mod verification_campaign;
 
 pub use continuity::build_existing_db_continuity_plan;
 pub use harness_backfill::{backfill_harness_stage, infer_harness_stage};
 pub use orchestrator::TaskOrchestrator;
 pub use types::{
-    AgentExecutor, AgentResult, AgentTokenUsage, ExecutionContext, PlannedSubtask, SubtaskResult,
+    application_model_proposal_json_schema, application_model_v1_json_schema,
+    application_model_work_item_output_json_schema, deterministically_synthesize_application_model,
+    is_server_authored_target_intel_tool_context, parse_and_validate_application_model_proposal,
+    parse_and_validate_application_model_proposal_against_synthesis,
+    parse_and_validate_application_model_work_item_output,
+    server_authored_target_intel_tool_source, validate_server_authored_target_intel_deliverable,
+    AgentExecutor, AgentResult, AgentTokenUsage, ApplicationModelAgentAttempt,
+    ApplicationModelAgentBinding, ApplicationModelAgentOutcome, ApplicationModelAgentRunner,
+    ApplicationModelContractViolation, ApplicationModelDecisionContract,
+    ApplicationModelEvidenceContract, ApplicationModelEvidenceRoleContract,
+    ApplicationModelExpectedWorkItemContract, ApplicationModelInputDispositionContract,
+    ApplicationModelItemContract, ApplicationModelManifestInputRefContract,
+    ApplicationModelPartialItemKindContract, ApplicationModelProducer,
+    ApplicationModelProducerFailure, ApplicationModelProducerInputContract,
+    ApplicationModelProducerSourceContract, ApplicationModelProposalContract,
+    ApplicationModelSafeFingerprintContract, ApplicationModelSafeParameterContract,
+    ApplicationModelSafeParameterLocationContract, ApplicationModelSafeRouteContract,
+    ApplicationModelSafeServiceContract, ApplicationModelSafeSubjectContract,
+    ApplicationModelSafeSubjectKindContract, ApplicationModelSynthesisInputContract,
+    ApplicationModelTruthStateContract, ApplicationModelV1Contract,
+    ApplicationModelWorkItemInputContract, ApplicationModelWorkItemKindContract,
+    ApplicationModelWorkItemOutputContract, ApplicationModelWorkItemPartialContract,
+    ApplicationModelWorkItemProjectionContract, ApplicationUnderstandingStageOutcome,
+    ApplicationUnderstandingStageRequest, ApplicationUnderstandingStageRuntime, ExecutionContext,
+    PlannedSubtask, ServerAuthoredStageControlContext, SubtaskResult,
+    TARGET_INTEL_PROFILE_SKIP_CLAIM, TARGET_INTEL_PROFILE_SKIP_REASON,
+    TARGET_INTEL_PROFILE_SKIP_WORKFLOW,
 };

@@ -122,6 +122,52 @@ pub(super) struct CandidateVerifiedFindingWrite {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct HypothesisVerifiedFindingWrite {
+    pub id: Uuid,
+    pub title: String,
+    pub target_live_id: Option<Uuid>,
+    pub target_value_at_time: String,
+    pub description: String,
+    pub evidence: serde_json::Value,
+}
+
+/// Narrow compound seam for Plan C's revision terminalizer.  It is crate
+/// private so neither an adapter nor an Agent can mint a confirmed Finding;
+/// the caller must already hold the DB transaction that also writes the
+/// revision terminal decision and state event.
+pub(super) async fn insert_verified_hypothesis_with_executor<'e, E>(
+    executor: E,
+    finding: &HypothesisVerifiedFindingWrite,
+) -> Result<Uuid>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    if finding.title.trim().is_empty()
+        || finding.target_value_at_time.trim().is_empty()
+        || finding.description.trim().is_empty()
+        || !finding.evidence.is_array()
+    {
+        return Err(reject_write_context(
+            "invalid Plan C verified hypothesis Finding projection",
+        ));
+    }
+    Ok(sqlx::query_scalar(
+        r#"INSERT INTO findings(
+               id,title,sev,url,target,target_id,description,evidence,status,source
+           ) VALUES($1,$2,'info'::severity,$3,$3,$4,$5,$6,'confirmed','verification_campaign')
+           RETURNING id"#,
+    )
+    .bind(finding.id)
+    .bind(&finding.title)
+    .bind(&finding.target_value_at_time)
+    .bind(finding.target_live_id)
+    .bind(&finding.description)
+    .bind(&finding.evidence)
+    .fetch_one(executor)
+    .await?)
+}
+
+#[derive(Debug, Clone)]
 pub struct LegacyFindingWrite {
     pub id: Uuid,
     pub title: String,

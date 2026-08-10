@@ -36,7 +36,7 @@ pub enum CompletionOutcome {
     /// Stream produced usable content; carry the accumulators to the
     /// next phases.
     Continue {
-        outcome: StreamProcessOutcome,
+        outcome: Box<StreamProcessOutcome>,
         llm_span: Span,
     },
     /// Stream produced nothing and a terminal error was emitted —
@@ -150,7 +150,10 @@ where
     )
     .await?
     {
-        StreamOutcome::Continue(outcome) => Ok(CompletionOutcome::Continue { outcome, llm_span }),
+        StreamOutcome::Continue(outcome) => Ok(CompletionOutcome::Continue {
+            outcome: Box::new(outcome),
+            llm_span,
+        }),
         StreamOutcome::BreakAgentLoop => Ok(CompletionOutcome::BreakAgentLoop),
     }
 }

@@ -1,11 +1,11 @@
 {
   "$schema": "../../../docs/design/2026-06-03-two-level-phase-stage-model.md#5",
-  "$comment": "Two-level phase grouping over the 12 StageKinds. Static entry_approval remains risk/compatibility metadata; routine runtime confirmation belongs to Scoping, and post-Scoping crossings auto-advance after typed target/Candidate barriers and deterministic Gates. The exact double-V2Only Candidate flow ignores generic phase/static exploit approval and recognizes only exact Candidate plan approval plus durable review resume. The vuln phase completes only after Verification exact DB truth and durable consolidation; V2 deliverable prose, spawned candidates, and process-local chain-wave state cannot complete it. opened_next_wave is a durable runtime cursor override with no static back-edge in operation_graph.json; closed_no_delta and exhausted take the normal DAG, with exhausted carrying reportable residual risk.",
+  "$comment": "Two-level phase grouping over every StageKind. Application Understanding and Investigation are schema-neutral members of the vuln phase and remain absent from all current production profiles; the server-frozen topology graph selects either the historical Candidate/Verification pair or the unified Investigation path. Static entry_approval remains risk/compatibility metadata; routine runtime confirmation belongs to Scoping, and post-Scoping crossings auto-advance only after typed barriers and deterministic Gates.",
 
   "phases": [
     { "id": "prep",         "stages": ["scoping", "target_intel"] },
     { "id": "active_recon", "stages": ["external_attack_surface", "enumeration"], "entry_approval": "active_scan" },
-    { "id": "vuln",         "stages": ["vuln_triage", "attack_candidate", "verification"], "entry_approval": "exploit_validation" },
+    { "id": "vuln",         "stages": ["vuln_triage", "application_understanding", "investigation", "attack_candidate", "verification"], "entry_approval": "exploit_validation" },
     { "id": "post_exploit", "stages": ["access_validation", "internal_discovery", "objective_pathing", "objective_simulation"] },
     { "id": "closeout",     "stages": ["reporting", "cleanup"] }
   ]

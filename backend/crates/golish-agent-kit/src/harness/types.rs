@@ -37,6 +37,14 @@ pub enum StageKind {
     ExternalAttackSurface,
     Enumeration,
     VulnTriage,
+    /// Per-organization, reasoning-only synthesis of the final application and
+    /// business-logic model consumed by Investigation.
+    ApplicationUnderstanding,
+    /// Unified analysis + automatic verification stage. This is a topology
+    /// catalog entry only; an operation may use it only when its server-frozen
+    /// [`super::stage_topology_contract::StageTopologyContract`] selects the
+    /// unified graph.
+    Investigation,
     /// 候选合成阶段（设计 2026-07-02）：基于信息收集上下文 + vuln_triage found +
     /// RAG 先验推理，产出结构化攻击假设 [`AttackCandidate`] 清单。真打验证前的桥。
     AttackCandidate,
@@ -50,6 +58,51 @@ pub enum StageKind {
 }
 
 impl StageKind {
+    /// Closed stage catalog. Resource and phase validation iterate this list so
+    /// a newly added stage cannot be silently omitted by a duplicated local
+    /// array. The mutually-exclusive legacy and unified attack stages are all
+    /// present here; operation order is selected by the frozen topology graph.
+    pub const ALL: [Self; 15] = [
+        Self::Scoping,
+        Self::TargetIntel,
+        Self::ExternalAttackSurface,
+        Self::Enumeration,
+        Self::VulnTriage,
+        Self::ApplicationUnderstanding,
+        Self::Investigation,
+        Self::AttackCandidate,
+        Self::Verification,
+        Self::AccessValidation,
+        Self::InternalDiscovery,
+        Self::ObjectivePathing,
+        Self::ObjectiveSimulation,
+        Self::Reporting,
+        Self::Cleanup,
+    ];
+
+    /// Stable catalog position for deterministic registries and presentation.
+    /// This is not an operation rank: callers must use the operation-frozen DAG
+    /// for legal transitions and ordering within a run.
+    pub const fn catalog_index(self) -> usize {
+        match self {
+            Self::Scoping => 0,
+            Self::TargetIntel => 1,
+            Self::ExternalAttackSurface => 2,
+            Self::Enumeration => 3,
+            Self::VulnTriage => 4,
+            Self::ApplicationUnderstanding => 5,
+            Self::Investigation => 6,
+            Self::AttackCandidate => 7,
+            Self::Verification => 8,
+            Self::AccessValidation => 9,
+            Self::InternalDiscovery => 10,
+            Self::ObjectivePathing => 11,
+            Self::ObjectiveSimulation => 12,
+            Self::Reporting => 13,
+            Self::Cleanup => 14,
+        }
+    }
+
     /// JSON / config 字符串映射. 仅 lossless 双向.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -58,6 +111,8 @@ impl StageKind {
             Self::ExternalAttackSurface => "external_attack_surface",
             Self::Enumeration => "enumeration",
             Self::VulnTriage => "vuln_triage",
+            Self::ApplicationUnderstanding => "application_understanding",
+            Self::Investigation => "investigation",
             Self::AttackCandidate => "attack_candidate",
             Self::Verification => "verification",
             Self::AccessValidation => "access_validation",
@@ -78,6 +133,8 @@ impl StageKind {
             "external_attack_surface" => Self::ExternalAttackSurface,
             "enumeration" => Self::Enumeration,
             "vuln_triage" => Self::VulnTriage,
+            "application_understanding" => Self::ApplicationUnderstanding,
+            "investigation" => Self::Investigation,
             "attack_candidate" => Self::AttackCandidate,
             "verification" => Self::Verification,
             "access_validation" => Self::AccessValidation,
@@ -90,6 +147,26 @@ impl StageKind {
         })
     }
 }
+
+impl std::fmt::Display for StageKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for StageKind {
+    type Err = StageKindParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_parse(value).ok_or_else(|| StageKindParseError(value.to_string()))
+    }
+}
+
+/// Closed StageKind parsing error. Unknown values never fall back to another
+/// stage or to the current production default.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown stage kind: {0}")]
+pub struct StageKindParseError(pub String);
 
 /// Stage risk level · stage_spec.json 字段映射.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -457,21 +534,33 @@ mod tests {
 
     #[test]
     fn stage_kind_serde_snake_case_roundtrip() {
-        for kind in [
-            StageKind::Scoping,
-            StageKind::TargetIntel,
-            StageKind::ExternalAttackSurface,
-            StageKind::Enumeration,
-            StageKind::VulnTriage,
-            StageKind::Verification,
-            StageKind::Cleanup,
-        ] {
+        for kind in StageKind::ALL {
             let s = serde_json::to_string(&kind).unwrap();
             let back: StageKind = serde_json::from_str(&s).unwrap();
             assert_eq!(kind, back);
             // as_str / try_parse 双向也要一致
             assert_eq!(StageKind::try_parse(kind.as_str()), Some(kind));
+            assert_eq!(kind.to_string(), kind.as_str());
+            assert_eq!(kind.as_str().parse::<StageKind>().unwrap(), kind);
         }
+    }
+
+    #[test]
+    fn investigation_stage_kind_roundtrip() {
+        assert_eq!(
+            StageKind::try_parse("investigation"),
+            Some(StageKind::Investigation)
+        );
+        assert_eq!(StageKind::Investigation.as_str(), "investigation");
+        assert!(StageKind::ALL.contains(&StageKind::Investigation));
+        assert!(
+            StageKind::ApplicationUnderstanding.catalog_index()
+                < StageKind::Investigation.catalog_index()
+        );
+        assert_eq!(
+            serde_json::to_string(&StageKind::Investigation).unwrap(),
+            "\"investigation\""
+        );
     }
 
     #[test]

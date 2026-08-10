@@ -42,7 +42,6 @@ const SettingsTabContent = lazy(() =>
     default: m.SettingsTabContent,
   }))
 );
-
 // Loading fallback component for lazy-loaded tab content
 function TabLoadingFallback() {
   return (
@@ -67,7 +66,6 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
 
   // Action is stable (doesn't change between renders)
   const focusPane = useStore((state) => state.focusPane);
-
   // Get pane count - subscribe to a primitive number instead of the full tree object
   const paneCount = useStore((state) => countLeafPanes(state.tabLayouts[tabId]?.root));
 
@@ -186,8 +184,7 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                     <UnifiedTimeline sessionId={sessionId} />
                   )}
                 </div>
-                {detailViewMode !== "sub-agent-detail" &&
-                  detailViewMode !== "tool-detail" &&
+                {detailViewMode === "timeline" &&
                   // Hide ONLY when both (a) a command is still running AND
                   // (b) interactive mode is active — i.e. the user is
                   // actively typing into the RunningCommandCard's capture

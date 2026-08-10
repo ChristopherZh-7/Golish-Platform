@@ -6,6 +6,27 @@ manifest—not a guessed fixed list—determines which `vuln_triage` checks are
 applicable. A raw `api_endpoints` row without this operation relation is not a
 downstream scan input.
 
+**Agent Team v2 execution contract:** the server, not the Company Controller,
+partitions the frozen EAS exact-origin worklist into six ordered waves. Wave 0
+preflights transport; Wave 1 runs Content Mapper and Browser Runtime in
+parallel; Wave 2 analyzes the sealed browser manifest; Wave 3 reduces runtime
+and static parameter facts; Wave 4 starts a Resolution Analyst only for a
+bounded unresolved cluster; Wave 5 performs a deterministic coverage review.
+The deterministic lanes have `provider/model = null`; only the Company
+Controller and Resolution Analyst consume provider capacity. Per-company
+limits are three active workers and eight dynamic requests; global limits are
+two active companies, six deterministic jobs, two browsers, and four provider
+calls. Retry preserves the same typed shard identity and advances only its
+attempt. A free-text objective is display context and cannot expand operation,
+organization, target, origin, producer, generation, or cluster authority.
+
+Production and shadow v2 always reuse the same deterministic capture. Browser
+and static leaf tools never enable `ai_assist`; unresolved candidates go only
+to the separately masked Resolution Analyst, whose tools are limited to
+`enum_js_get_resolution_cluster` and `enum_js_submit_resolution`. It cannot
+browse, probe routes, read arbitrary files, mark noise terminal, promote an AI
+suggestion to a canonical endpoint, or submit the final stage deliverable.
+
 **Recommended sequence (only on live web services from EAS):**
 
 1. Load the stage-local worklist — start with `stage_worklist_status`. If

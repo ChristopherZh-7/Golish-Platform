@@ -1,13 +1,18 @@
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
+use golish_core::hypothesis_semantic_key::CanonicalJsonObject;
+use golish_core::investigation_projection::{
+    ProjectionChangeKind, ProjectionSourceSnapshotV1, ProjectionSourceTimeStatusV1,
+    ReportProjectionRecordV1,
+};
 use golish_memory_domain::event_catalog::{
     KnowledgeEventEnvelopeV1, KnowledgeEventNameV1, KnowledgeEventPayloadV1,
 };
 use golish_memory_domain::scope::ProjectScopeId;
 use golish_memory_domain::source_ref::{CanonicalRowId, CanonicalSourceKind, SourceRef};
 use golish_reporting_domain::{
-    ReportClaimKind, ReportReadModel, ReportSectionKind, ReportSourceSnapshot,
+    ReportClaimKind, ReportInputSealV1, ReportReadModel, ReportSectionKind, ReportSourceSnapshot,
     ReportValidationResult,
 };
 use serde_json::{json, Value};
@@ -16,6 +21,11 @@ use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::Result;
+
+use super::hypothesis_legacy_projection::{
+    append_projection_source_batch_on, AppendProjectionSourceBatchRow, ProjectionOutboxSourceRow,
+    ProjectionSourceStorageV1,
+};
 
 #[derive(Clone, Debug, sqlx::FromRow, PartialEq)]
 pub struct ReportRevisionRow {
@@ -33,6 +43,20 @@ pub struct ReportRevisionRow {
     pub validated_at: Option<DateTime<Utc>>,
     pub finalized_at: Option<DateTime<Utc>>,
     pub finalized_by_principal_id: Option<Uuid>,
+}
+
+#[derive(sqlx::FromRow)]
+struct SealedReportInputRow {
+    typed_seal: Value,
+    authority_contract: String,
+    tool_truth_authority_set_id: Uuid,
+    revision_adjudication_authority_set_id: Option<Uuid>,
+    legacy_report_authority_seal_id: Option<Uuid>,
+    source_member_count: i64,
+    source_set_hash: Vec<u8>,
+    report_input_hash: Vec<u8>,
+    effective_valid_until: DateTime<Utc>,
+    observed_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +115,90 @@ fn content_hash<T: serde::Serialize>(value: &T) -> Result<String> {
     Ok(hex(&Sha256::digest(encoded)))
 }
 
+async fn append_report_projection_batch_on(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    project_scope_id: Uuid,
+    stable_request_id: Uuid,
+    source_transaction_id: Uuid,
+    occurred_at: DateTime<Utc>,
+    mutations: Vec<(ReportRevisionRow, ProjectionChangeKind)>,
+) -> Result<()> {
+    let mut members = Vec::with_capacity(mutations.len());
+    for (row, change_kind) in mutations {
+        let previous_projection_count: i64 = sqlx::query_scalar(
+            r#"SELECT COUNT(*)
+                 FROM investigation_projection_outbox member
+                 JOIN investigation_projection_outbox_batches batch
+                   ON batch.batch_id=member.batch_id
+                WHERE member.operation_id=$1 AND member.entity_kind='report'
+                  AND member.source_entity_id=$2
+                  AND batch.stable_request_id<>$3"#,
+        )
+        .bind(operation_id)
+        .bind(row.revision_id.to_string())
+        .bind(stable_request_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        let entity_version = previous_projection_count
+            .checked_add(1)
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or_else(|| anyhow::anyhow!("report_projection_version_invalid"))?;
+        let body = CanonicalJsonObject::try_from_value(json!({
+            "source_contract":"report_lifecycle_projection.v1",
+            "report_id":row.report_id,
+            "revision_id":row.revision_id,
+            "revision_number":row.revision_number,
+            "validation_status":row.validation_status,
+            "publication_status":row.publication_status,
+            "source_set_hash":format!("sha256:{}",row.source_set_hash),
+            "supersedes_revision_id":row.supersedes_revision_id,
+        }))
+        .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))?;
+        members.push(ProjectionOutboxSourceRow {
+            outbox_member_id: Uuid::new_v5(
+                &stable_request_id,
+                format!(
+                    "report-projection:{}:{}:{}",
+                    row.revision_id,
+                    row.row_version,
+                    change_kind.as_str()
+                )
+                .as_bytes(),
+            ),
+            change_kind,
+            source: ProjectionSourceSnapshotV1::Report(
+                ReportProjectionRecordV1::try_new(
+                    row.revision_id.to_string(),
+                    entity_version,
+                    1,
+                    body,
+                )
+                .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))?,
+            ),
+            source_occurred_at: Some(occurred_at),
+            source_time_status: ProjectionSourceTimeStatusV1::Known,
+            invalidation_reason: None,
+            storage: ProjectionSourceStorageV1::Inline,
+        });
+    }
+    append_projection_source_batch_on(
+        tx,
+        AppendProjectionSourceBatchRow {
+            batch_id: Uuid::new_v5(&stable_request_id, b"report-projection-batch.v1"),
+            operation_id,
+            project_scope_id: Some(project_scope_id),
+            stable_request_id,
+            source_transaction_id,
+            source_occurred_at: Some(occurred_at),
+            source_time_status: ProjectionSourceTimeStatusV1::Known,
+            members,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
 fn section_kind(kind: ReportSectionKind) -> &'static str {
     match kind {
         ReportSectionKind::ExecutiveSummary => "executive_summary",
@@ -120,8 +228,9 @@ pub async fn begin_revision(
     tx: &mut Transaction<'_, Postgres>,
     input: &BeginReportRevision,
 ) -> Result<ReportRevisionRow> {
-    let report_current = sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT current_revision_id FROM reports WHERE report_id=$1 FOR UPDATE",
+    let (report_current, operation_id, project_scope_id): (Option<Uuid>, Uuid, Uuid) =
+        sqlx::query_as(
+        "SELECT current_revision_id,operation_id,project_scope_id FROM reports WHERE report_id=$1 FOR UPDATE",
     )
     .bind(input.report_id)
     .fetch_optional(&mut **tx)
@@ -147,6 +256,16 @@ pub async fn begin_revision(
     .fetch_one(&mut **tx)
     .await?;
     super::report_source_manifest::insert_snapshot(tx, input.revision_id, &input.snapshot).await?;
+    append_report_projection_batch_on(
+        tx,
+        operation_id,
+        project_scope_id,
+        input.revision_id,
+        input.revision_id,
+        row.created_at,
+        vec![(row.clone(), ProjectionChangeKind::Insert)],
+    )
+    .await?;
     Ok(row)
 }
 
@@ -193,6 +312,10 @@ pub async fn store_read_model(
             {
                 return Err(anyhow::anyhow!("report_claim_citation_required").into());
             }
+            claim
+                .value
+                .validate_authority(claim.authority_class)
+                .map_err(|code| anyhow::anyhow!(code))?;
             super::report_claims::insert(
                 tx,
                 &super::report_claims::ReportClaimRow {
@@ -201,9 +324,10 @@ pub async fn store_read_model(
                     section_id: claim.section_id,
                     organization_id_at_time: claim.organization_id_at_time,
                     claim_kind: claim_kind(claim.claim_kind).to_string(),
+                    authority_class: claim.authority_class.as_str().to_owned(),
                     subject_ref: claim.subject_ref.clone(),
                     predicate: claim.predicate.clone(),
-                    object_value: claim.value.clone(),
+                    object_value: serde_json::to_value(&claim.value)?,
                     claim_hash: content_hash(claim)?,
                     ordinal: claim.ordinal,
                 },
@@ -323,18 +447,161 @@ pub async fn finalize_revision_with_artifacts_and_outbox(
     if manifest_sources != input.current_source_snapshot.ordered_sources {
         return Err(anyhow::anyhow!("report_source_snapshot_stale").into());
     }
+    let invalidated_source_exists: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1
+                 FROM report_authority_invalidation_events invalidation
+                WHERE invalidation.report_revision_id=$1
+                  AND invalidation.operation_id=$2
+           )"#,
+    )
+    .bind(input.revision_id)
+    .bind(input.operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if invalidated_source_exists {
+        return Err(anyhow::anyhow!("report_source_authority_invalidated").into());
+    }
+    let sealed_input = sqlx::query_as::<_, SealedReportInputRow>(
+        r#"SELECT seal.typed_seal,open.authority_contract,
+                  seal.tool_truth_authority_set_id,
+                  seal.revision_adjudication_authority_set_id,
+                  seal.legacy_report_authority_seal_id,
+                  seal.source_member_count,seal.source_set_hash,seal.report_input_hash,
+                  seal.effective_valid_until,transaction_timestamp() AS observed_at
+             FROM report_input_seals seal
+             JOIN report_input_open_headers open ON open.open_id=seal.open_id
+            WHERE seal.revision_id=$1 FOR SHARE OF seal,open"#,
+    )
+    .bind(input.revision_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let SealedReportInputRow {
+        typed_seal,
+        authority_contract,
+        tool_truth_authority_set_id,
+        revision_adjudication_authority_set_id,
+        legacy_report_authority_seal_id,
+        source_member_count: sealed_member_count,
+        source_set_hash: sealed_source_set_hash,
+        report_input_hash: sealed_report_input_hash,
+        effective_valid_until,
+        observed_at,
+    } = sealed_input.ok_or_else(|| anyhow::anyhow!("report_input_seal_required"))?;
+    let typed_seal: ReportInputSealV1 = serde_json::from_value(typed_seal)
+        .map_err(|_| anyhow::anyhow!("report_input_seal_corrupt"))?;
+    let authority_identity_matches = match &typed_seal {
+        ReportInputSealV1::RevisionAdjudication(value) => {
+            authority_contract == "revision_adjudication"
+                && tool_truth_authority_set_id
+                    == value.report_tool_truth_authority_set.authority_set_id
+                && revision_adjudication_authority_set_id
+                    == Some(value.revision_adjudication_authority_set.authority_set_id)
+                && legacy_report_authority_seal_id.is_none()
+        }
+        ReportInputSealV1::Legacy(value) => {
+            authority_contract == "legacy"
+                && tool_truth_authority_set_id
+                    == value.report_tool_truth_authority_set.authority_set_id
+                && revision_adjudication_authority_set_id.is_none()
+                && legacy_report_authority_seal_id == Some(value.legacy_report_authority_seal_id)
+        }
+    };
+    let typed_effective_valid_until = match &typed_seal {
+        ReportInputSealV1::RevisionAdjudication(value) => value
+            .report_tool_truth_authority_set
+            .earliest_effective_valid_until
+            .min(
+                value
+                    .revision_adjudication_authority_set
+                    .earliest_effective_valid_until,
+            ),
+        ReportInputSealV1::Legacy(value) => {
+            value
+                .report_tool_truth_authority_set
+                .earliest_effective_valid_until
+        }
+    };
+    let current_source_count = input.current_source_snapshot.ordered_sources.len();
+    if !authority_identity_matches
+        || i64::try_from(current_source_count).ok() != Some(sealed_member_count)
+        || sealed_source_set_hash.as_slice() != input.current_source_snapshot.source_set_hash
+        || sealed_report_input_hash.as_slice() != typed_seal.report_input_hash()
+        || effective_valid_until != typed_effective_valid_until
+        || effective_valid_until <= observed_at
+    {
+        return Err(anyhow::anyhow!("report_input_seal_stale").into());
+    }
+    typed_seal
+        .validate(
+            current_source_count,
+            input.current_source_snapshot.source_set_hash,
+            observed_at,
+        )
+        .map_err(|code| anyhow::anyhow!(code))?;
+    super::report_input_authority::validate_current_report_input_authority_on(
+        tx,
+        input.operation_id,
+        input.revision_id,
+        &typed_seal,
+        observed_at,
+    )
+    .await?;
+
+    let open_work_exists: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM verification_campaigns
+                WHERE operation_id=$1 AND state NOT IN ('terminal','superseded')
+               UNION ALL
+               SELECT 1 FROM verification_prepared_actions
+                WHERE operation_id=$1
+                  AND state IN ('pending_authorization','authorized','started','outcome_unknown')
+               UNION ALL
+               SELECT 1 FROM verification_cleanup_obligations obligation
+                 JOIN verification_action_executions execution
+                   ON execution.action_execution_id=obligation.action_execution_id
+                WHERE execution.operation_id=$1 AND obligation.status IN ('pending','outcome_unknown')
+               UNION ALL
+               SELECT 1 FROM verification_callback_obligations obligation
+                 JOIN verification_action_executions execution
+                   ON execution.action_execution_id=obligation.action_execution_id
+                WHERE execution.operation_id=$1 AND obligation.status='pending'
+               UNION ALL
+               SELECT 1 FROM hypothesis_consolidation_batches batch
+                WHERE batch.operation_id=$1 AND NOT EXISTS(
+                    SELECT 1 FROM hypothesis_consolidation_receipts receipt
+                     WHERE receipt.consolidation_batch_id=batch.consolidation_batch_id
+                )
+               UNION ALL
+               SELECT 1 FROM enrichment_obligations
+                WHERE operation_id=$1 AND status='open'
+               UNION ALL
+               SELECT 1 FROM application_fact_refinement_obligations
+                WHERE operation_id=$1 AND status='open'
+               UNION ALL
+               SELECT 1 FROM hypothesis_re_adjudication_obligations
+                WHERE operation_id=$1 AND status='open'
+           )"#,
+    )
+    .bind(input.operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if open_work_exists {
+        return Err(anyhow::anyhow!("report_finalization_open_work").into());
+    }
     if input.artifacts.is_empty() {
         return Err(anyhow::anyhow!("report_finalize_artifact_required").into());
     }
 
-    sqlx::query(
+    let superseded = sqlx::query_as::<_, ReportRevisionRow>(
         r#"UPDATE report_revisions
               SET publication_status='superseded'
-            WHERE report_id=$1 AND publication_status='final' AND revision_id<>$2"#,
+            WHERE report_id=$1 AND publication_status='final' AND revision_id<>$2
+            RETURNING *"#,
     )
     .bind(input.report_id)
     .bind(input.revision_id)
-    .execute(&mut **tx)
+    .fetch_all(&mut **tx)
     .await?;
 
     for artifact in &input.artifacts {
@@ -356,6 +623,21 @@ pub async fn finalize_revision_with_artifacts_and_outbox(
                 content_key: artifact.content_key.clone(),
                 redaction_version: artifact.redaction_version,
                 created_at: Utc::now(),
+            },
+        )
+        .await?;
+        super::historical_report_artifacts::create_historical_artifact_receipt_on(
+            tx,
+            &super::historical_report_artifacts::CreateHistoricalArtifactReceiptV0 {
+                report_id: input.report_id,
+                revision_id: input.revision_id,
+                operation_id: input.operation_id,
+                project_scope_id: input.project_scope_id,
+                artifact_kind: artifact.artifact_kind.clone(),
+                content_key: artifact.content_key.clone(),
+                sha256: artifact.sha256.clone(),
+                storage_path: artifact.storage_path.clone(),
+                byte_len: artifact.byte_len,
             },
         )
         .await?;
@@ -382,6 +664,25 @@ pub async fn finalize_revision_with_artifacts_and_outbox(
     let occurred_at = finalized
         .finalized_at
         .ok_or_else(|| anyhow::anyhow!("report_finalize_timestamp_missing"))?;
+    let projection_request_id = Uuid::new_v5(
+        &input.revision_id,
+        format!("report-finalization-projection:{}", finalized.row_version).as_bytes(),
+    );
+    let mut projection_mutations = superseded
+        .into_iter()
+        .map(|revision| (revision, ProjectionChangeKind::Supersede))
+        .collect::<Vec<_>>();
+    projection_mutations.push((finalized.clone(), ProjectionChangeKind::Close));
+    append_report_projection_batch_on(
+        tx,
+        input.operation_id,
+        input.project_scope_id,
+        projection_request_id,
+        input.revision_id,
+        occurred_at,
+        projection_mutations,
+    )
+    .await?;
     let event = KnowledgeEventEnvelopeV1 {
         event_id: Uuid::new_v5(
             &input.revision_id,

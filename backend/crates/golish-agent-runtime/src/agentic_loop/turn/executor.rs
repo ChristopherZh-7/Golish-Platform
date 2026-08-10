@@ -28,11 +28,13 @@ use tracing::Instrument;
 
 use golish_agent_kit::system_hooks::HookRegistry;
 use golish_context::token_budget::TokenUsage;
+use golish_core::events::AiEvent;
 use golish_sub_agents::SubAgentContext;
 
 use super::super::config::AgenticLoopConfig;
 use super::super::context::{AgenticLoopContext, LoopCaptureContext};
 use super::super::stream_processor::StreamProcessOutcome;
+use super::super::stream_retry::classify_stream_start_error;
 use super::super::tool_dispatch::ToolDispatchHaltReason;
 use super::super::tool_list::build_tool_list;
 use super::super::unified_helpers::{
@@ -261,7 +263,7 @@ where
             )
             .await?
             {
-                CompletionOutcome::Continue { outcome, llm_span } => (outcome, llm_span),
+                CompletionOutcome::Continue { outcome, llm_span } => (*outcome, llm_span),
                 CompletionOutcome::BreakAgentLoop => break,
             };
 
@@ -274,7 +276,38 @@ where
                 thinking_id,
                 repetition_detected,
                 mid_stream_error,
+                empty_stream_error,
             } = outcome;
+
+            // E3 · the provider accepted the request but delivered a transient
+            // error as the first SSE item. No assistant content exists, so retry
+            // the exact request with unchanged history. This closes the gap
+            // between stream-start retries and partial-stream retries without
+            // inventing a model turn or replaying any tool call.
+            if let Some(err) = empty_stream_error.as_deref() {
+                if turn_state.mid_stream_retries < MAX_MID_STREAM_RETRIES {
+                    turn_state.mid_stream_retries += 1;
+                    tracing::warn!(
+                        retry = turn_state.mid_stream_retries,
+                        max = MAX_MID_STREAM_RETRIES,
+                        error = %err,
+                        "[resilience] transient empty-stream provider error; retrying exact completion request"
+                    );
+                    continue;
+                }
+
+                let classification = classify_stream_start_error(err);
+                let _ = ctx.events.event_tx.send(AiEvent::Error {
+                    message: classification.user_message,
+                    error_type: classification.error_type.to_string(),
+                });
+                tracing::error!(
+                    error = %err,
+                    "[resilience] empty-stream provider error persisted after {} retries",
+                    MAX_MID_STREAM_RETRIES
+                );
+                break;
+            }
 
             // 设计 2026-06-12 (submit-only-lock-hardening 防御 B) · dispatch 层闭锁
             // 取值。必须在下面「批次含 submit 则置 stage_deliverable_submitted」之

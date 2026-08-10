@@ -110,7 +110,7 @@ fn join_limited(items: &[String], limit: usize) -> String {
 fn mentor_stage_objective(stage: Option<&str>) -> &'static str {
     match stage.unwrap_or_default() {
         "target_intel" => {
-            "Close passive intelligence coverage with provider/source evidence. Do not run active scans."
+            "Advance the adaptive corporate-intelligence Goal from current durable facts: choose high-information semantic pivots, resolve material frontier items, preserve evidence and attribution, then request neutral review. Do not run active scans."
         }
         "external_attack_surface" => {
             "Close EAS coverage: liveness, port discovery, and service fingerprint cells must reach terminal states. Wait for background jobs, inspect outputs, update structured evidence, then submit."
@@ -390,4 +390,29 @@ Redirect it to take concrete action. What specific tool should it use first?"#,
         title = subtask_title,
         response = safe_truncate(agent_response, 2000),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_intel_mentor_objective_preserves_adaptive_goal_semantics() {
+        let guard = mentor_hard_stage_guard(&MentorPromptContext {
+            stage: Some("target_intel".to_string()),
+            agent_role: Some("goal_owner".to_string()),
+            allowed_tools: vec![
+                "recon_search_intel".to_string(),
+                "stage_team_request_intel_review".to_string(),
+            ],
+            allowed_tool_types: Vec::new(),
+        });
+
+        assert!(guard.contains("adaptive corporate-intelligence Goal"));
+        assert!(guard.contains("high-information semantic pivots"));
+        assert!(guard.contains("material frontier"));
+        assert!(guard.contains("request neutral review"));
+        assert!(!guard.contains("provider/source evidence"));
+        assert!(!guard.contains("recon_lookup_whois"));
+    }
 }

@@ -31,6 +31,7 @@ export type {
   ExecutionMode,
   InputMode,
   InteractiveModeState,
+  InvestigationRefreshHint,
   RenderMode,
   ReportingReadModelHint,
   Session,

@@ -16,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::stage_topology_contract::StageTopologyContract;
 use super::types::StageKind;
 
 /// operation_graph.json `edges[*]` 元素.
@@ -77,6 +78,25 @@ pub fn base_operation_graph() -> Result<OperationGraph, OperationGraphError> {
     const BASE_JSON: &str =
         include_str!("../../../../../resources/harness/graph/operation_graph.json");
     load_operation_graph_from_json(BASE_JSON)
+}
+
+/// Load the exact graph selected by a server-frozen topology contract.
+///
+/// The legacy resource remains the existing `operation_graph.json`. Unified
+/// Investigation lives in a separate resource, so adding the new catalog
+/// stages cannot reinterpret an existing operation or alter a current profile.
+pub fn operation_graph_for_topology(
+    contract: StageTopologyContract,
+) -> Result<OperationGraph, OperationGraphError> {
+    match contract {
+        StageTopologyContract::LegacyCandidateVerificationV1 => base_operation_graph(),
+        StageTopologyContract::UnifiedInvestigationV1 => {
+            const UNIFIED_INVESTIGATION_JSON: &str = include_str!(
+                "../../../../../resources/harness/graph/operation_graph_unified_investigation_v1.json"
+            );
+            load_operation_graph_from_json(UNIFIED_INVESTIGATION_JSON)
+        }
+    }
 }
 
 impl OperationGraph {

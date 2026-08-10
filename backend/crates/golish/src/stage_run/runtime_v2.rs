@@ -13,7 +13,7 @@ use golish_agent_kit::runtime_memory::{RuntimeMemoryContract, RuntimeMemoryWrite
 use golish_core::AttackExecutionContract;
 use golish_db::models::{AgentType, Organization};
 use golish_db::repo::stage_run_units::StageRunUnitRow;
-use golish_db::repo::stage_teams::{StageTeamPlanRow, StageWorkItemRow};
+use golish_db::repo::stage_teams::{StageTeamPlanRow, StageWorkItemRow, StageWorkerOutputRow};
 use golish_db::repo::stage_worker_runs::StageWorkerRunRow;
 use uuid::Uuid;
 
@@ -121,6 +121,15 @@ fn effective_resume_specialist(
     }
 }
 
+fn exact_root_stage_preclaim(
+    specialist: Option<&str>,
+    execution_status: &str,
+    unit_count: usize,
+    worker_count: usize,
+) -> bool {
+    specialist.is_none() && execution_status == "started" && unit_count == 0 && worker_count == 0
+}
+
 /// A stage specialist is the durable scheduler role, while message chains use
 /// the coarser DB agent enum. Keep this mapping identical to the worker claim
 /// path; comparing the two strings directly rejects every valid specialist
@@ -128,8 +137,22 @@ fn effective_resume_specialist(
 pub(crate) fn resume_worker_chain_agent(specialist: &str) -> Option<AgentType> {
     match specialist.trim() {
         "reporter" => Some(AgentType::Reporter),
-        "recon" | "prober" | "enumerator" | "vuln_scanner" | "attack_analyst"
-        | "candidate_verifier" | "pentester" => Some(AgentType::Pentester),
+        "recon"
+        | "prober"
+        | "enumerator"
+        | "vuln_scanner"
+        | "application_understanding"
+        | "attack_analyst"
+        | "candidate_verifier"
+        | "pentester"
+        | "investigation"
+        | "researcher"
+        | "browser"
+        | "coder"
+        | "installer"
+        | "enricher"
+        | "memorist"
+        | "adviser" => Some(AgentType::Pentester),
         _ => None,
     }
 }
@@ -200,6 +223,104 @@ fn ownership_percent(organization: &Organization) -> Option<f64> {
 struct StageTeamResumeAuthority {
     plan: StageTeamPlanRow,
     work_items: Vec<StageWorkItemRow>,
+    outputs: Vec<StageWorkerOutputRow>,
+    completed_synthesis_primary_worker_ids: HashSet<Uuid>,
+    recoverable_target_intel_finalizer_worker_ids: HashSet<Uuid>,
+}
+
+fn exact_target_intel_finalizer_recovery_preflight(
+    worker: &StageWorkerRunRow,
+    team: &StageTeamResumeAuthority,
+) -> bool {
+    let plan = &team.plan;
+    let leader_items = team
+        .work_items
+        .iter()
+        .filter(|item| {
+            item.role == plan.leader_role
+                && item.stable_key == "leader:primary"
+                && !item.required_for_barrier
+                && item.created_by == "server_seed"
+        })
+        .collect::<Vec<_>>();
+    let [item] = leader_items.as_slice() else {
+        return false;
+    };
+    let outputs = team
+        .outputs
+        .iter()
+        .filter(|output| output.work_item_id == item.id && output.worker_run_id == worker.id)
+        .collect::<Vec<_>>();
+    let [output] = outputs.as_slice() else {
+        return false;
+    };
+    plan.stage_kind == "target_intel"
+        && plan.requests_closed_at.is_some()
+        && plan.final_submitter_worker_run_id == Some(worker.id)
+        && plan.final_submitter_kind == "worker"
+        && plan.aggregator_kind == "worker"
+        && plan.aggregator_role.as_deref() == Some(plan.leader_role.as_str())
+        && plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(serde_json::Value::as_str)
+            == Some("company_controller")
+        && item.status == "exhausted"
+        && item.terminal_at.is_some()
+        && worker.work_item_id == Some(item.id)
+        && worker.status == "failed"
+        && worker.terminal_at.is_some()
+        && worker.lease_token.is_none()
+        && worker.active_tool_call_id.is_none()
+        && worker.message_chain_id.is_some()
+        && worker
+            .checkpoint
+            .pointer("/stage_team_execution_failure/code")
+            .and_then(serde_json::Value::as_str)
+            == Some("stage_team_worker_lease_expired")
+        && output.business_disposition == "blocked"
+        && output
+            .canonical_output
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("stage_team_attempts_exhausted")
+        && output
+            .canonical_output
+            .get("failure_code")
+            .and_then(serde_json::Value::as_str)
+            == Some("stage_team_worker_lease_expired")
+        && output
+            .blocker_codes
+            .iter()
+            .any(|code| code == "STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED")
+        && team
+            .recoverable_target_intel_finalizer_worker_ids
+            .contains(&worker.id)
+}
+
+fn exact_replacement_preclaim(
+    operation: &golish_db::repo::operation_state::OperationStateRow,
+    execution: &golish_db::repo::stage_runs::StageRunRow,
+    unit: &StageRunUnitRow,
+) -> bool {
+    let marker = operation.state_blob.get("runtime_v2_dev_reset");
+    marker
+        .and_then(|value| value.get("replacement_stage_execution_id"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        == Some(execution.id)
+        && marker
+            .and_then(|value| value.get("selected_stage"))
+            .and_then(serde_json::Value::as_str)
+            == Some(execution.stage_kind.as_str())
+        && operation.current_stage == execution.stage_kind
+        && unit.operation_id == operation.operation_id
+        && unit.stage_execution_id == execution.id
+        && unit.stage_kind == execution.stage_kind
+        && unit.status == "queued"
+        && unit.generation == 1
+        && unit.started_at.is_none()
+        && unit.terminal_at.is_none()
 }
 
 fn select_stage_team_primary_worker<'a>(
@@ -264,6 +385,35 @@ fn select_stage_team_primary_worker<'a>(
             "Stage Team WorkItem identity crossed plan/Unit/operation/scope"
         );
     }
+    for output in &team.outputs {
+        anyhow::ensure!(
+            output.team_plan_id == plan.id
+                && output.operation_id == unit.operation_id
+                && output.stage_execution_id == unit.stage_execution_id
+                && output.stage_run_unit_id == unit.id
+                && output.scope_snapshot_id == unit.scope_snapshot_id
+                && output.organization_id == unit.organization_id,
+            "Stage Team WorkerOutput identity crossed plan/Unit/operation/scope"
+        );
+    }
+
+    if workers.is_empty() {
+        anyhow::ensure!(
+            unit.status == "queued"
+                && unit.started_at.is_none()
+                && unit.terminal_at.is_none()
+                && plan.dispatch_epoch == 0
+                && plan.requests_closed_at.is_none()
+                && plan.final_submitter_worker_run_id.is_none()
+                && team.work_items.len() == 1
+                && leader_item.status == "queued"
+                && leader_item.dispatch_epoch == 0
+                && leader_item.started_at.is_none()
+                && leader_item.terminal_at.is_none(),
+            "Stage Team Unit has no leader Worker outside the exact fresh pre-claim shape"
+        );
+        return Ok(None);
+    }
 
     let mut leader_workers = Vec::new();
     for worker in workers {
@@ -295,7 +445,275 @@ fn select_stage_team_primary_worker<'a>(
             leader_workers.len()
         ));
     };
-    Ok(Some(*leader_worker))
+    let recovery_stable_key = format!("leader:synthesis-recovery:{}", leader_item.id);
+    let recovery_v1_item_id = Uuid::new_v5(
+        &leader_item.id,
+        b"sealed-investigation-synthesis-recovery-primary-v1",
+    );
+    let recovery_v2_item_id = Uuid::new_v5(
+        &recovery_v1_item_id,
+        b"sealed-investigation-synthesis-recovery-primary-v2",
+    );
+    let synthesis_recovery_items = team
+        .work_items
+        .iter()
+        .filter(|item| {
+            item.role == plan.leader_role
+                && item.stable_key.starts_with("leader:synthesis-recovery:")
+                && !item.required_for_barrier
+                && item.created_by == "server_seed"
+        })
+        .collect::<Vec<_>>();
+    if synthesis_recovery_items.is_empty() {
+        if leader_item.kind == "investigation_primary"
+            && (leader_item.status == "completed" || leader_worker.status == "passed")
+        {
+            anyhow::ensure!(
+                leader_item.status == "completed"
+                    && leader_item.started_at.is_some()
+                    && leader_item.terminal_at.is_some()
+                    && leader_worker.status == "passed"
+                    && leader_worker.terminal_at.is_some()
+                    && leader_worker.lease_token.is_none()
+                    && leader_worker.active_tool_call_id.is_none()
+                    && team
+                        .completed_synthesis_primary_worker_ids
+                        .contains(&leader_worker.id),
+                "completed Stage Team Primary has no sealed synthesis resume witness"
+            );
+        }
+        return Ok(Some(*leader_worker));
+    }
+    anyhow::ensure!(
+        synthesis_recovery_items.len() <= 2
+            && synthesis_recovery_items
+                .iter()
+                .all(|item| item.stable_key == recovery_stable_key),
+        "Stage Team Unit has foreign or duplicate synthesis recovery WorkItems"
+    );
+    let recovery_v1_items = synthesis_recovery_items
+        .iter()
+        .copied()
+        .filter(|item| item.id == recovery_v1_item_id && item.kind == leader_item.kind)
+        .collect::<Vec<_>>();
+    let [recovery_v1] = recovery_v1_items.as_slice() else {
+        return Err(anyhow!(
+            "Stage Team Unit requires one deterministic synthesis recovery v1 WorkItem"
+        ));
+    };
+    let recovery_v2_items = synthesis_recovery_items
+        .iter()
+        .copied()
+        .filter(|item| {
+            item.id == recovery_v2_item_id && item.kind == "investigation_primary_recovery"
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        recovery_v2_items.len() <= 1,
+        "Stage Team Unit has duplicate synthesis recovery v2 WorkItems"
+    );
+    let exact_recovery_identity = |item: &StageWorkItemRow| {
+        item.team_plan_id == leader_item.team_plan_id
+            && item.operation_id == leader_item.operation_id
+            && item.stage_execution_id == leader_item.stage_execution_id
+            && item.stage_run_unit_id == leader_item.stage_run_unit_id
+            && item.scope_snapshot_id == leader_item.scope_snapshot_id
+            && item.organization_id == leader_item.organization_id
+            && item.dispatch_epoch == leader_item.dispatch_epoch
+            && item.role == leader_item.role
+            && item.input_manifest_hash == leader_item.input_manifest_hash
+            && item.input_refs == leader_item.input_refs
+            && !item.required_for_barrier
+            && item.conflict_key.is_none()
+            && item.priority == leader_item.priority
+            && item.attempt_policy == leader_item.attempt_policy
+            && item.budget == leader_item.budget
+            && item.output_schema == leader_item.output_schema
+            && item.created_by == "server_seed"
+    };
+    anyhow::ensure!(
+        exact_recovery_identity(recovery_v1),
+        "sealed synthesis recovery v1 immutable identity drifted"
+    );
+    let exact_failed_attempt = |item: &StageWorkItemRow, worker: &StageWorkerRunRow| {
+        let outputs = team
+            .outputs
+            .iter()
+            .filter(|output| output.work_item_id == item.id)
+            .collect::<Vec<_>>();
+        let [output] = outputs.as_slice() else {
+            return false;
+        };
+        item.status == "exhausted"
+            && item.terminal_at.is_some()
+            && worker.work_item_id == Some(item.id)
+            && worker.status == "failed"
+            && worker.terminal_at.is_some()
+            && worker.lease_token.is_none()
+            && worker.active_tool_call_id.is_none()
+            && output.worker_run_id == worker.id
+            && output.business_disposition == "blocked"
+            && output
+                .canonical_output
+                .get("kind")
+                .and_then(|value| value.as_str())
+                == Some("stage_team_attempts_exhausted")
+            && output
+                .canonical_output
+                .get("failure_code")
+                .and_then(|value| value.as_str())
+                == Some("stage_team_worker_lease_expired")
+            && output
+                .blocker_codes
+                .iter()
+                .any(|code| code == "STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED")
+    };
+    let exact_completed_attempt =
+        |item: &StageWorkItemRow, item_workers: &[&'a StageWorkerRunRow]| {
+            let [worker] = item_workers else {
+                return None;
+            };
+            (item.status == "completed"
+                && item.started_at.is_some()
+                && item.terminal_at.is_some()
+                && worker.work_item_id == Some(item.id)
+                && worker.status == "passed"
+                && worker.terminal_at.is_some()
+                && worker.lease_token.is_none()
+                && worker.active_tool_call_id.is_none()
+                && team
+                    .completed_synthesis_primary_worker_ids
+                    .contains(&worker.id))
+            .then_some(*worker)
+        };
+    anyhow::ensure!(
+        exact_failed_attempt(leader_item, leader_worker),
+        "sealed synthesis recovery source failure witness is incomplete"
+    );
+    let recovery_v1_workers = workers
+        .iter()
+        .copied()
+        .filter(|worker| worker.work_item_id == Some(recovery_v1.id))
+        .collect::<Vec<_>>();
+    match (recovery_v1.status.as_str(), recovery_v2_items.as_slice()) {
+        ("queued", []) => {
+            anyhow::ensure!(
+                recovery_v1.started_at.is_none()
+                    && recovery_v1.terminal_at.is_none()
+                    && recovery_v1_workers.is_empty()
+                    && !team
+                        .outputs
+                        .iter()
+                        .any(|output| output.work_item_id == recovery_v1.id),
+                "sealed synthesis recovery v1 queued pre-claim is incomplete"
+            );
+            Ok(None)
+        }
+        ("running", []) => {
+            let [worker] = recovery_v1_workers.as_slice() else {
+                return Err(anyhow!(
+                    "running synthesis recovery v1 requires exactly one Worker"
+                ));
+            };
+            anyhow::ensure!(
+                recovery_v1.started_at.is_some()
+                    && recovery_v1.terminal_at.is_none()
+                    && worker.worker_generation > leader_worker.worker_generation
+                    && matches!(
+                        worker.status.as_str(),
+                        "queued" | "running" | "gate_blocked" | "recovery_required"
+                    )
+                    && worker.terminal_at.is_none()
+                    && !team
+                        .outputs
+                        .iter()
+                        .any(|output| output.work_item_id == recovery_v1.id),
+                "running synthesis recovery v1 authority is incomplete"
+            );
+            Ok(Some(*worker))
+        }
+        ("completed", []) => {
+            let worker = exact_completed_attempt(recovery_v1, &recovery_v1_workers)
+                .ok_or_else(|| anyhow!("completed synthesis recovery v1 witness is incomplete"))?;
+            anyhow::ensure!(
+                worker.worker_generation > leader_worker.worker_generation,
+                "completed synthesis recovery v1 Worker generation is not monotonic"
+            );
+            Ok(Some(worker))
+        }
+        ("exhausted", [recovery_v2]) => {
+            let [recovery_v1_worker] = recovery_v1_workers.as_slice() else {
+                return Err(anyhow!(
+                    "exhausted synthesis recovery v1 requires exactly one Worker"
+                ));
+            };
+            anyhow::ensure!(
+                exact_failed_attempt(recovery_v1, recovery_v1_worker)
+                    && exact_recovery_identity(recovery_v2),
+                "sealed synthesis recovery v1/v2 authority is incomplete"
+            );
+            let recovery_v2_workers = workers
+                .iter()
+                .copied()
+                .filter(|worker| worker.work_item_id == Some(recovery_v2.id))
+                .collect::<Vec<_>>();
+            match recovery_v2.status.as_str() {
+                "queued" => {
+                    anyhow::ensure!(
+                        recovery_v2.started_at.is_none()
+                            && recovery_v2.terminal_at.is_none()
+                            && recovery_v2_workers.is_empty()
+                            && !team
+                                .outputs
+                                .iter()
+                                .any(|output| output.work_item_id == recovery_v2.id),
+                        "sealed synthesis recovery v2 queued pre-claim is incomplete"
+                    );
+                    Ok(None)
+                }
+                "running" => {
+                    let [worker] = recovery_v2_workers.as_slice() else {
+                        return Err(anyhow!(
+                            "running synthesis recovery v2 requires exactly one Worker"
+                        ));
+                    };
+                    anyhow::ensure!(
+                        recovery_v2.started_at.is_some()
+                            && recovery_v2.terminal_at.is_none()
+                            && worker.worker_generation > recovery_v1_worker.worker_generation
+                            && matches!(
+                                worker.status.as_str(),
+                                "queued" | "running" | "gate_blocked" | "recovery_required"
+                            )
+                            && worker.terminal_at.is_none()
+                            && !team
+                                .outputs
+                                .iter()
+                                .any(|output| output.work_item_id == recovery_v2.id),
+                        "running synthesis recovery v2 authority is incomplete"
+                    );
+                    Ok(Some(*worker))
+                }
+                "completed" => {
+                    let worker = exact_completed_attempt(recovery_v2, &recovery_v2_workers)
+                        .ok_or_else(|| {
+                            anyhow!("completed synthesis recovery v2 witness is incomplete")
+                        })?;
+                    anyhow::ensure!(
+                        worker.worker_generation > recovery_v1_worker.worker_generation,
+                        "completed synthesis recovery v2 Worker generation is not monotonic"
+                    );
+                    Ok(Some(worker))
+                }
+                status => Err(anyhow!(
+                    "synthesis recovery v2 has non-resumable status {status}"
+                )),
+            }
+        }
+        (status, _) => Err(anyhow!(
+            "synthesis recovery chain has non-resumable v1 status/shape {status}"
+        )),
+    }
 }
 
 async fn load_stage_team_resume_authorities(
@@ -314,7 +732,209 @@ async fn load_stage_team_resume_authorities(
         let work_items = golish_db::repo::stage_teams::list_work_items_with_executor(pool, plan.id)
             .await
             .context("load Stage Team WorkItems for V2 runtime authority")?;
-        authorities.insert(unit.id, StageTeamResumeAuthority { plan, work_items });
+        let outputs = golish_db::repo::stage_teams::list_outputs_with_executor(pool, plan.id)
+            .await
+            .context("load Stage Team WorkerOutputs for V2 runtime authority")?;
+        let completed_synthesis_primary_worker_ids = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT DISTINCT census.primary_worker_run_id
+                 FROM investigation_pentagi_task_plans task_plan
+                 JOIN investigation_pentagi_delegation_census_seals census
+                   ON census.task_plan_id=task_plan.task_plan_id
+                 JOIN investigation_pentagi_pipeline_events event
+                   ON event.task_plan_id=task_plan.task_plan_id
+                  AND event.event_kind='primary_synthesis'
+                  AND event.actor_worker_run_id=census.primary_worker_run_id
+                  AND event.parent_dispatch_receipt_id=census.primary_dispatch_receipt_id
+                 JOIN investigation_refiner_plan_ledger_seals refiner_seal
+                   ON refiner_seal.task_plan_id=task_plan.task_plan_id
+                 JOIN stage_worker_runs worker ON worker.id=census.primary_worker_run_id
+                 JOIN stage_work_items item ON item.id=worker.work_item_id
+                 JOIN investigation_stage_run_authorities authority
+                   ON authority.operation_id=task_plan.operation_id
+                  AND authority.stage_execution_id=task_plan.stage_execution_id
+                  AND authority.authority_id=task_plan.authority_id
+                 JOIN investigation_analysis_attempt_bindings binding
+                   ON binding.authority_id=authority.authority_id
+                  AND binding.stage_run_unit_id=task_plan.stage_run_unit_id
+                  AND binding.organization_id=task_plan.organization_id
+                  AND binding.analysis_attempt_id=task_plan.subject_id
+                 JOIN investigation_run_work_items work
+                   ON work.work_id=binding.work_id
+                  AND work.authority_id=authority.authority_id
+                  AND work.work_kind='analysis'
+                 JOIN investigation_run_work_state_events latest
+                   ON latest.event_id=work.latest_event_id AND latest.work_id=work.work_id
+                 LEFT JOIN investigation_hypothesis_compilation_decisions decision
+                   ON decision.binding_id=binding.binding_id
+                  AND decision.task_plan_id=task_plan.task_plan_id
+                  AND decision.primary_worker_run_id=worker.id
+                 LEFT JOIN investigation_hypothesis_canonical_apply_receipts receipt
+                   ON receipt.decision_id=decision.decision_id
+                  AND receipt.operation_id=task_plan.operation_id
+                  AND receipt.organization_id=task_plan.organization_id
+                 LEFT JOIN hypothesis_generation_seals generation_seal
+                   ON generation_seal.seal_id=receipt.generation_seal_id
+                  AND generation_seal.generation_id=receipt.generation_id
+                  AND generation_seal.controller_worker_run_id=worker.id
+                 LEFT JOIN verification_admission_sets admission
+                   ON admission.generation_id=receipt.generation_id
+                  AND admission.operation_id=task_plan.operation_id
+                  AND admission.stage_execution_id=task_plan.stage_execution_id
+                  AND admission.stage_run_unit_id=task_plan.stage_run_unit_id
+                  AND admission.scope_snapshot_id=authority.scope_snapshot_id
+                  AND admission.organization_id=task_plan.organization_id
+                  AND admission.status='sealed'
+                WHERE task_plan.stage_team_plan_id=$1
+                  AND task_plan.subject_kind='analysis_attempt'
+                  AND task_plan.status='sealed'
+                  AND item.created_by='server_seed'
+                  AND (
+                      item.stable_key LIKE 'leader:synthesis-recovery:%'
+                      OR (
+                          item.stable_key='leader:primary'
+                          AND item.kind='investigation_primary'
+                          AND jsonb_typeof(worker.checkpoint)='array'
+                          AND (SELECT COUNT(*) FROM stage_worker_runs all_worker
+                                WHERE all_worker.work_item_id=item.id)=1
+                          AND (SELECT COUNT(*) FROM investigation_pentagi_pipeline_events synthesis
+                                WHERE synthesis.task_plan_id=task_plan.task_plan_id
+                                  AND synthesis.event_kind='primary_synthesis')=1
+                          AND (SELECT COUNT(*) FROM jsonb_path_query(
+                                worker.checkpoint,
+                                'strict $.** ? (@.name == "submit_result")'))=1
+                          AND unified_investigation_submit_result_v1(worker.checkpoint)
+                                IS NOT NULL
+                          AND (
+                              (work.current_state='blocked'
+                               AND latest.to_state='blocked'
+                               AND latest.reason_code IN (
+                                   'investigation_analysis_host_infrastructure',
+                                   'investigation_analysis_host_authority_mismatch'
+                               )
+                               AND decision.decision_id IS NULL)
+                              OR
+                              (work.current_state='running'
+                               AND latest.to_state='running'
+                               AND latest.reason_code=
+                                   'post_synthesis_analysis_primary_recovery.v1|'
+                                   || event.event_sha256 || '|'
+                                   || tool_truth_sha256(worker.checkpoint::TEXT)
+                               AND (
+                                   decision.decision_id IS NULL
+                                   OR (
+                                       receipt.apply_receipt_id IS NOT NULL
+                                       AND generation_seal.seal_id IS NOT NULL
+                                       AND admission.admission_set_id IS NOT NULL
+                                       AND admission.member_count=generation_seal.member_count
+                                   )
+                               ))
+                              OR
+                              (work.current_state IN ('completed','residual')
+                               AND latest.to_state=work.current_state
+                               AND latest.reason_code IN (
+                                   'canonical_generation_sealed_and_admitted',
+                                   'canonical_generation_admitted_with_residuals'
+                               )
+                               AND receipt.apply_receipt_id IS NOT NULL
+                               AND generation_seal.seal_id IS NOT NULL
+                               AND admission.admission_set_id IS NOT NULL)
+                          )
+                      )
+                  )
+                  AND item.status='completed'
+                  AND item.team_plan_id=task_plan.stage_team_plan_id
+                  AND item.role=(SELECT leader_role FROM stage_team_plans
+                                  WHERE id=task_plan.stage_team_plan_id)
+                  AND item.required_for_barrier=FALSE
+                  AND worker.status='passed'
+                  AND worker.terminal_at IS NOT NULL
+                  AND worker.lease_token IS NULL
+                  AND worker.active_tool_call_id IS NULL"#,
+        )
+        .bind(plan.id)
+        .fetch_all(pool)
+        .await
+        .context("load sealed Investigation synthesis completion witnesses")?
+        .into_iter()
+        .collect();
+        let recoverable_target_intel_finalizer_worker_ids = if let (true, Some(final_submitter)) = (
+            plan.stage_kind == "target_intel",
+            plan.final_submitter_worker_run_id,
+        ) {
+            let rows = sqlx::query_scalar::<_, Uuid>(
+                r#"SELECT review.controller_worker_run_id
+                         FROM target_intel_goal_reviews review
+                         JOIN target_intel_goal_epochs epoch
+                           ON epoch.id=review.goal_epoch_id
+                          AND epoch.operation_id=review.operation_id
+                          AND epoch.organization_id=review.organization_id
+                          AND epoch.team_plan_id=review.team_plan_id
+                          AND epoch.status='sealed_for_review'
+                         JOIN target_intel_goal_operation_contracts contract
+                           ON contract.operation_id=review.operation_id
+                          AND contract.goal_contract_sha256=review.operation_contract_sha256
+                         JOIN stage_work_items controller_item
+                           ON controller_item.id=review.controller_work_item_id
+                          AND controller_item.team_plan_id=review.team_plan_id
+                         JOIN stage_worker_runs controller_worker
+                           ON controller_worker.id=review.controller_worker_run_id
+                          AND controller_worker.work_item_id=controller_item.id
+                          AND controller_worker.message_chain_id=review.controller_message_chain_id
+                         JOIN stage_work_items reviewer_item
+                           ON reviewer_item.id=review.reviewer_work_item_id
+                          AND reviewer_item.team_plan_id=review.team_plan_id
+                          AND reviewer_item.status='completed'
+                         JOIN stage_worker_runs reviewer_worker
+                           ON reviewer_worker.id=review.reviewer_worker_run_id
+                          AND reviewer_worker.work_item_id=reviewer_item.id
+                          AND reviewer_worker.status='passed'
+                         JOIN stage_deliverable_submissions submission
+                           ON submission.id=((review.completion_claim->>'completion_claim')::jsonb
+                                              ->>'deliverable_submission_id')::uuid
+                          AND submission.operation_id=review.operation_id
+                          AND submission.stage_execution_id=review.stage_execution_id
+                          AND submission.stage_run_unit_id=review.stage_run_unit_id
+                          AND submission.organization_id=review.organization_id
+                          AND submission.worker_run_id=review.controller_worker_run_id
+                          AND submission.stage_kind='target_intel'
+                        WHERE review.team_plan_id=$1
+                          AND review.operation_id=$2
+                          AND review.organization_id=$3
+                          AND review.stage_execution_id=$4
+                          AND review.stage_run_unit_id=$5
+                          AND review.controller_worker_run_id=$6
+                          AND review.status='pass'
+                          AND review.verdict->>'decision'='PASS'
+                          AND review.bundle_sha256 LIKE 'sha256:%'
+                          AND review.verdict_sha256 LIKE 'sha256:%'"#,
+            )
+            .bind(plan.id)
+            .bind(plan.operation_id)
+            .bind(plan.organization_id)
+            .bind(plan.stage_execution_id)
+            .bind(plan.stage_run_unit_id)
+            .bind(final_submitter)
+            .fetch_all(pool)
+            .await
+            .context("load frozen Target Intel finalizer recovery witness")?;
+            if rows.len() == 1 {
+                rows.into_iter().collect()
+            } else {
+                HashSet::new()
+            }
+        } else {
+            HashSet::new()
+        };
+        authorities.insert(
+            unit.id,
+            StageTeamResumeAuthority {
+                plan,
+                work_items,
+                outputs,
+                completed_synthesis_primary_worker_ids,
+                recoverable_target_intel_finalizer_worker_ids,
+            },
+        );
     }
     Ok(authorities)
 }
@@ -541,6 +1161,23 @@ pub(crate) async fn load_cli_report(
                             };
                         }
                     };
+                    let sealed_stage_team_completed_primary =
+                        primary_worker.is_some_and(|worker| {
+                            stage_team_authorities
+                                .get(&unit.id)
+                                .is_some_and(|authority| {
+                                    authority
+                                        .completed_synthesis_primary_worker_ids
+                                        .contains(&worker.id)
+                                })
+                        });
+                    let recoverable_target_intel_finalizer = primary_worker.is_some_and(|worker| {
+                        stage_team_authorities
+                            .get(&unit.id)
+                            .is_some_and(|authority| {
+                                exact_target_intel_finalizer_recovery_preflight(worker, authority)
+                            })
+                    });
                     let worker = primary_worker.and_then(|worker| {
                         RuntimeWorkerStatus::try_parse(&worker.status).map(|status| {
                             ResumeWorkerSnapshot {
@@ -555,6 +1192,9 @@ pub(crate) async fn load_cli_report(
                             }
                         })
                     });
+                    let seeded_stage_team_preclaim = worker.is_none()
+                        && stage_team_authorities.contains_key(&unit.id)
+                        && unit.specialist.is_some();
                     match status {
                         Some(status) => classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
                             operation_id: task.id,
@@ -580,6 +1220,9 @@ pub(crate) async fn load_cli_report(
                                 status,
                             }),
                             worker,
+                            seeded_stage_team_preclaim,
+                            sealed_stage_team_completed_primary,
+                            recoverable_target_intel_finalizer,
                             now: Utc::now(),
                         }),
                         None => RuntimeV2ResumeDecision::Reject(
@@ -705,6 +1348,9 @@ pub(crate) async fn load_relational_resume_authority(
             scope_unit_count: 0,
             unit: None,
             worker: None,
+            seeded_stage_team_preclaim: false,
+            sealed_stage_team_completed_primary: false,
+            recoverable_target_intel_finalizer: false,
             now: Utc::now(),
         });
         anyhow::ensure!(
@@ -748,6 +1394,17 @@ pub(crate) async fn load_relational_resume_authority(
         runtime_contract,
         attack_contract,
     );
+    if exact_root_stage_preclaim(
+        specialist.as_deref(),
+        &execution.status,
+        units.len(),
+        workers.len(),
+    ) {
+        return Ok(RuntimeV2ResumeAuthority {
+            active_stage_execution_id: execution.id,
+            organization_id: scope.snapshot.root_organization_id,
+        });
+    }
     let expected_unit_count = if specialist.is_some() {
         scope.units.len()
     } else {
@@ -768,6 +1425,7 @@ pub(crate) async fn load_relational_resume_authority(
         .await
         .context("load relational V2 message chains")?;
     let now = Utc::now();
+    let mut preclaim_unit_ids = HashSet::new();
 
     for unit in &units {
         let scope_member = scope
@@ -794,15 +1452,17 @@ pub(crate) async fn load_relational_resume_authority(
                     unit.specialist.as_deref() == Some(expected_specialist),
                     "relational V2 Unit specialist identity drifted"
                 );
-                if unit_workers.is_empty() {
+                let team_authority = stage_team_authorities.get(&unit.id);
+                let worker = select_stage_team_primary_worker(unit, &unit_workers, team_authority)?;
+                let seeded_stage_team_preclaim = worker.is_none()
+                    && (team_authority.is_some()
+                        || exact_replacement_preclaim(operation, execution, unit));
+                if worker.is_none() && !seeded_stage_team_preclaim {
                     return Err(relational_resume_incomplete(format!(
                         "Worker row is missing for Unit {}",
                         unit.id
                     )));
                 }
-                let team_authority = stage_team_authorities.get(&unit.id);
-                let worker = select_stage_team_primary_worker(unit, &unit_workers, team_authority)?
-                    .ok_or_else(|| relational_resume_incomplete("Unit owner Worker is missing"))?;
                 let expected_chain_agent = resume_worker_chain_agent(expected_specialist)
                     .ok_or_else(|| {
                         anyhow!(
@@ -824,7 +1484,7 @@ pub(crate) async fn load_relational_resume_authority(
                         .ok_or_else(|| {
                             relational_resume_incomplete("Worker status cannot be decoded")
                         })?;
-                    if bound_worker.id == worker.id {
+                    if worker.is_some_and(|worker| bound_worker.id == worker.id) {
                         worker_status = Some(bound_status);
                     } else if bound_status == RuntimeWorkerStatus::Running
                         && bound_worker
@@ -893,19 +1553,33 @@ pub(crate) async fn load_relational_resume_authority(
                         );
                     }
                 }
-                let worker_status = worker_status.ok_or_else(|| {
-                    relational_resume_incomplete("Unit owner Worker status is missing")
-                })?;
-                Some(ResumeWorkerSnapshot {
-                    id: worker.id,
-                    operation_id: worker.operation_id,
-                    stage_execution_id: worker.stage_execution_id,
-                    stage_run_unit_id: worker.stage_run_unit_id,
-                    organization_id: worker.organization_id,
-                    status: worker_status,
-                    lease_expires_at: worker.lease_expires_at,
-                    active_tool_call_id: worker.active_tool_call_id,
-                })
+                match worker {
+                    Some(worker) => {
+                        let worker_status = worker_status.ok_or_else(|| {
+                            relational_resume_incomplete("Unit owner Worker status is missing")
+                        })?;
+                        Some(ResumeWorkerSnapshot {
+                            id: worker.id,
+                            operation_id: worker.operation_id,
+                            stage_execution_id: worker.stage_execution_id,
+                            stage_run_unit_id: worker.stage_run_unit_id,
+                            organization_id: worker.organization_id,
+                            status: worker_status,
+                            lease_expires_at: worker.lease_expires_at,
+                            active_tool_call_id: worker.active_tool_call_id,
+                        })
+                    }
+                    None => {
+                        if !unit_workers.is_empty() {
+                            anyhow::ensure!(
+                                team_authority.is_some() && unit.status == "running",
+                                "fresh or replacement pre-claim unexpectedly owns Worker rows"
+                            );
+                        }
+                        preclaim_unit_ids.insert(unit.id);
+                        None
+                    }
+                }
             }
             None => {
                 anyhow::ensure!(
@@ -919,6 +1593,31 @@ pub(crate) async fn load_relational_resume_authority(
                 None
             }
         };
+        let seeded_stage_team_preclaim = worker_snapshot.is_none()
+            && (stage_team_authorities.contains_key(&unit.id)
+                || exact_replacement_preclaim(operation, execution, unit))
+            && unit.specialist.is_some();
+        let sealed_stage_team_completed_primary = worker_snapshot.as_ref().is_some_and(|worker| {
+            stage_team_authorities
+                .get(&unit.id)
+                .is_some_and(|authority| {
+                    authority
+                        .completed_synthesis_primary_worker_ids
+                        .contains(&worker.id)
+                })
+        });
+        let recoverable_target_intel_finalizer = worker_snapshot.as_ref().is_some_and(|worker| {
+            stage_team_authorities
+                .get(&unit.id)
+                .is_some_and(|authority| {
+                    unit_workers
+                        .iter()
+                        .find(|candidate| candidate.id == worker.id)
+                        .is_some_and(|candidate| {
+                            exact_target_intel_finalizer_recovery_preflight(candidate, authority)
+                        })
+                })
+        });
         let decision = classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
             operation_id: operation.operation_id,
             active_stage_execution_id: execution.id,
@@ -937,6 +1636,9 @@ pub(crate) async fn load_relational_resume_authority(
                 status: unit_status,
             }),
             worker: worker_snapshot,
+            seeded_stage_team_preclaim,
+            sealed_stage_team_completed_primary,
+            recoverable_target_intel_finalizer,
             now,
         });
         match decision {
@@ -958,7 +1660,11 @@ pub(crate) async fn load_relational_resume_authority(
             _ => {}
         }
     }
-    let minimum_worker_count = if specialist.is_some() { units.len() } else { 0 };
+    let minimum_worker_count = if specialist.is_some() {
+        units.len().saturating_sub(preclaim_unit_ids.len())
+    } else {
+        0
+    };
     if workers.len() < minimum_worker_count {
         return Err(relational_resume_incomplete(format!(
             "Worker rows are missing: expected at least {minimum_worker_count}, found {}",
@@ -1013,6 +1719,9 @@ pub(crate) struct RuntimeV2ResumeSnapshot {
     pub scope_unit_count: usize,
     pub unit: Option<ResumeUnitSnapshot>,
     pub worker: Option<ResumeWorkerSnapshot>,
+    pub seeded_stage_team_preclaim: bool,
+    pub sealed_stage_team_completed_primary: bool,
+    pub recoverable_target_intel_finalizer: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -1102,7 +1811,13 @@ pub(crate) fn classify_runtime_v2_resume(
     }
 
     let Some(worker) = snapshot.worker.as_ref() else {
-        return Decision::Reject(Reject::WorkerRequired);
+        return if snapshot.seeded_stage_team_preclaim
+            && matches!(unit.status, Unit::Queued | Unit::Running)
+        {
+            Decision::ResumeSpecialist
+        } else {
+            Decision::Reject(Reject::WorkerRequired)
+        };
     };
     if worker.id.is_nil()
         || worker.operation_id != snapshot.operation_id
@@ -1118,6 +1833,20 @@ pub(crate) fn classify_runtime_v2_resume(
         } else {
             Decision::Reject(Reject::InvalidWorkerState)
         };
+    }
+    if snapshot.sealed_stage_team_completed_primary
+        && unit.status == Unit::Running
+        && worker.status == Worker::Passed
+    {
+        return Decision::ResumeSpecialist;
+    }
+    if snapshot.recoverable_target_intel_finalizer
+        && unit.status == Unit::Running
+        && worker.status == Worker::Failed
+        && worker.lease_expires_at.is_none()
+        && worker.active_tool_call_id.is_none()
+    {
+        return Decision::ResumeSpecialist;
     }
 
     match worker.status {
@@ -1371,6 +2100,38 @@ mod tests {
         }
     }
 
+    fn exhausted_primary_output(
+        unit: &StageRunUnitRow,
+        plan: &StageTeamPlanRow,
+        item: &StageWorkItemRow,
+        worker: &StageWorkerRunRow,
+    ) -> StageWorkerOutputRow {
+        StageWorkerOutputRow {
+            id: Uuid::new_v4(),
+            team_plan_id: plan.id,
+            work_item_id: item.id,
+            worker_run_id: worker.id,
+            operation_id: unit.operation_id,
+            stage_execution_id: unit.stage_execution_id,
+            stage_run_unit_id: unit.id,
+            scope_snapshot_id: unit.scope_snapshot_id,
+            organization_id: unit.organization_id,
+            output_schema: item.output_schema.clone(),
+            output_version: 1,
+            business_disposition: "blocked".to_string(),
+            canonical_output: serde_json::json!({
+                "kind": "stage_team_attempts_exhausted",
+                "failure_code": "stage_team_worker_lease_expired"
+            }),
+            canonical_fact_refs: serde_json::json!([]),
+            evidence_ids: Vec::new(),
+            checked_empty_cells: serde_json::json!([]),
+            blocker_codes: vec!["STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED".to_string()],
+            output_hash: "sha256:exhausted".to_string(),
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn stage_team_resume_selects_unique_controller_and_accepts_dynamic_children() {
         let unit = stage_team_resume_unit();
@@ -1396,6 +2157,9 @@ mod tests {
         let authority = StageTeamResumeAuthority {
             plan,
             work_items: vec![leader_item, child_item],
+            outputs: Vec::new(),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
         let workers = [&child_worker, &leader_worker];
@@ -1404,6 +2168,83 @@ mod tests {
             .expect("leader Worker");
 
         assert_eq!(selected.id, leader_worker.id);
+    }
+
+    #[test]
+    fn stage_team_resume_accepts_only_witnessed_completed_normal_primary() {
+        let unit = stage_team_resume_unit();
+        let mut plan = stage_team_resume_plan(&unit);
+        plan.leader_role = "investigation".to_string();
+        plan.aggregator_role = Some("investigation".to_string());
+        let mut leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "investigation",
+            "investigation_primary",
+            "leader:primary",
+            false,
+        );
+        leader_item.status = "completed".to_string();
+        leader_item.terminal_at = Some(Utc::now());
+        let leader_worker = stage_team_resume_worker(&unit, &leader_item);
+        let mut authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item],
+            outputs: Vec::new(),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        assert!(
+            select_stage_team_primary_worker(&unit, &[&leader_worker], Some(&authority)).is_err(),
+            "a generic passed Primary must remain terminal"
+        );
+
+        authority
+            .completed_synthesis_primary_worker_ids
+            .insert(leader_worker.id);
+        let workers = [&leader_worker];
+        let selected = select_stage_team_primary_worker(&unit, &workers, Some(&authority))
+            .expect("sealed normal Primary is resumable")
+            .expect("completed normal Primary remains the logical Primary");
+        assert_eq!(selected.id, leader_worker.id);
+    }
+
+    #[test]
+    fn stage_team_resume_accepts_exact_fresh_preclaim_without_worker() {
+        let mut unit = stage_team_resume_unit();
+        unit.status = "queued".to_string();
+        unit.started_at = None;
+        unit.terminal_at = None;
+        let mut plan = stage_team_resume_plan(&unit);
+        plan.requests_closed_at = None;
+        let mut leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "company_stage_controller",
+            "aggregate_stage_unit",
+            "leader:primary",
+            false,
+        );
+        leader_item.status = "queued".to_string();
+        leader_item.started_at = None;
+        leader_item.terminal_at = None;
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item],
+            outputs: Vec::new(),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        assert!(
+            select_stage_team_primary_worker(&unit, &[], Some(&authority))
+                .expect("fresh Stage Team pre-claim is resumable")
+                .is_none()
+        );
+
+        unit.status = "running".to_string();
+        assert!(select_stage_team_primary_worker(&unit, &[], Some(&authority)).is_err());
     }
 
     #[test]
@@ -1433,6 +2274,9 @@ mod tests {
         let authority = StageTeamResumeAuthority {
             plan,
             work_items: vec![leader_item, child_item],
+            outputs: Vec::new(),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
         assert!(select_stage_team_primary_worker(
@@ -1447,6 +2291,140 @@ mod tests {
             Some(&authority),
         )
         .is_err());
+    }
+
+    #[test]
+    fn stage_team_resume_accepts_only_exact_sealed_synthesis_recovery_preclaim() {
+        let mut unit = stage_team_resume_unit();
+        unit.status = "running".to_string();
+        unit.terminal_at = None;
+        let plan = stage_team_resume_plan(&unit);
+        let mut leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "company_stage_controller",
+            "aggregate_stage_unit",
+            "leader:primary",
+            false,
+        );
+        leader_item.status = "exhausted".to_string();
+        let mut leader_worker = stage_team_resume_worker(&unit, &leader_item);
+        leader_worker.status = "failed".to_string();
+        let output = exhausted_primary_output(&unit, &plan, &leader_item, &leader_worker);
+        let mut recovery_item = leader_item.clone();
+        recovery_item.id = Uuid::new_v5(
+            &leader_item.id,
+            b"sealed-investigation-synthesis-recovery-primary-v1",
+        );
+        recovery_item.stable_key = format!("leader:synthesis-recovery:{}", leader_item.id);
+        recovery_item.status = "queued".to_string();
+        recovery_item.started_at = None;
+        recovery_item.terminal_at = None;
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item, recovery_item],
+            outputs: vec![output],
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        assert!(
+            select_stage_team_primary_worker(&unit, &[&leader_worker], Some(&authority))
+                .expect("exact sealed synthesis recovery is resumable")
+                .is_none()
+        );
+
+        let mut invalid = authority;
+        invalid.outputs[0].canonical_output["failure_code"] =
+            serde_json::json!("different_failure");
+        assert!(
+            select_stage_team_primary_worker(&unit, &[&leader_worker], Some(&invalid)).is_err()
+        );
+    }
+
+    #[test]
+    fn stage_team_resume_accepts_historical_exhausted_v1_and_exact_active_v2() {
+        let mut unit = stage_team_resume_unit();
+        unit.status = "running".to_string();
+        unit.terminal_at = None;
+        let plan = stage_team_resume_plan(&unit);
+        let mut leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "company_stage_controller",
+            "investigation_primary",
+            "leader:primary",
+            false,
+        );
+        leader_item.status = "exhausted".to_string();
+        let mut leader_worker = stage_team_resume_worker(&unit, &leader_item);
+        leader_worker.status = "failed".to_string();
+        let leader_output = exhausted_primary_output(&unit, &plan, &leader_item, &leader_worker);
+
+        let mut recovery_v1 = leader_item.clone();
+        recovery_v1.id = Uuid::new_v5(
+            &leader_item.id,
+            b"sealed-investigation-synthesis-recovery-primary-v1",
+        );
+        recovery_v1.stable_key = format!("leader:synthesis-recovery:{}", leader_item.id);
+        let mut recovery_v1_worker = stage_team_resume_worker(&unit, &recovery_v1);
+        recovery_v1_worker.worker_generation = 1;
+        recovery_v1_worker.status = "failed".to_string();
+        let recovery_v1_output =
+            exhausted_primary_output(&unit, &plan, &recovery_v1, &recovery_v1_worker);
+
+        let mut recovery_v2 = recovery_v1.clone();
+        recovery_v2.id = Uuid::new_v5(
+            &recovery_v1.id,
+            b"sealed-investigation-synthesis-recovery-primary-v2",
+        );
+        recovery_v2.kind = "investigation_primary_recovery".to_string();
+        recovery_v2.status = "queued".to_string();
+        recovery_v2.started_at = None;
+        recovery_v2.terminal_at = None;
+        let mut authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item, recovery_v1, recovery_v2.clone()],
+            outputs: vec![leader_output, recovery_v1_output],
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        assert!(select_stage_team_primary_worker(
+            &unit,
+            &[&leader_worker, &recovery_v1_worker],
+            Some(&authority),
+        )
+        .expect("exact queued synthesis recovery v2 is resumable")
+        .is_none());
+
+        let mut recovery_v2_worker = stage_team_resume_worker(&unit, &recovery_v2);
+        recovery_v2_worker.worker_generation = 2;
+        recovery_v2_worker.status = "running".to_string();
+        recovery_v2_worker.terminal_at = None;
+        recovery_v2.status = "running".to_string();
+        recovery_v2.started_at = Some(Utc::now());
+        authority.work_items[2] = recovery_v2.clone();
+        let active_workers = [&leader_worker, &recovery_v1_worker, &recovery_v2_worker];
+        let selected = select_stage_team_primary_worker(&unit, &active_workers, Some(&authority))
+            .expect("exact running synthesis recovery v2 is resumable")
+            .expect("v2 Worker is the logical Primary");
+        assert_eq!(selected.id, recovery_v2_worker.id);
+
+        recovery_v2.status = "completed".to_string();
+        recovery_v2.terminal_at = Some(Utc::now());
+        authority.work_items[2] = recovery_v2;
+        recovery_v2_worker.status = "passed".to_string();
+        recovery_v2_worker.terminal_at = Some(Utc::now());
+        authority
+            .completed_synthesis_primary_worker_ids
+            .insert(recovery_v2_worker.id);
+        let completed_workers = [&leader_worker, &recovery_v1_worker, &recovery_v2_worker];
+        let completed =
+            select_stage_team_primary_worker(&unit, &completed_workers, Some(&authority))
+                .expect("sealed completed synthesis recovery v2 is resumable")
+                .expect("completed v2 Worker remains the logical Primary");
+        assert_eq!(completed.id, recovery_v2_worker.id);
     }
 
     #[test]
@@ -1551,6 +2529,28 @@ mod tests {
             resume_worker_chain_agent("reporter"),
             Some(AgentType::Reporter)
         );
+        assert_eq!(
+            resume_worker_chain_agent("application_understanding"),
+            Some(AgentType::Pentester)
+        );
+        assert_eq!(
+            resume_worker_chain_agent("investigation"),
+            Some(AgentType::Pentester)
+        );
+    }
+
+    #[test]
+    fn root_stage_may_resume_between_execution_start_and_unit_seed() {
+        assert!(exact_root_stage_preclaim(None, "started", 0, 0));
+        assert!(!exact_root_stage_preclaim(
+            Some("reporter"),
+            "started",
+            0,
+            0
+        ));
+        assert!(!exact_root_stage_preclaim(None, "completed", 0, 0));
+        assert!(!exact_root_stage_preclaim(None, "started", 1, 0));
+        assert!(!exact_root_stage_preclaim(None, "started", 0, 1));
     }
 
     fn base() -> RuntimeV2ResumeSnapshot {
@@ -1564,6 +2564,9 @@ mod tests {
             scope_unit_count: 1,
             unit: None,
             worker: None,
+            seeded_stage_team_preclaim: false,
+            sealed_stage_team_completed_primary: false,
+            recoverable_target_intel_finalizer: false,
             now: Utc::now(),
         }
     }
@@ -1635,6 +2638,82 @@ mod tests {
         assert_eq!(
             classify_runtime_v2_resume(&specialist(false, false)),
             RuntimeV2ResumeDecision::RequeueExpiredWorker
+        );
+
+        let mut seeded_team = base();
+        seeded_team.seeded_stage_team_preclaim = true;
+        seeded_team.unit = Some(ResumeUnitSnapshot {
+            id: Uuid::new_v4(),
+            operation_id: seeded_team.operation_id,
+            stage_execution_id: seeded_team.active_stage_execution_id,
+            organization_id: Uuid::new_v4(),
+            is_root: true,
+            specialist: Some("investigation".to_string()),
+            status: RuntimeStageUnitStatus::Queued,
+        });
+        assert_eq!(
+            classify_runtime_v2_resume(&seeded_team),
+            RuntimeV2ResumeDecision::ResumeSpecialist
+        );
+
+        seeded_team.unit.as_mut().expect("seeded team Unit").status =
+            RuntimeStageUnitStatus::Running;
+        assert_eq!(
+            classify_runtime_v2_resume(&seeded_team),
+            RuntimeV2ResumeDecision::ResumeSpecialist
+        );
+
+        seeded_team.seeded_stage_team_preclaim = false;
+        assert_eq!(
+            classify_runtime_v2_resume(&seeded_team),
+            RuntimeV2ResumeDecision::Reject(RuntimeV2ResumeReject::WorkerRequired)
+        );
+
+        let mut completed_recovery = specialist(false, false);
+        completed_recovery
+            .worker
+            .as_mut()
+            .expect("completed recovery Worker")
+            .status = RuntimeWorkerStatus::Passed;
+        completed_recovery.sealed_stage_team_completed_primary = true;
+        assert_eq!(
+            classify_runtime_v2_resume(&completed_recovery),
+            RuntimeV2ResumeDecision::ResumeSpecialist
+        );
+
+        completed_recovery.sealed_stage_team_completed_primary = false;
+        assert_eq!(
+            classify_runtime_v2_resume(&completed_recovery),
+            RuntimeV2ResumeDecision::Reject(RuntimeV2ResumeReject::InvalidWorkerState)
+        );
+    }
+
+    #[test]
+    fn target_intel_finalizer_recovery_admits_only_the_exact_terminal_witness() {
+        let mut recovery = specialist(false, false);
+        let worker = recovery.worker.as_mut().expect("Target Intel Controller");
+        worker.status = RuntimeWorkerStatus::Failed;
+        worker.lease_expires_at = None;
+
+        assert_eq!(
+            classify_runtime_v2_resume(&recovery),
+            RuntimeV2ResumeDecision::Reject(RuntimeV2ResumeReject::InvalidWorkerState)
+        );
+
+        recovery.recoverable_target_intel_finalizer = true;
+        assert_eq!(
+            classify_runtime_v2_resume(&recovery),
+            RuntimeV2ResumeDecision::ResumeSpecialist
+        );
+
+        recovery
+            .worker
+            .as_mut()
+            .expect("Target Intel Controller")
+            .active_tool_call_id = Some(Uuid::new_v4());
+        assert_eq!(
+            classify_runtime_v2_resume(&recovery),
+            RuntimeV2ResumeDecision::Reject(RuntimeV2ResumeReject::InvalidWorkerState)
         );
     }
 

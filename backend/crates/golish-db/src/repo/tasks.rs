@@ -286,6 +286,20 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                            )
                            AND (
                                (
+                                   os.current_stage='reporting'
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM stage_run_units reporting_preclaim_unit
+                                       WHERE reporting_preclaim_unit.operation_id=os.operation_id
+                                         AND reporting_preclaim_unit.stage_execution_id=active_execution.id
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM stage_worker_runs reporting_preclaim_worker
+                                       WHERE reporting_preclaim_worker.operation_id=os.operation_id
+                                         AND reporting_preclaim_worker.stage_execution_id=active_execution.id
+                                   )
+                               )
+                               OR
+                               (
                                    (
                                        SELECT COUNT(*) FROM stage_run_units root_unit_count
                                        WHERE root_unit_count.operation_id=os.operation_id
@@ -922,6 +936,34 @@ mod tests {
         assert!(sql.contains("operation_turns.id=$4"), "sql={sql}");
         assert!(sql.contains("SELECT $5,$1,closed_turn.ordinal+1,$6,'running'"));
         assert!(sql.contains("RETURNING exact_source.source"), "sql={sql}");
+    }
+
+    #[test]
+    fn relational_resume_accepts_only_the_exact_reporting_root_preclaim() {
+        for required in [
+            "os.current_stage='reporting'",
+            "reporting_preclaim_unit.operation_id=os.operation_id",
+            "reporting_preclaim_unit.stage_execution_id=active_execution.id",
+            "reporting_preclaim_worker.operation_id=os.operation_id",
+            "reporting_preclaim_worker.stage_execution_id=active_execution.id",
+        ] {
+            assert!(
+                V2_RELATIONAL_RECOVERABLE_SQL.contains(required),
+                "missing {required}: {V2_RELATIONAL_RECOVERABLE_SQL}"
+            );
+            assert!(
+                exact_resumable_runtime_source_sql().contains(required),
+                "source selector drifted from shared relational predicate"
+            );
+            assert!(
+                claim_exact_resumable_runtime_source_sql().contains(required),
+                "atomic claim drifted from source selector"
+            );
+        }
+        assert!(
+            V2_RELATIONAL_RECOVERABLE_SQL.contains("snapshot.sealed_at IS NOT NULL"),
+            "the reporting preclaim must remain behind the frozen-scope authority"
+        );
     }
 
     #[test]

@@ -125,8 +125,35 @@ fn build_delete_by_org_run_sql(table: &str) -> String {
 /// `DELETE` an organization-owned mutable stage fact. These tables have no
 /// operation/run key, so the compound reset first rejects every active
 /// operation whose frozen scope overlaps the selected operation.
+#[allow(dead_code)]
 fn build_delete_mutable_org_fact_sql(table: &str) -> String {
     format!("DELETE FROM {table} WHERE organization_id = ANY($1)")
+}
+
+fn build_delete_authority_unbound_org_fact_sql(table: &str, ref_kind: &str) -> String {
+    format!(
+        "DELETE FROM {table} fact WHERE fact.organization_id = ANY($1) \
+         AND NOT EXISTS (SELECT 1 FROM tool_truth_business_ref_authorities authority \
+                         WHERE authority.ref_kind = '{ref_kind}' AND authority.ref_uuid = fact.id)"
+    )
+}
+
+fn build_delete_unbound_web_origins_sql() -> String {
+    "DELETE FROM web_origins origin WHERE origin.organization_id = ANY($1) \
+     AND NOT EXISTS (SELECT 1 FROM enumeration_endpoint_occurrences occurrence \
+                     WHERE occurrence.source_web_origin_id=origin.id \
+                        OR occurrence.resolved_web_origin_id=origin.id) \
+     AND NOT EXISTS (SELECT 1 FROM enumeration_endpoint_groups endpoint_group \
+                     WHERE endpoint_group.resolved_web_origin_id=origin.id)"
+        .to_string()
+}
+
+fn build_delete_unprojected_api_endpoints_sql() -> String {
+    "DELETE FROM api_endpoints endpoint \
+     WHERE endpoint.target_id IN (SELECT id FROM targets WHERE organization_id = ANY($1)) \
+       AND NOT EXISTS (SELECT 1 FROM enumeration_endpoint_group_api_links link \
+                       WHERE link.endpoint_id=endpoint.id)"
+        .to_string()
 }
 
 fn build_delete_crawl_observations_by_target_org_sql() -> String {
@@ -238,6 +265,7 @@ async fn delete_by_org_run(
     Ok(res.rows_affected())
 }
 
+#[allow(dead_code)]
 async fn delete_mutable_org_fact(
     conn: &mut PgConnection,
     table: &str,
@@ -298,10 +326,27 @@ pub async fn purge_eas_domain(
     counts.expansion_queue += delete_by_org_run(conn, "expansion_queue", org_ids, run_ids).await?;
     // Delete observations first so their count is explicit; deleting the
     // origin identity then cascades any remaining origin-owned provenance.
-    counts.web_origin_observations +=
-        delete_mutable_org_fact(conn, "web_origin_observations", org_ids).await?;
-    counts.web_origins += delete_mutable_org_fact(conn, "web_origins", org_ids).await?;
-    counts.network_endpoints += delete_mutable_org_fact(conn, "network_endpoints", org_ids).await?;
+    counts.web_origin_observations += sqlx::query(&build_delete_authority_unbound_org_fact_sql(
+        "web_origin_observations",
+        "web_origin_observation",
+    ))
+    .bind(org_ids)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    counts.web_origins += sqlx::query(&build_delete_unbound_web_origins_sql())
+        .bind(org_ids)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected();
+    counts.network_endpoints += sqlx::query(&build_delete_authority_unbound_org_fact_sql(
+        "network_endpoints",
+        "network_endpoint",
+    ))
+    .bind(org_ids)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
     counts.screenshots += sqlx::query(build_delete_screenshots_by_operation_sql())
         .bind(operation_id)
         .execute(&mut *conn)
@@ -317,7 +362,17 @@ pub async fn purge_enumeration_domain(
     org_ids: &[Uuid],
     counts: &mut StagePurgeCounts,
 ) -> Result<()> {
-    counts.api_endpoints += delete_by_target_org(conn, "api_endpoints", org_ids).await?;
+    // Immutable Enumeration V2 truth is intentionally absent from stage_purge:
+    // enumeration_endpoint_occurrences, assessments, groups, sealed receipt
+    // inputs and normalized authorities survive every reset. Only unprojected
+    // legacy aggregate rows remain purgeable.
+    if !org_ids.is_empty() {
+        counts.api_endpoints += sqlx::query(&build_delete_unprojected_api_endpoints_sql())
+            .bind(org_ids)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+    }
     counts.js_analysis += delete_by_target_org(conn, "js_analysis_results", org_ids).await?;
     counts.directory_entries += delete_by_target_org(conn, "directory_entries", org_ids).await?;
     if !org_ids.is_empty() {
@@ -506,6 +561,30 @@ mod tests {
                 format!("DELETE FROM {table} WHERE organization_id = ANY($1)")
             );
         }
+    }
+
+    #[test]
+    fn eas_reset_preserves_normalized_authority_and_occurrence_origins() {
+        let observation = build_delete_authority_unbound_org_fact_sql(
+            "web_origin_observations",
+            "web_origin_observation",
+        );
+        assert!(observation.contains("tool_truth_business_ref_authorities"));
+        assert!(observation.contains("authority.ref_uuid = fact.id"));
+
+        let origins = build_delete_unbound_web_origins_sql();
+        assert!(origins.contains("enumeration_endpoint_occurrences"));
+        assert!(origins.contains("source_web_origin_id=origin.id"));
+        assert!(origins.contains("resolved_web_origin_id=origin.id"));
+        assert!(origins.contains("enumeration_endpoint_groups"));
+    }
+
+    #[test]
+    fn enumeration_reset_preserves_projected_api_aggregate() {
+        let sql = build_delete_unprojected_api_endpoints_sql();
+        assert!(sql.contains("enumeration_endpoint_group_api_links"));
+        assert!(sql.contains("link.endpoint_id=endpoint.id"));
+        assert!(sql.contains("organization_id = ANY($1)"));
     }
 
     #[test]

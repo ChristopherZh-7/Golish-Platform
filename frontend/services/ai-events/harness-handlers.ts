@@ -152,3 +152,18 @@ export const handleHarnessTrace: EventHandler<Extract<AiEvent, { type: "harness_
     requestId: stageRunRequestIdFromAgentRequestId(event.agent_request_id),
   });
 };
+
+/**
+ * Retain only a monotonic refresh hint. Store validation binds it to the exact
+ * selected Investigation stage_run; the event never becomes projection data.
+ */
+export const handleInvestigationProjectionChanged: EventHandler<
+  Extract<AiEvent, { type: "investigation_projection_changed" }>
+> = (event, ctx) => {
+  ctx.getState().setInvestigationRefreshHint(ctx.sessionId, {
+    operationId: event.operation_id,
+    stageExecutionId: event.stage_execution_id,
+    stageRunRequestId: event.stage_run_request_id,
+    changeSeq: event.change_seq,
+  });
+};

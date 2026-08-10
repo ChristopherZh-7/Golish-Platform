@@ -1,0 +1,34 @@
+{
+  "tool": {
+    "id": "arjun",
+    "pentestPhase": ["enum", "vuln_id"],
+    "name": "Arjun",
+    "description": "Discover hidden HTTP parameters on an exact authorized endpoint.",
+    "executable": "arjun",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "version": "2.2.7",
+    "category": "web",
+    "subcategory": "param",
+    "tier": "recommended",
+    "tags": ["parameter", "active", "jit-required", "agpl-3.0-only"],
+    "install": {
+      "method": "pip",
+      "source": "arjun",
+      "macos": {"method": "pip", "source": "arjun"},
+      "linux": {"method": "pip", "source": "arjun"},
+      "windows": {"method": "pip", "source": "arjun"}
+    },
+    "params": [
+      {"label": "Exact endpoint", "flag": "-u", "type": "string", "required": true, "description": "One exact authorized URL; Investigation execution additionally requires host JIT admission.", "placeholder": "https://target.example/path"},
+      {"label": "HTTP method", "flag": "-m", "type": "select", "required": true, "options": [{"value": "GET", "label": "GET"}, {"value": "POST", "label": "POST"}]},
+      {"label": "Rate limit", "flag": "--rate-limit", "type": "string", "description": "Bounded requests per second.", "default": "5"},
+      {"label": "JSON output", "flag": "-oJ", "type": "string", "description": "Write raw JSON artifact.", "placeholder": "arjun.json"}
+    ],
+    "skills": [
+      {"id": "local-help", "name": "Local help smoke", "description": "No-target executable smoke only.", "args": "--help", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "json", "produces": ["parameter", "endpoint", "info"], "patterns": [], "fields": {}, "detect": "Arjun|parameters? found"}
+  }
+}

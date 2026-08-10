@@ -70,6 +70,14 @@ impl DbTracker {
         self.repo.as_deref()
     }
 
+    /// Clone the application-owned repository capability for an async hook
+    /// whose lifetime may outlive this borrowed tracker frame. The returned
+    /// trait object preserves the same closed repository identity; callers do
+    /// not construct or substitute a repository from model-visible data.
+    pub fn repo_arc(&self) -> Option<Arc<dyn crate::db_traits::DbRepoProvider>> {
+        self.repo.clone()
+    }
+
     /// Override the session UUID this tracker stamps on recorded rows
     /// (`tool_calls`, etc.). Used by the headless `--stage-run` path to unify the
     /// tracker's session with the orchestrator's `session_id` (resolved from the

@@ -7,8 +7,10 @@
 //! and shares the `convert` status/type helpers. Splitting keeps each file
 //! within the size budget with zero behavior change.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -26,8 +28,19 @@ use golish_app_core::ports::vuln::{
 
 mod attack_execution;
 mod convert;
+// Kept in-tree as an audit reference until the integrated branch is committed;
+// the old module combined Browser, JsApi, Parameter and projection authority.
+mod enumeration_lanes;
+#[cfg(any())]
+mod enumeration_producer;
 pub(crate) mod evidence;
+pub use evidence::TargetIntelSemanticReceiptStore;
 pub mod hypothesis_registry;
+pub mod investigation_analysis_host;
+pub use investigation_analysis_host::PgInvestigationAnalysisHostRepository;
+pub mod investigation_nested_dispatch;
+mod investigation_verification_advisory;
+pub use investigation_nested_dispatch::PgInvestigationNestedDispatchRepository;
 pub mod knowledge_context;
 pub mod knowledge_memory;
 mod orchestration;
@@ -36,9 +49,14 @@ pub use recon::TargetIntelReceiptHost;
 pub mod reporting;
 pub(crate) mod reporting_gate;
 mod runtime_memory;
+pub(crate) use runtime_memory::operation_state_view_from_db;
 mod tasks;
 mod tool_truth;
 pub mod tool_truth_revalidation;
+mod unified_investigation;
+pub mod verification_campaign;
+mod verification_campaign_scheduler;
+pub mod verification_send_authority;
 mod wiki;
 
 pub struct GolishDbRepoProvider {
@@ -59,6 +77,119 @@ pub struct GolishDbRepoProvider {
     // Pentest execution-plan reads/writes route through the pentest service port
     // (servitization S1-2d) instead of calling the pentest plan repo directly.
     pentest_plan: Arc<dyn PentestPlanPort>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct EnumerationCoverageGateReceiptRow {
+    target_id: Uuid,
+    exact_origin: String,
+    terminal_disposition: String,
+    missing: i64,
+    unresolved_count: i64,
+    closure_graph_sha256: Option<String>,
+    recomputed_closure_graph_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EnumerationCoverageGateCensus {
+    frozen_subject_count: i64,
+    coverage_receipt_count: i64,
+    missing_coverage_receipt_count: i64,
+    invalid_coverage_receipt_count: i64,
+    closure_graph_drift_count: i64,
+    residual_occurrence_count: i64,
+}
+
+fn enumeration_coverage_gate_census(
+    frozen_members: &[EnumerationFrozenRootMemberView],
+    coverage_rows: &[EnumerationCoverageGateReceiptRow],
+) -> anyhow::Result<EnumerationCoverageGateCensus> {
+    // Enumeration execution is keyed by canonical Web Origin. A domain target
+    // and an explicit URL target may legitimately project the same origin; the
+    // frozen target ids are aliases of one subject, not two scan obligations.
+    let mut frozen_aliases = BTreeMap::<String, BTreeSet<Uuid>>::new();
+    for member in frozen_members {
+        frozen_aliases
+            .entry(member.exact_origin.clone())
+            .or_default()
+            .insert(member.target_id);
+    }
+    anyhow::ensure!(
+        !frozen_aliases.is_empty(),
+        "ENUMERATION_GATE_FROZEN_SUBJECTS_EMPTY"
+    );
+
+    let mut coverage_by_subject = BTreeMap::<String, Vec<bool>>::new();
+    let mut invalid_coverage_receipt_count = 0_i64;
+    let mut closure_graph_drift_count = 0_i64;
+    let mut residual_occurrence_count = 0_i64;
+    for row in coverage_rows {
+        let graph_is_valid = row.closure_graph_sha256.as_deref()
+            == Some(row.recomputed_closure_graph_sha256.as_str());
+        if !graph_is_valid {
+            closure_graph_drift_count += 1;
+        }
+        let receipt_is_valid = frozen_aliases
+            .get(&row.exact_origin)
+            .is_some_and(|aliases| aliases.contains(&row.target_id))
+            && row.missing == 0
+            && matches!(
+                row.terminal_disposition.as_str(),
+                "found" | "checked_empty" | "terminal_with_residual"
+            )
+            && graph_is_valid;
+        if !receipt_is_valid {
+            invalid_coverage_receipt_count += 1;
+        }
+        residual_occurrence_count = residual_occurrence_count
+            .checked_add(row.unresolved_count)
+            .ok_or_else(|| anyhow::anyhow!("ENUMERATION_GATE_RESIDUAL_COUNT_OVERFLOW"))?;
+        coverage_by_subject
+            .entry(row.exact_origin.clone())
+            .or_default()
+            .push(receipt_is_valid);
+    }
+
+    let mut missing_coverage_receipt_count = 0_i64;
+    for exact_origin in frozen_aliases.keys() {
+        match coverage_by_subject.get(exact_origin) {
+            Some(rows) if rows.len() == 1 && rows[0] => {}
+            Some(rows) => {
+                missing_coverage_receipt_count += 1;
+                invalid_coverage_receipt_count += i64::try_from(rows.len().saturating_sub(1))?;
+            }
+            None => missing_coverage_receipt_count += 1,
+        }
+    }
+
+    Ok(EnumerationCoverageGateCensus {
+        frozen_subject_count: i64::try_from(frozen_aliases.len())?,
+        coverage_receipt_count: i64::try_from(coverage_rows.len())?,
+        missing_coverage_receipt_count,
+        invalid_coverage_receipt_count,
+        closure_graph_drift_count,
+        residual_occurrence_count,
+    })
+}
+
+#[derive(sqlx::FromRow)]
+struct EnumerationUnresolvedOccurrenceRow {
+    occurrence_id: Uuid,
+    source_target_id: Uuid,
+    exact_origin: String,
+    producer_receipt_id: Uuid,
+    producer_lane: String,
+    producer_execution_authority_id: Uuid,
+    producer_receipt_set_sha256: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CandidateCampaignAdmissionSubjectRow {
+    scope_snapshot_id: Uuid,
+    revision_id: Uuid,
+    verification_plan_id: Uuid,
+    objective_id: Uuid,
+    generation_member_count: i64,
 }
 
 impl GolishDbRepoProvider {
@@ -100,6 +231,46 @@ fn summarize_scope_review_results(
 
 #[async_trait]
 impl DbRepoProvider for GolishDbRepoProvider {
+    fn investigation_nested_dispatch_repository(
+        &self,
+    ) -> InvestigationNestedDispatchResult<Arc<dyn InvestigationNestedDispatchRepository>> {
+        Ok(Arc::new(PgInvestigationNestedDispatchRepository::new(
+            self.pool.clone(),
+        )))
+    }
+
+    fn investigation_analysis_host_repository(
+        &self,
+    ) -> InvestigationAnalysisHostResult<Arc<dyn InvestigationAnalysisHostRepository>> {
+        Ok(Arc::new(PgInvestigationAnalysisHostRepository::new(
+            self.pool.clone(),
+        )))
+    }
+
+    fn unified_investigation_repository(
+        &self,
+    ) -> UnifiedInvestigationRepoResult<Arc<dyn UnifiedInvestigationRepository>> {
+        Ok(Arc::new(
+            unified_investigation::PgUnifiedInvestigationRepository::new(self.pool.clone()),
+        ))
+    }
+
+    fn verification_campaign_repository(
+        &self,
+    ) -> RepoResult<Arc<dyn VerificationCampaignRepository>> {
+        Ok(Arc::new(
+            verification_campaign::PgVerificationCampaignRepository::new(self.pool.clone()),
+        ))
+    }
+
+    fn verification_campaign_shadow_repository(
+        &self,
+    ) -> RepoResult<Arc<dyn VerificationCampaignShadowRepository>> {
+        Ok(Arc::new(
+            verification_campaign::PgVerificationCampaignRepository::new(self.pool.clone()),
+        ))
+    }
+
     async fn tool_truth_contract(
         &self,
         operation_id: Uuid,
@@ -114,6 +285,29 @@ impl DbRepoProvider for GolishDbRepoProvider {
         request: SealToolTruthDenominatorRequest,
     ) -> anyhow::Result<ToolTruthDenominatorView> {
         self.tool_truth_seal_denominator_impl(request).await
+    }
+
+    async fn tool_truth_finalize_stage_root(
+        &self,
+        request: FinalizeStageToolTruthRequest,
+    ) -> anyhow::Result<StageToolTruthCloseoutView> {
+        self.tool_truth_finalize_stage_root_impl(request).await
+    }
+
+    async fn enumeration_frozen_root_members(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_execution_id: Uuid,
+        stage_run_unit_id: Uuid,
+    ) -> anyhow::Result<Vec<EnumerationFrozenRootMemberView>> {
+        self.enumeration_frozen_root_members_impl(
+            operation_id,
+            organization_id,
+            stage_execution_id,
+            stage_run_unit_id,
+        )
+        .await
     }
 
     async fn tool_truth_record_shadow_assessment(
@@ -305,6 +499,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn passive_scans_insert(
         &self,
+        operation_id: Option<Uuid>,
         target_id: Uuid,
         project_path: &str,
         scan_type: &str,
@@ -313,6 +508,7 @@ impl DbRepoProvider for GolishDbRepoProvider {
         raw_output: Option<&str>,
         severity: &str,
     ) -> anyhow::Result<serde_json::Value> {
+        let _ = operation_id;
         self.passive_scans_insert_impl(
             target_id,
             project_path,
@@ -330,7 +526,17 @@ impl DbRepoProvider for GolishDbRepoProvider {
         target_id: Uuid,
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value> {
-        self.query_target_data_impl(target_id, sections).await
+        self.query_target_data_impl(None, target_id, sections).await
+    }
+
+    async fn query_target_data_for_operation(
+        &self,
+        operation_id: Option<Uuid>,
+        target_id: Uuid,
+        sections: &[String],
+    ) -> anyhow::Result<serde_json::Value> {
+        self.query_target_data_impl(operation_id, target_id, sections)
+            .await
     }
 
     async fn in_scope_assets(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {
@@ -418,6 +624,608 @@ impl DbRepoProvider for GolishDbRepoProvider {
             current_wave_target_ids,
             current_wave_asset_values,
             operation_id,
+        )
+        .await
+    }
+
+    async fn enumeration_occurrence_gate_snapshot(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+    ) -> anyhow::Result<Option<EnumerationOccurrenceGateSnapshot>> {
+        let contract: Option<String> = sqlx::query_scalar(
+            "SELECT enumeration_analysis_contract FROM operation_state WHERE operation_id=$1",
+        )
+        .bind(operation_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        let contract = contract
+            .ok_or_else(|| anyhow::anyhow!("Enumeration occurrence Gate operation is missing"))?;
+        if contract == "legacy_v1" {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            matches!(contract.as_str(), "agent_team_v2_shadow" | "agent_team_v2"),
+            "Enumeration occurrence Gate contract is invalid"
+        );
+        let unit: Option<(Uuid, Uuid)> = sqlx::query_as(
+            r#"SELECT id,stage_execution_id
+                 FROM stage_run_units
+                WHERE operation_id=$1 AND organization_id=$2
+                  AND stage_kind='enumeration'
+                  AND status IN ('running','gate_blocked')
+                ORDER BY generation DESC,updated_at DESC,id DESC
+                LIMIT 1"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+        let (stage_run_unit_id, stage_execution_id) = unit.ok_or_else(|| {
+            anyhow::anyhow!("Enumeration occurrence Gate has no active exact Stage Team Unit")
+        })?;
+        let frozen_members = self
+            .enumeration_frozen_root_members_impl(
+                operation_id,
+                organization_id,
+                stage_execution_id,
+                stage_run_unit_id,
+            )
+            .await?;
+        let coverage_rows = sqlx::query_as::<_, EnumerationCoverageGateReceiptRow>(
+            r#"SELECT receipt.target_id,receipt.exact_origin,
+                      receipt.terminal_disposition,receipt.missing,
+                      receipt.unresolved_count,seal.closure_graph_sha256,
+                      enumeration_compute_lane_closure_graph_sha256(receipt.id)
+                          AS recomputed_closure_graph_sha256
+                 FROM enumeration_lane_commit_receipts receipt
+                 LEFT JOIN enumeration_lane_closure_graph_seals seal
+                   ON seal.lane_receipt_id=receipt.id
+                WHERE receipt.operation_id=$1 AND receipt.organization_id=$2
+                  AND receipt.stage_execution_id=$3
+                  AND receipt.stage_run_unit_id=$4
+                  AND receipt.lane='coverage'
+                ORDER BY receipt.target_id,receipt.exact_origin,receipt.id"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(stage_execution_id)
+        .bind(stage_run_unit_id)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        let census = enumeration_coverage_gate_census(&frozen_members, &coverage_rows)?;
+        Ok(Some(EnumerationOccurrenceGateSnapshot {
+            enforces_closeout: contract == "agent_team_v2",
+            stage_execution_id,
+            stage_run_unit_id,
+            frozen_subject_count: census.frozen_subject_count,
+            coverage_receipt_count: census.coverage_receipt_count,
+            missing_coverage_receipt_count: census.missing_coverage_receipt_count,
+            invalid_coverage_receipt_count: census.invalid_coverage_receipt_count,
+            closure_graph_drift_count: census.closure_graph_drift_count,
+            residual_occurrence_count: census.residual_occurrence_count,
+        }))
+    }
+
+    async fn enumeration_commit_browser_producer_v2(
+        &self,
+        request: CommitEnumerationBrowserProducerV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        self.enumeration_commit_browser_producer_v2_impl(request)
+            .await
+            .context("ENUMERATION_BROWSER_REPOSITORY_BOUNDARY")
+    }
+
+    async fn enumeration_recover_lane_receipt_v2(
+        &self,
+        request: RecoverEnumerationLaneReceiptV2,
+    ) -> anyhow::Result<Option<EnumerationLaneClosureReceiptV2>> {
+        let owner_chain_exists: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM operation_state operation
+                     JOIN stage_run_units unit
+                       ON unit.operation_id=operation.operation_id
+                      AND unit.id=$4
+                      AND unit.stage_execution_id=$3
+                      AND unit.organization_id=$2
+                      AND unit.stage_kind='enumeration'
+                     JOIN operation_org_scope_snapshots snapshot
+                       ON snapshot.id=unit.scope_snapshot_id
+                      AND snapshot.operation_id=unit.operation_id
+                      AND snapshot.project_scope_id=operation.project_scope_id
+                    WHERE operation.operation_id=$1
+                      AND operation.current_stage='enumeration'
+                      AND operation.enumeration_analysis_contract IN (
+                          'agent_team_v2_shadow','agent_team_v2'
+                      )
+                      AND unit.status IN ('running','gate_blocked')
+                      AND snapshot.sealed_at IS NOT NULL
+               )"#,
+        )
+        .bind(request.operation_id)
+        .bind(request.organization_id)
+        .bind(request.stage_execution_id)
+        .bind(request.stage_run_unit_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        anyhow::ensure!(
+            owner_chain_exists,
+            "ENUMERATION_RECEIPT_RECOVERY_OWNER_CHAIN_MISMATCH"
+        );
+        let lane = match request.lane {
+            EnumerationLaneKindV2::Browser => "browser",
+            EnumerationLaneKindV2::JsApi => "js_api",
+            EnumerationLaneKindV2::Parameter => "parameter",
+            EnumerationLaneKindV2::Resolution => "resolution",
+            EnumerationLaneKindV2::Coverage => "coverage",
+        };
+        let mut expected_dependencies = request.dependency_receipt_ids.clone();
+        expected_dependencies.sort_unstable();
+        expected_dependencies.dedup();
+        anyhow::ensure!(
+            expected_dependencies == request.dependency_receipt_ids,
+            "ENUMERATION_RECEIPT_RECOVERY_DEPENDENCY_MANIFEST_INVALID"
+        );
+        let mut tx = self.pool.begin().await?;
+        let recovered = golish_db::repo::enumeration_endpoint_occurrences::recover_enumeration_lane_commit_receipt(
+            &mut tx,
+            request.operation_id,
+            request.organization_id,
+            request.stage_execution_id,
+            request.stage_run_unit_id,
+            request.target_id,
+            &request.exact_origin,
+            lane,
+            request.resolution_occurrence_id,
+        )
+        .await?;
+        let recovered = recovered
+            .map(|row| {
+                anyhow::ensure!(
+                    row.dependency_receipt_ids == expected_dependencies,
+                    "ENUMERATION_RECEIPT_RECOVERY_DEPENDENCY_DRIFT"
+                );
+                enumeration_lanes::lane_receipt_view(row, true)
+            })
+            .transpose()?;
+        tx.commit().await?;
+        Ok(recovered)
+    }
+
+    async fn enumeration_commit_js_api_producer_v2(
+        &self,
+        request: CommitEnumerationJsApiProducerV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        self.enumeration_commit_js_api_producer_v2_impl(request)
+            .await
+    }
+
+    async fn enumeration_reduce_parameter_v2(
+        &self,
+        request: ReduceEnumerationParameterV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        self.enumeration_reduce_parameter_v2_impl(request).await
+    }
+
+    async fn enumeration_close_resolution_v2(
+        &self,
+        request: CloseEnumerationResolutionV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        self.enumeration_close_resolution_v2_impl(request).await
+    }
+
+    async fn enumeration_review_coverage_v2(
+        &self,
+        request: ReviewEnumerationCoverageV2,
+    ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
+        self.enumeration_review_coverage_v2_impl(request).await
+    }
+
+    async fn enumeration_unresolved_occurrences(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_execution_id: Uuid,
+        stage_run_unit_id: Uuid,
+    ) -> anyhow::Result<Vec<EnumerationUnresolvedOccurrenceView>> {
+        let owner_chain_exists: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM operation_state operation
+                     JOIN stage_run_units unit
+                       ON unit.operation_id=operation.operation_id
+                     JOIN operation_org_scope_snapshots snapshot
+                       ON snapshot.id=unit.scope_snapshot_id
+                      AND snapshot.operation_id=unit.operation_id
+                      AND snapshot.project_scope_id=operation.project_scope_id
+                    WHERE operation.operation_id=$1
+                      AND operation.current_stage='enumeration'
+                      AND operation.enumeration_analysis_contract IN (
+                          'agent_team_v2_shadow','agent_team_v2'
+                      )
+                      AND unit.id=$4
+                      AND unit.stage_execution_id=$3
+                      AND unit.organization_id=$2
+                      AND unit.stage_kind='enumeration'
+                      AND unit.status IN ('running','gate_blocked')
+                      AND snapshot.sealed_at IS NOT NULL
+                      AND EXISTS (
+                          SELECT 1
+                            FROM operation_org_scope_units scope_unit
+                           WHERE scope_unit.snapshot_id=unit.scope_snapshot_id
+                             AND scope_unit.organization_id=$2
+                      )
+               )"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(stage_execution_id)
+        .bind(stage_run_unit_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
+        anyhow::ensure!(
+            owner_chain_exists,
+            "Enumeration unresolved occurrence owner chain is unavailable or mismatched"
+        );
+
+        let mut tx = self.pool.begin().await?;
+        let rows = sqlx::query_as::<_, EnumerationUnresolvedOccurrenceRow>(
+            r#"SELECT occurrence.id AS occurrence_id,
+                      occurrence.source_target_id,
+                      origin.origin AS exact_origin,
+                      producer.id AS producer_receipt_id,
+                      producer.lane AS producer_lane,
+                      producer.execution_authority_id AS producer_execution_authority_id,
+                      producer.receipt_set_sha256 AS producer_receipt_set_sha256
+                 FROM operation_state operation
+                 JOIN stage_run_units unit
+                   ON unit.operation_id=operation.operation_id
+                  AND unit.id=$4
+                  AND unit.stage_execution_id=$3
+                  AND unit.organization_id=$2
+                  AND unit.stage_kind='enumeration'
+                 JOIN operation_org_scope_snapshots snapshot
+                   ON snapshot.id=unit.scope_snapshot_id
+                  AND snapshot.operation_id=unit.operation_id
+                  AND snapshot.project_scope_id=operation.project_scope_id
+                 JOIN enumeration_endpoint_occurrences occurrence
+                   ON occurrence.operation_id=operation.operation_id
+                  AND occurrence.project_scope_id=operation.project_scope_id
+                  AND occurrence.project_path_at_freeze=snapshot.project_path_at_freeze
+                  AND occurrence.scope_snapshot_id=unit.scope_snapshot_id
+                  AND occurrence.organization_id=unit.organization_id
+                  AND occurrence.stage_execution_id=unit.stage_execution_id
+                 JOIN enumeration_lane_commit_receipts producer
+                   ON producer.execution_authority_id=occurrence.execution_authority_id
+                  AND producer.operation_id=occurrence.operation_id
+                  AND producer.organization_id=occurrence.organization_id
+                  AND producer.stage_execution_id=occurrence.stage_execution_id
+                  AND producer.stage_run_unit_id=unit.id
+                  AND producer.target_id=occurrence.source_target_id
+                  AND producer.lane IN ('browser','js_api')
+                 JOIN targets target
+                   ON target.id=occurrence.source_target_id
+                  AND target.organization_id=occurrence.organization_id
+                  AND target.project_path=occurrence.project_path_at_freeze
+                 JOIN web_origins origin
+                   ON origin.id=occurrence.source_web_origin_id
+                  AND origin.organization_id=occurrence.organization_id
+                  AND origin.project_path=occurrence.project_path_at_freeze
+                WHERE operation.operation_id=$1
+                  AND occurrence.candidate_classification='endpoint'
+                  AND occurrence.scope_decision='in_scope'
+                  AND occurrence.resolution_status IN ('ambiguous','unresolved')
+                  AND producer.exact_origin=origin.origin
+                ORDER BY origin.origin,occurrence.source_target_id,occurrence.id"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(stage_execution_id)
+        .bind(stage_run_unit_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut unresolved = Vec::with_capacity(rows.len());
+        for row in rows {
+            let producer_lane = match row.producer_lane.as_str() {
+                "browser" => EnumerationLaneKindV2::Browser,
+                "js_api" => EnumerationLaneKindV2::JsApi,
+                _ => anyhow::bail!("ENUMERATION_UNRESOLVED_PRODUCER_LANE_INVALID"),
+            };
+            let producer = golish_db::repo::enumeration_endpoint_occurrences::load_enumeration_lane_commit_receipt(
+                &mut tx,
+                row.producer_receipt_id,
+                operation_id,
+                organization_id,
+                stage_execution_id,
+                stage_run_unit_id,
+                row.source_target_id,
+                &row.exact_origin,
+                &row.producer_lane,
+                row.producer_execution_authority_id,
+                &row.producer_receipt_set_sha256,
+            )
+            .await?;
+            unresolved.push(EnumerationUnresolvedOccurrenceView {
+                occurrence_id: row.occurrence_id,
+                source_target_id: row.source_target_id,
+                exact_origin: row.exact_origin,
+                producer_receipt: enumeration_lanes::lane_receipt_view(producer, false)?,
+            });
+            anyhow::ensure!(
+                unresolved
+                    .last()
+                    .is_some_and(|entry| entry.producer_receipt.lane == producer_lane),
+                "ENUMERATION_UNRESOLVED_PRODUCER_RECEIPT_DRIFT"
+            );
+        }
+        tx.commit().await?;
+        Ok(unresolved)
+    }
+
+    async fn admit_candidate_generation_campaigns(
+        &self,
+        stable_request_id: Uuid,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        generation_seal_id: Uuid,
+    ) -> anyhow::Result<CandidateCampaignAdmissionBatchView> {
+        let subjects = sqlx::query_as::<_, CandidateCampaignAdmissionSubjectRow>(
+            r#"SELECT scope.id AS scope_snapshot_id,
+                      revision.revision_id,
+                      plan.plan_id AS verification_plan_id,
+                      objective.objective_id,
+                      seal.member_count AS generation_member_count
+                 FROM operation_state operation
+                 JOIN hypothesis_generation_seals seal
+                   ON seal.seal_id=$3
+                 JOIN hypothesis_generations generation
+                   ON generation.generation_id=seal.generation_id
+                  AND generation.operation_id=operation.operation_id
+                  AND generation.organization_id=$2
+                 JOIN candidate_analysis_snapshots candidate_snapshot
+                   ON candidate_snapshot.snapshot_id=generation.candidate_snapshot_id
+                  AND candidate_snapshot.operation_id=generation.operation_id
+                  AND candidate_snapshot.organization_id=generation.organization_id
+                  AND candidate_snapshot.snapshot_status IN (
+                      'sealed_ready','sealed_analysis_ready_with_residuals'
+                  )
+                 JOIN operation_org_scope_snapshots scope
+                   ON scope.id=candidate_snapshot.scope_snapshot_id
+                  AND scope.operation_id=operation.operation_id
+                  AND scope.project_scope_id=operation.project_scope_id
+                  AND scope.sealed_at IS NOT NULL
+                 JOIN operation_org_scope_units scope_unit
+                   ON scope_unit.snapshot_id=scope.id
+                  AND scope_unit.organization_id=generation.organization_id
+                 JOIN hypothesis_generation_members generation_member
+                   ON generation_member.generation_id=generation.generation_id
+                  AND generation_member.operation_id=generation.operation_id
+                  AND generation_member.organization_id=generation.organization_id
+                 JOIN attack_hypothesis_revisions revision
+                   ON revision.revision_id=generation_member.revision_id
+                  AND revision.operation_id=generation.operation_id
+                  AND revision.organization_id=generation.organization_id
+                 JOIN attack_hypothesis_verification_plans plan
+                   ON plan.revision_id=revision.revision_id
+                  AND plan.sealed_at IS NOT NULL
+                 JOIN attack_hypothesis_verification_plan_objectives objective
+                   ON objective.plan_id=plan.plan_id
+                  AND objective.revision_id=revision.revision_id
+                WHERE operation.operation_id=$1
+                  AND operation.tool_truth_contract='receipt_v1'
+                  AND operation.investigation_rollout_mode IN (
+                      'registry_authoritative_legacy_projection','new_only'
+                  )
+                  AND (
+                      (
+                          operation.stage_topology_contract='legacy_candidate_verification_v1'
+                          AND operation.current_stage='attack_candidate'
+                      ) OR (
+                          operation.stage_topology_contract='unified_investigation_v1'
+                          AND operation.current_stage='investigation'
+                      )
+                  )
+                ORDER BY generation_member.ordinal,objective.ordinal,
+                         revision.revision_id,objective.objective_id"#,
+        )
+        .bind(stable_request_id)
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(generation_seal_id)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        anyhow::ensure!(
+            !subjects.is_empty(),
+            "Candidate generation has no complete authoritative Plan C admission subjects"
+        );
+        let expected_member_count = subjects[0].generation_member_count;
+        anyhow::ensure!(
+            expected_member_count > 0
+                && subjects
+                    .iter()
+                    .all(
+                        |subject| subject.generation_member_count == expected_member_count
+                            && subject.scope_snapshot_id == subjects[0].scope_snapshot_id
+                    ),
+            "Candidate generation Campaign admission owner census drifted"
+        );
+        let revision_ids = subjects
+            .iter()
+            .map(|subject| subject.revision_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        anyhow::ensure!(
+            i64::try_from(revision_ids.len()).ok() == Some(expected_member_count),
+            "Candidate generation Campaign admission omits a sealed revision or plan"
+        );
+        let objective_ids = subjects
+            .iter()
+            .map(|subject| subject.objective_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        anyhow::ensure!(
+            objective_ids.len() == subjects.len(),
+            "Candidate generation Campaign admission contains duplicate objectives"
+        );
+
+        let campaign_repository =
+            verification_campaign::PgVerificationCampaignRepository::new(self.pool.clone());
+        let capability_registry =
+            golish_pentest_app::pentest_bridge::VerificationCapabilityRegistry::authoritative_v1();
+        let capability_ids = capability_registry
+            .capability_ids()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            capability_ids.len() == 4,
+            "Plan C authoritative capability registry is not the frozen four-member census"
+        );
+        let mut assessment_seals = std::collections::BTreeMap::new();
+        for subject in &subjects {
+            for capability_id in &capability_ids {
+                let assessment = capability_registry
+                    .assessment(capability_id)
+                    .ok_or_else(|| anyhow::anyhow!("Plan C capability registry drifted"))?;
+                campaign_repository
+                    .record_capability_assessment(RecordCapabilityAssessment {
+                        stable_request_id: Uuid::new_v5(
+                            &stable_request_id,
+                            format!(
+                                "candidate-campaign-capability.v1:{}:{capability_id}",
+                                subject.objective_id
+                            )
+                            .as_bytes(),
+                        ),
+                        operation_id,
+                        scope_snapshot_id: subject.scope_snapshot_id,
+                        organization_id,
+                        // The assessment writer derives generation authority
+                        // directly. The Wave seal is necessarily created only
+                        // after this exact four-member assessment set exists.
+                        wave_coverage_seal_id: Uuid::nil(),
+                        objective_id: subject.objective_id,
+                        capability_id: capability_id.clone(),
+                        disposition: verification_campaign::compiler_disposition_to_repository(
+                            assessment.disposition,
+                        ),
+                        adapter_contract_version: assessment.adapter_contract_version.clone(),
+                        adapter_contract_digest: assessment.adapter_contract_digest.clone(),
+                        residual_reason_code:
+                            (verification_campaign::compiler_disposition_to_repository(
+                                assessment.disposition,
+                            ) != CapabilityAssessmentDispositionV1::Available)
+                                .then(|| assessment.reason_code.clone()),
+                    })
+                    .await
+                    .map_err(anyhow::Error::new)?;
+            }
+            let sealed = campaign_repository
+                .seal_capability_assessment_set(SealCapabilityAssessmentSet {
+                    stable_request_id: Uuid::new_v5(
+                        &stable_request_id,
+                        format!(
+                            "candidate-campaign-capability-set.v1:{}",
+                            subject.objective_id
+                        )
+                        .as_bytes(),
+                    ),
+                    operation_id,
+                    scope_snapshot_id: subject.scope_snapshot_id,
+                    organization_id,
+                    wave_coverage_seal_id: Uuid::nil(),
+                    objective_id: subject.objective_id,
+                })
+                .await
+                .map_err(anyhow::Error::new)?;
+            assessment_seals.insert(subject.objective_id, sealed.seal_id);
+        }
+
+        let wave = campaign_repository
+            .seal_wave_coverage_denominator(SealWaveCoverage {
+                stable_request_id: Uuid::new_v5(
+                    &stable_request_id,
+                    b"candidate-campaign-wave-coverage.v1",
+                ),
+                operation_id,
+                scope_snapshot_id: subjects[0].scope_snapshot_id,
+                organization_id,
+                generation_seal_id,
+                verification_plan_id: subjects[0].verification_plan_id,
+            })
+            .await
+            .map_err(anyhow::Error::new)?;
+        anyhow::ensure!(
+            wave.member_count > 0,
+            "Candidate generation Wave denominator is unexpectedly empty"
+        );
+
+        let mut campaign_ids = Vec::with_capacity(subjects.len());
+        let mut replayed_campaign_count = 0_u32;
+        for subject in &subjects {
+            let campaign = campaign_repository
+                .admit_campaign_with_fresh_tool_truth(AdmitCampaignRequest {
+                    stable_consumer_request_id: Uuid::new_v5(
+                        &stable_request_id,
+                        format!("candidate-campaign-admission.v1:{}", subject.objective_id)
+                            .as_bytes(),
+                    ),
+                    operation_id,
+                    scope_snapshot_id: subject.scope_snapshot_id,
+                    organization_id,
+                    generation_seal_id,
+                    verification_plan_id: subject.verification_plan_id,
+                    objective_id: subject.objective_id,
+                    wave_coverage_seal_id: wave.seal_id,
+                    capability_assessment_set_seal_id: assessment_seals[&subject.objective_id],
+                    expected_campaign_id: None,
+                })
+                .await
+                .map_err(anyhow::Error::new)?;
+            anyhow::ensure!(
+                campaign.operation_id == operation_id
+                    && campaign.objective_id == subject.objective_id,
+                "Campaign admission returned mismatched authority"
+            );
+            replayed_campaign_count =
+                replayed_campaign_count.saturating_add(u32::from(campaign.replayed));
+            campaign_ids.push(campaign.campaign_id);
+        }
+        Ok(CandidateCampaignAdmissionBatchView {
+            generation_seal_id,
+            objective_count: u32::try_from(subjects.len())?,
+            campaign_ids,
+            replayed_campaign_count,
+        })
+    }
+
+    async fn drive_authoritative_verification_campaigns(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<VerificationCampaignSchedulerView> {
+        verification_campaign_scheduler::drive_authoritative_verification_campaigns(
+            self.pool.clone(),
+            operation_id,
+        )
+        .await
+    }
+
+    async fn prepare_authoritative_verification_consults(
+        &self,
+        operation_id: Uuid,
+    ) -> anyhow::Result<Vec<VerificationConsultWorkItemView>> {
+        verification_campaign_scheduler::prepare_authoritative_verification_consults(
+            self.pool.clone(),
+            operation_id,
+        )
+        .await
+    }
+
+    async fn record_authoritative_verification_consult_terminal(
+        &self,
+        command: RecordVerificationConsultTerminal,
+    ) -> anyhow::Result<()> {
+        verification_campaign_scheduler::record_authoritative_verification_consult_terminal(
+            self.pool.clone(),
+            command,
         )
         .await
     }
@@ -1024,6 +1832,40 @@ impl DbRepoProvider for GolishDbRepoProvider {
         .await
     }
 
+    async fn semantic_intel_receipt_append(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        project_path: Option<&str>,
+        receipt: &serde_json::Value,
+    ) -> anyhow::Result<i64> {
+        self.semantic_intel_receipt_append_impl(
+            operation_id,
+            organization_id,
+            session_id,
+            project_path,
+            receipt,
+        )
+        .await
+    }
+
+    async fn semantic_intel_terminal_receipt(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        session_id: Uuid,
+        stable_query_key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.semantic_intel_terminal_receipt_impl(
+            operation_id,
+            organization_id,
+            session_id,
+            stable_query_key,
+        )
+        .await
+    }
+
     async fn upsert_technique_outcome(
         &self,
         organization_id: Uuid,
@@ -1211,12 +2053,32 @@ impl DbRepoProvider for GolishDbRepoProvider {
         self.recent_evidence_ids_impl(session_id, limit).await
     }
 
+    async fn recent_evidence_ids_for_stage_attempt(
+        &self,
+        session_id: &str,
+        stage_execution_id: Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<i64>> {
+        self.recent_evidence_ids_for_stage_attempt_impl(session_id, stage_execution_id, limit)
+            .await
+    }
+
     async fn recent_evidence_detailed(
         &self,
         session_id: &str,
         limit: i64,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
         self.recent_evidence_detailed_impl(session_id, limit).await
+    }
+
+    async fn recent_evidence_detailed_for_worker(
+        &self,
+        operation_id: uuid::Uuid,
+        worker_run_id: uuid::Uuid,
+        limit: i64,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.recent_evidence_detailed_for_worker_impl(operation_id, worker_run_id, limit)
+            .await
     }
 
     async fn evidence_kinds_for(
@@ -1304,6 +2166,73 @@ mod scoping_review_summary_tests {
                 .collect::<Vec<_>>(),
             vec!["edited.example", "trusted.example"]
         );
+    }
+}
+
+#[cfg(test)]
+mod enumeration_coverage_gate_census_tests {
+    use super::*;
+
+    fn frozen_member(target_id: Uuid, technique: &str) -> EnumerationFrozenRootMemberView {
+        EnumerationFrozenRootMemberView {
+            target_id,
+            exact_origin: "https://moresec.cn:443".to_string(),
+            technique: technique.to_string(),
+            expected_capability: "enum.test".to_string(),
+        }
+    }
+
+    fn coverage_row(target_id: Uuid) -> EnumerationCoverageGateReceiptRow {
+        EnumerationCoverageGateReceiptRow {
+            target_id,
+            exact_origin: "https://moresec.cn:443".to_string(),
+            terminal_disposition: "found".to_string(),
+            missing: 0,
+            unresolved_count: 0,
+            closure_graph_sha256: Some("sha256:graph".to_string()),
+            recomputed_closure_graph_sha256: "sha256:graph".to_string(),
+        }
+    }
+
+    #[test]
+    fn domain_and_url_target_ids_are_one_exact_origin_subject() {
+        let domain_target_id = Uuid::new_v4();
+        let url_target_id = Uuid::new_v4();
+        let techniques = [
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-JSAPI",
+            "GOLISH-ENUM-PARAM",
+        ];
+        let frozen = [domain_target_id, url_target_id]
+            .into_iter()
+            .flat_map(|target_id| {
+                techniques
+                    .into_iter()
+                    .map(move |technique| frozen_member(target_id, technique))
+            })
+            .collect::<Vec<_>>();
+
+        let census = enumeration_coverage_gate_census(&frozen, &[coverage_row(url_target_id)])
+            .expect("target aliases should share one exact-origin closure");
+
+        assert_eq!(census.frozen_subject_count, 1);
+        assert_eq!(census.coverage_receipt_count, 1);
+        assert_eq!(census.missing_coverage_receipt_count, 0);
+        assert_eq!(census.invalid_coverage_receipt_count, 0);
+    }
+
+    #[test]
+    fn coverage_receipt_from_a_foreign_target_alias_fails_closed() {
+        let frozen_target_id = Uuid::new_v4();
+        let frozen = [frozen_member(frozen_target_id, "GOLISH-ENUM-DIR")];
+
+        let census = enumeration_coverage_gate_census(&frozen, &[coverage_row(Uuid::new_v4())])
+            .expect("foreign identity is represented as an invalid census row");
+
+        assert_eq!(census.frozen_subject_count, 1);
+        assert_eq!(census.missing_coverage_receipt_count, 1);
+        assert_eq!(census.invalid_coverage_receipt_count, 1);
     }
 }
 

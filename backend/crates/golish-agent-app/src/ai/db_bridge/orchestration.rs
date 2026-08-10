@@ -46,6 +46,11 @@ impl GolishDbRepoProvider {
             profile,
             current_stage,
             runtime_memory_contract.as_str(),
+            if matches!(profile, "pentest" | "red_team") {
+                golish_core::ApplicationModelContract::ApplicationModelV1
+            } else {
+                golish_core::ApplicationModelContract::LegacyNoModel
+            },
         )
         .await
         .map_err(Into::into)

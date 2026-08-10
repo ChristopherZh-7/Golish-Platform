@@ -2,6 +2,108 @@
 
 use super::super::*;
 
+/// Execute a company-identity lookup through the provider's declared runtime.
+/// Enterprise registry CLIs and HTTP organization APIs converge on the same
+/// typed candidate contract; Scoping never receives transport or secret syntax.
+pub(crate) async fn run_lookup_provider(
+    pool: &sqlx::PgPool,
+    tool: &ToolConfig,
+    tools: &[ToolConfig],
+    tools_dir: &Path,
+    project_root: &Path,
+    run_id: &str,
+    keyword: &str,
+) -> Result<(AssetIntelProviderRunStatus, Vec<LookupCompanyMatch>), GolishError> {
+    match tool.asset_intel.as_ref().map(|asset| &asset.runtime) {
+        Some(golish_pentest::models::AssetIntelRuntimeConfig::CliJson { .. }) => {
+            run_lookup_cli_provider(tool, tools, tools_dir, project_root, run_id, keyword).await
+        }
+        Some(golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { .. }) => {
+            run_lookup_http_provider(pool, tool, project_root, run_id, keyword).await
+        }
+        _ => Ok((
+            AssetIntelProviderRunStatus {
+                provider_id: provider_id_for_tool(tool).unwrap_or_else(|| tool.id.clone()),
+                status: AssetIntelProviderRunState::Unavailable,
+                message: "company lookup supports only cli_json or http_json providers".into(),
+            },
+            Vec::new(),
+        )),
+    }
+}
+
+async fn run_lookup_http_provider(
+    pool: &sqlx::PgPool,
+    tool: &ToolConfig,
+    project_root: &Path,
+    run_id: &str,
+    keyword: &str,
+) -> Result<(AssetIntelProviderRunStatus, Vec<LookupCompanyMatch>), GolishError> {
+    let provider_id = provider_id_for_tool(tool).unwrap_or_else(|| tool.id.clone());
+    let lookup = match tool
+        .asset_intel
+        .as_ref()
+        .and_then(|asset| asset.lookup.as_ref())
+        .filter(|lookup| lookup.enabled)
+    {
+        Some(lookup) => lookup.clone(),
+        None => {
+            return Ok((
+                AssetIntelProviderRunStatus {
+                    provider_id,
+                    status: AssetIntelProviderRunState::Unavailable,
+                    message: "HTTP provider has no enabled company lookup descriptor".into(),
+                },
+                Vec::new(),
+            ))
+        }
+    };
+
+    // Company identity lookup may call only the descriptor-named organization
+    // request. Asset domain/site/code searches belong to Target Intel.
+    let mut lookup_tool = tool.clone();
+    let Some(asset) = lookup_tool.asset_intel.as_mut() else {
+        unreachable!("lookup descriptor requires asset_intel")
+    };
+    let golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests, .. } =
+        &mut asset.runtime
+    else {
+        unreachable!("HTTP lookup dispatched for non-HTTP runtime")
+    };
+    requests.retain(|request| request.id == lookup.skill_id);
+    if requests.len() != 1 {
+        return Ok((
+            AssetIntelProviderRunStatus {
+                provider_id,
+                status: AssetIntelProviderRunState::Unavailable,
+                message: format!(
+                    "lookup request '{}' is missing or ambiguous",
+                    lookup.skill_id
+                ),
+            },
+            Vec::new(),
+        ));
+    }
+
+    let (mut status, _candidates, raw, _profile) = run_http_json_provider(
+        pool,
+        &lookup_tool,
+        project_root,
+        run_id,
+        keyword,
+        &AssetIntelHydrateConfig::default(),
+        None,
+        None,
+    )
+    .await?;
+    let matches = extract_lookup_matches(&provider_id, &lookup, &raw);
+    if matches.is_empty() && status.status == AssetIntelProviderRunState::Completed {
+        status.status = AssetIntelProviderRunState::CheckedEmpty;
+        status.message = format!("'{provider_id}' lookup found no company matches");
+    }
+    Ok((status, matches))
+}
+
 /// Per-provider output directory used by the lookup runtime, scoped under
 /// `<project>/.golish/tool-output/asset-intel-lookup/<runId>/<providerId>`.
 /// Keeps lookup artifacts separate from full hydrate runs so cleanup is

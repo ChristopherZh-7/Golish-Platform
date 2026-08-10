@@ -10,13 +10,211 @@ import { fileURLToPath } from "node:url";
 
 import {
   boundedHardTimeoutMs,
+  attachCdpNetworkLedger,
   captureDirectoryFor,
   classifyCollectionCompletion,
   fetchExactOrigin,
+  extractRequestParameterFacts,
   isDangerousNavigationUrl,
   isExactOriginUrl,
+  normalizeCaptureOccurrenceV3,
+  observeDocumentForms,
+  redactCaptureValue,
   recoveryKindBlocksClosure,
+  runtimeOccurrenceKey,
+  sanitizeCaptureUrl,
 } from "./browser_collect_js_api.mjs";
+
+test("capture v3 extracts value-free JSON and form fields", () => {
+  const json = extractRequestParameterFacts({
+    url: "https://example.test/api?tenant=secret-tenant",
+    content_type: "application/json",
+    post_data: JSON.stringify({ password: "sentinel-password", profile: { token: "sentinel-token" } }),
+  });
+  assert.deepEqual(json.facts.map(({ name, location }) => [name, location]), [
+    ["tenant", "query"],
+    ["password", "body"],
+    ["profile", "body"],
+    ["profile.token", "body"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(json), /sentinel-password|sentinel-token|secret-tenant/);
+
+  const form = extractRequestParameterFacts({
+    url: "https://example.test/login",
+    content_type: "application/x-www-form-urlencoded",
+    post_data: "username=alice&password=sentinel-form-password",
+  });
+  assert.deepEqual(form.facts.map((fact) => fact.name), ["username", "password"]);
+  assert.doesNotMatch(JSON.stringify(form), /alice|sentinel-form-password/);
+});
+
+test("capture v3 removes query values userinfo fragments and secret sentinels", () => {
+  const sanitized = sanitizeCaptureUrl(
+    "https://alice:sentinel-password@example.test/api?token=sentinel-token&q=sentinel-query#sentinel-fragment",
+  );
+  assert.equal(sanitized, "https://example.test/api?token=%7Bvalue%7D&q=%7Bvalue%7D");
+  assert.equal(redactCaptureValue("Authorization", "Bearer sentinel"), "{redacted}");
+  assert.doesNotMatch(sanitized, /alice|sentinel/);
+});
+
+test("capture v3 retry reuses logical key while event ids differ", () => {
+  const input = {
+    collection_key: "server-shard-1",
+    page_url: "https://example.test/app",
+    initiator_fingerprint: "script:1:2",
+    method: "GET",
+    request_url: "https://example.test/api?q=one",
+    parameter_facts: [{ name: "q", location: "query", value_type: "unknown" }],
+    duplicate_ordinal: 0,
+  };
+  assert.equal(runtimeOccurrenceKey(input), runtimeOccurrenceKey({ ...input, request_url: "https://example.test/api?q=two" }));
+  const first = normalizeCaptureOccurrenceV3({
+    ...input,
+    url: input.request_url,
+    logical_key: runtimeOccurrenceKey(input),
+    capture_event_id: crypto.randomUUID(),
+  });
+  const second = normalizeCaptureOccurrenceV3({
+    ...input,
+    url: input.request_url,
+    logical_key: runtimeOccurrenceKey(input),
+    capture_event_id: crypto.randomUUID(),
+  });
+  assert.equal(first.logical_key, second.logical_key);
+  assert.notEqual(first.capture_event_id, second.capture_event_id);
+});
+
+test("capture v3 reads legacy v2 without inventing provenance", () => {
+  const normalized = normalizeCaptureOccurrenceV3({
+    url: "https://example.test/api?token=secret",
+    method: "GET",
+  });
+  assert.equal(normalized.initiator, null);
+  assert.equal(normalized.initiator_status, "legacy_unknown");
+  assert.equal(normalized.page_url, null);
+  assert.equal(normalized.cdp_request_id, null);
+  assert.doesNotMatch(JSON.stringify(normalized), /secret/);
+});
+
+test("capture v3 keeps occurrences with distinct body shapes", () => {
+  const first = extractRequestParameterFacts({
+    url: "https://example.test/api",
+    content_type: "application/json",
+    post_data: JSON.stringify({ account: { id: 1 } }),
+  });
+  const second = extractRequestParameterFacts({
+    url: "https://example.test/api",
+    content_type: "application/json",
+    post_data: JSON.stringify({ account: { name: "Ada" } }),
+  });
+  const common = {
+    collection_key: "shard-1",
+    page_url: "https://example.test/app",
+    initiator_fingerprint: "unsupported_cdp",
+    method: "POST",
+    request_url: "https://example.test/api",
+    duplicate_ordinal: 0,
+  };
+  assert.notEqual(
+    runtimeOccurrenceKey({ ...common, parameter_facts: first.facts }),
+    runtimeOccurrenceKey({ ...common, parameter_facts: second.facts }),
+  );
+});
+
+test("capture v3 records unsupported initiator without guessing", async () => {
+  const ledger = await attachCdpNetworkLedger({}, {});
+  assert.equal(ledger.status, "unsupported_cdp");
+  assert.equal(ledger.correlate("GET", "https://example.test/api"), null);
+});
+
+test("capture v3 correlates CDP initiator by request id timestamp and ordinal", async () => {
+  const listeners = new Map();
+  const session = {
+    on(name, callback) { listeners.set(name, callback); },
+    async send() {},
+    async detach() {},
+  };
+  const ledger = await attachCdpNetworkLedger(
+    { async newCDPSession() { return session; } },
+    { url() { return "https://example.test/app"; } },
+    { page_key: "page-1", context_key: "context-1" },
+  );
+  const emit = listeners.get("Network.requestWillBeSent");
+  emit({
+    requestId: "request-1",
+    timestamp: 10.25,
+    request: { method: "GET", url: "https://example.test/api?q=secret-one" },
+    initiator: { stack: { callFrames: [{ url: "https://example.test/app.js", lineNumber: 4, columnNumber: 9, functionName: "load" }] } },
+  });
+  emit({
+    requestId: "request-2",
+    timestamp: 10.5,
+    request: { method: "GET", url: "https://example.test/api?q=secret-two" },
+    initiator: { stack: { callFrames: [{ url: "https://example.test/app.js", lineNumber: 8, columnNumber: 3, functionName: "retry" }] } },
+  });
+  const second = ledger.correlate({
+    method: "GET",
+    url: "https://example.test/api?q=again",
+    page_key: "page-1",
+    context_key: "context-1",
+    page_url: "https://example.test/app",
+    ordinal: 1,
+  });
+  const wrongPage = ledger.correlate({
+    method: "GET",
+    url: "https://example.test/api?q=other",
+    page_key: "page-2",
+    context_key: "context-1",
+    page_url: "https://example.test/app",
+    ordinal: 0,
+  });
+  const first = ledger.correlate({
+    method: "GET",
+    url: "https://example.test/api?q=other",
+    page_key: "page-1",
+    context_key: "context-1",
+    page_url: "https://example.test/app",
+    ordinal: 0,
+  });
+  assert.equal(wrongPage, null);
+  assert.deepEqual(
+    [first.request_id, first.monotonic_timestamp, first.ordinal, first.initiator.line_number],
+    ["request-1", 10.25, 0, 4],
+  );
+  assert.deepEqual(
+    [second.request_id, second.monotonic_timestamp, second.ordinal, second.initiator.line_number],
+    ["request-2", 10.5, 1, 8],
+  );
+});
+
+test("capture v3 records form action and fields without submission", async () => {
+  let evaluateCount = 0;
+  const forms = await observeDocumentForms({
+    url() { return "https://example.test/account?token=secret"; },
+    async evaluate() {
+      evaluateCount += 1;
+      return {
+        page_url: "https://example.test/account?token=secret",
+        document_base: "https://example.test/account/base/",
+        forms: [{
+          ordinal: 0,
+          action: "login?next=sentinel-next",
+          method: "POST",
+          fields: [
+            { name: "username", type: "text", required: true },
+            { name: "password", type: "password", required: true },
+          ],
+        }],
+      };
+    },
+  }, "https://example.test");
+  assert.equal(evaluateCount, 1);
+  assert.equal(forms[0].sent, false);
+  assert.equal(forms[0].action, "https://example.test/account/base/login?next=%7Bvalue%7D");
+  assert.equal(forms[0].document_base, "https://example.test/account/base/");
+  assert.deepEqual(forms[0].fields.map((field) => field.name), ["username", "password"]);
+  assert.doesNotMatch(JSON.stringify(forms), /secret|sentinel-next/);
+});
 
 test("whole-helper deadline defaults and explicit zero remain bounded", () => {
   assert.equal(boundedHardTimeoutMs(undefined), 120_000);
@@ -90,6 +288,44 @@ function runCollector(args) {
     });
   });
 }
+
+test("capture v3 preserves duplicate script provenance", async () => {
+  const sharedBody = "window.sameBundle = true;";
+  const target = http.createServer((request, response) => {
+    if (request.url === "/a.js" || request.url === "/b.js") {
+      response.writeHead(200, { "content-type": "text/javascript" });
+      response.end(sharedBody);
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end('<!doctype html><script src="/a.js"></script><script src="/b.js"></script>');
+  });
+  const address = await listen(target);
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "golish-browser-v3-duplicate-"));
+  try {
+    const result = await runCollector([
+      "--url", `http://127.0.0.1:${address.port}/`,
+      "--workspace", workspace,
+      "--max-pages", "1",
+      "--max-actions", "0",
+      "--max-recursive-scripts", "10",
+      "--hard-timeout-ms", "20000",
+      "--ai-assist", "false",
+      "--run-id", "run-v3-duplicate",
+      "--session-id", "session-v3-duplicate",
+      "--operation-id", "00000000-0000-0000-0000-000000000021",
+      "--stage-started-at", "2020-01-01T00:00:00Z",
+    ]);
+    const rows = result.scripts.filter((script) => script.url.endsWith(".js"));
+    assert.equal(rows.length, 2);
+    assert.equal(new Set(rows.map((row) => row.sha256)).size, 1);
+    assert.equal(new Set(rows.map((row) => row.url)).size, 2);
+    assert.ok(rows.some((row) => row.duplicate_of));
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await close(target);
+  }
+});
 
 test("capture directory keeps HTTP and HTTPS on the same port separate", () => {
   const workspace = path.join(path.sep, "tmp", "golish-browser-test");
@@ -732,6 +968,76 @@ test("page budget checkpoints every safe same-origin link instead of dropping ca
   }
 });
 
+test("value-bearing query cursors restart from fresh observation instead of requesting placeholders", async () => {
+  const requestedUrls = [];
+  const target = http.createServer((request, response) => {
+    requestedUrls.push(request.url);
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(
+      request.url === "/"
+        ? '<!doctype html><a href="/next?token=secret-value">next</a>'
+        : "<!doctype html>",
+    );
+  });
+  const targetAddress = await listen(target);
+  const workspace = await fs.mkdtemp(
+    path.join(os.tmpdir(), "golish-browser-value-cursor-"),
+  );
+  const args = [
+    "--url",
+    `http://127.0.0.1:${targetAddress.port}/`,
+    "--workspace",
+    workspace,
+    "--max-pages",
+    "1",
+    "--max-actions",
+    "0",
+    "--max-recursive-scripts",
+    "10",
+    "--hard-timeout-ms",
+    "20000",
+    "--ai-assist",
+    "false",
+    "--run-id",
+    "run-value-cursor",
+    "--session-id",
+    "session-value-cursor",
+    "--operation-id",
+    "00000000-0000-0000-0000-000000000014",
+    "--stage-started-at",
+    "2020-01-01T00:00:00Z",
+  ];
+
+  try {
+    const first = await runCollector(args);
+    assert.equal(first.completion_state, "partial");
+    assert.equal(first.value_bearing_checkpoint_cursor_count, 1);
+    assert.deepEqual(first.closure_incomplete_reasons, [
+      "page_queue_remaining",
+      "value_bearing_checkpoint_unresumable",
+    ]);
+    assert.ok(!JSON.stringify(first).includes("secret-value"));
+    const manifest = JSON.parse(
+      await fs.readFile(path.join(workspace, first.script_manifest), "utf8"),
+    );
+    assert.equal(manifest.value_bearing_checkpoint_cursor_count, 1);
+    assert.ok(manifest.pending_pages[0].includes("token=%7Bvalue%7D"));
+    assert.ok(!JSON.stringify(manifest).includes("secret-value"));
+
+    const drainArgs = [...args];
+    drainArgs[drainArgs.indexOf("--max-pages") + 1] = "2";
+    const drained = await runCollector(drainArgs);
+    assert.equal(drained.checkpoint_resume_applied, false);
+    assert.equal(drained.completion_state, "complete");
+    assert.ok(requestedUrls.includes("/next?token=secret-value"));
+    assert.ok(!requestedUrls.some((url) => url.includes("%7Bvalue%7D")));
+    assert.ok(!JSON.stringify(drained).includes("secret-value"));
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await close(target);
+  }
+});
+
 test("same-provenance recursive checkpoint advances a bounded chunk chain", async () => {
   const target = http.createServer((request, response) => {
     if (request.url === "/") {
@@ -984,10 +1290,11 @@ test("Enumeration observes unsafe APIs but never sends mutations clicks or dange
       <a href="/logout?confirm=true">Logout</a>
       <script>
         new WebSocket('ws://' + location.host + '/socket');
-        fetch('/mutate?source=automatic', {
+        console.error('sentinel-console-secret');
+        fetch('/mutate?source=sentinel-query-secret', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ account_id: 7 })
+          body: JSON.stringify({ account_id: 7, password: 'sentinel-body-secret' })
         }).catch(() => {});
       </script>`);
   });
@@ -1033,7 +1340,8 @@ test("Enumeration observes unsafe APIs but never sends mutations clicks or dange
     assert.equal(result.disabled_recipe_click_texts, 1);
     assert.equal(result.disabled_recipe_manifest_paths, 1);
     assert.equal(result.disabled_recipe_script_urls, 1);
-    assert.ok(result.blocked_websocket_urls.some((url) => url.includes("/socket")));
+    assert.equal(result.blocked_websocket_urls.length, 0);
+    assert.ok(result.blocked_websocket_count >= 1);
     assert.ok(result.blocked_read_only_routes.some((url) => url.includes("/logout")));
     assert.ok(result.blocked_read_only_routes.some((url) => url.includes("/remove")));
     const unsafe = result.api_requests.find(
@@ -1043,7 +1351,14 @@ test("Enumeration observes unsafe APIs but never sends mutations clicks or dange
     assert.equal(unsafe.status, null);
     assert.equal(unsafe.read_only_blocked, true);
     assert.equal(unsafe.read_only_block_reason, "method_not_read_only");
-    assert.match(unsafe.request_body, /account_id/);
+    assert.equal(unsafe.sent, false);
+    assert.ok(unsafe.parameter_facts.some((fact) => fact.name === "account_id"));
+    assert.ok(unsafe.parameter_facts.some((fact) => fact.name === "password"));
+    assert.ok(!("request_body" in unsafe));
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /sentinel-console-secret|sentinel-query-secret|sentinel-body-secret/,
+    );
     assert.ok(result.scope_exclusions >= 3);
     assert.equal(result.scope_violations, 0);
   } finally {

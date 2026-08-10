@@ -52,6 +52,9 @@ pub(super) async fn process_llm_stream<S, R, E>(
     cancelled: Option<&Arc<std::sync::atomic::AtomicBool>>,
     llm_span: &tracing::Span,
     quirks: &ProviderStreamQuirks,
+    emit_text_events: bool,
+    emit_reasoning_events: bool,
+    record_reasoning_telemetry: bool,
 ) -> StreamResult
 where
     S: futures::Stream<Item = Result<StreamedAssistantContent<R>, E>> + Unpin,
@@ -123,12 +126,14 @@ where
             Ok(chunk) => match chunk {
                 StreamedAssistantContent::Text(text_msg) => {
                     text_content.push_str(&text_msg.text);
-                    let _ = event_tx.send(AiEvent::SubAgentTextDelta {
-                        agent_id: agent_id.to_string(),
-                        delta: text_msg.text,
-                        accumulated: text_content.clone(),
-                        parent_request_id: parent_request_id.to_string(),
-                    });
+                    if emit_text_events {
+                        let _ = event_tx.send(AiEvent::SubAgentTextDelta {
+                            agent_id: agent_id.to_string(),
+                            delta: text_msg.text,
+                            accumulated: text_content.clone(),
+                            parent_request_id: parent_request_id.to_string(),
+                        });
+                    }
                 }
                 StreamedAssistantContent::Reasoning(reasoning) => {
                     let reasoning_collected = reasoning
@@ -146,7 +151,23 @@ where
 
                     match quirks.reasoning_handling {
                         ReasoningHandling::AlwaysContent => {
-                            if !reasoning_collected.is_empty() {
+                            if !emit_text_events {
+                                thinking_text.push_str(&reasoning_collected);
+                                for item in &reasoning.content {
+                                    if let rig::message::ReasoningContent::Text {
+                                        signature: Some(signature),
+                                        ..
+                                    } = item
+                                    {
+                                        if thinking_signature.is_none() {
+                                            thinking_signature = Some(signature.clone());
+                                        }
+                                    }
+                                }
+                                if thinking_id.is_none() {
+                                    thinking_id = reasoning.id.clone();
+                                }
+                            } else if !reasoning_collected.is_empty() {
                                 tracing::debug!(
                                     "[sub-agent] quirks=AlwaysContent: rerouting reasoning ({} chars) to text",
                                     reasoning_collected.len()
@@ -171,12 +192,14 @@ where
                                             text.len()
                                         );
                                         thinking_text.push_str(text);
-                                        let _ = event_tx.send(AiEvent::SubAgentReasoning {
-                                            agent_id: agent_id.to_string(),
-                                            delta: text.clone(),
-                                            accumulated: thinking_text.clone(),
-                                            parent_request_id: parent_request_id.to_string(),
-                                        });
+                                        if emit_reasoning_events {
+                                            let _ = event_tx.send(AiEvent::SubAgentReasoning {
+                                                agent_id: agent_id.to_string(),
+                                                delta: text.clone(),
+                                                accumulated: thinking_text.clone(),
+                                                parent_request_id: parent_request_id.to_string(),
+                                            });
+                                        }
                                     }
                                     if signature.is_some() && thinking_signature.is_none() {
                                         thinking_signature = signature.clone();
@@ -192,7 +215,12 @@ where
                 StreamedAssistantContent::ReasoningDelta { id, reasoning } => {
                     match quirks.reasoning_handling {
                         ReasoningHandling::AlwaysContent => {
-                            if !reasoning.is_empty() {
+                            if !emit_text_events {
+                                thinking_text.push_str(&reasoning);
+                                if thinking_id.is_none() {
+                                    thinking_id = id;
+                                }
+                            } else if !reasoning.is_empty() {
                                 tracing::debug!(
                                     "[sub-agent] quirks=AlwaysContent: rerouting reasoning delta ({} chars) to text",
                                     reasoning.len()
@@ -209,12 +237,14 @@ where
                         ReasoningHandling::Standard | ReasoningHandling::FallbackToContent => {
                             if !reasoning.is_empty() {
                                 thinking_text.push_str(&reasoning);
-                                let _ = event_tx.send(AiEvent::SubAgentReasoning {
-                                    agent_id: agent_id.to_string(),
-                                    delta: reasoning.clone(),
-                                    accumulated: thinking_text.clone(),
-                                    parent_request_id: parent_request_id.to_string(),
-                                });
+                                if emit_reasoning_events {
+                                    let _ = event_tx.send(AiEvent::SubAgentReasoning {
+                                        agent_id: agent_id.to_string(),
+                                        delta: reasoning.clone(),
+                                        accumulated: thinking_text.clone(),
+                                        parent_request_id: parent_request_id.to_string(),
+                                    });
+                                }
                             }
                             if id.is_some() && thinking_id.is_none() {
                                 thinking_id = id;
@@ -435,7 +465,7 @@ where
     }
 
     // Record reasoning/thinking content on the llm_completion span if present.
-    if !thinking_text.is_empty() {
+    if record_reasoning_telemetry && !thinking_text.is_empty() {
         let mut end = thinking_text.len().min(2000);
         while end > 0 && !thinking_text.is_char_boundary(end) {
             end -= 1;
@@ -504,6 +534,9 @@ mod tests {
             None,
             &span,
             &quirks,
+            true,
+            true,
+            true,
         )
         .await
     }
@@ -560,6 +593,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn terminal_stream_keeps_private_prose_and_reasoning_off_events() {
+        let chunks: Vec<Result<StreamedAssistantContent<DummyResp>, String>> = vec![
+            Ok(StreamedAssistantContent::Text(rig::message::Text {
+                text: "private narration".to_string(),
+            })),
+            Ok(StreamedAssistantContent::ReasoningDelta {
+                id: Some("reasoning-1".to_string()),
+                reasoning: "private model reasoning".to_string(),
+            }),
+        ];
+        let mut stream = futures::stream::iter(chunks);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let last_activity = Arc::new(AtomicU64::new(epoch_secs()));
+        let quirks = golish_llm_providers::resolve_stream_quirks("openai", "gpt-4o", None);
+
+        let result = process_llm_stream(
+            &mut stream,
+            "application_understanding_shard_modeler",
+            "stage-run::team::org::worker:1",
+            &event_tx,
+            &last_activity,
+            None,
+            None,
+            &tracing::Span::none(),
+            &quirks,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+        assert_eq!(result.text_content, "private narration");
+        assert_eq!(result.thinking_text, "private model reasoning");
+        assert!(
+            !std::iter::from_fn(|| event_rx.try_recv().ok()).any(|event| matches!(
+                event,
+                AiEvent::SubAgentTextDelta { .. } | AiEvent::SubAgentReasoning { .. }
+            ))
+        );
+    }
+
+    #[tokio::test]
     async fn provider_stream_error_is_returned_to_the_executor() {
         let mut stream =
             futures::stream::iter(vec![Err::<StreamedAssistantContent<DummyResp>, String>(
@@ -580,6 +655,9 @@ mod tests {
             None,
             &span,
             &quirks,
+            true,
+            true,
+            true,
         )
         .await;
 
@@ -610,6 +688,9 @@ mod tests {
             Some(&cancelled),
             &span,
             &quirks,
+            true,
+            true,
+            true,
         )
         .await;
 

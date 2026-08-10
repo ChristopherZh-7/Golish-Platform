@@ -29,6 +29,7 @@ use golish_intel_providers::{
     shodan::ShodanProvider, zone::ZoneProvider, ConnectionStatus, IntelProvider, ProviderMeta,
     ProviderRecord, QueryType,
 };
+use golish_pentest::config::ControlledFixtureIntelTransportAuthority;
 use golish_pentest::output_store::OutputStore;
 
 use golish_app_core::DbState;
@@ -113,16 +114,39 @@ pub struct TargetIntelFixedProviderEndpoint {
 /// TargetIntel tool can perform provider I/O. Runtime selection may use a
 /// subset, but no target/model input can add a destination.
 pub fn target_intel_fixed_provider_endpoints() -> Vec<TargetIntelFixedProviderEndpoint> {
-    ["0.zone", "fofa", "quake", "hunter", "shodan", "rdap"]
-        .into_iter()
-        .filter_map(fixed_provider_endpoint)
-        .map(|endpoint| TargetIntelFixedProviderEndpoint {
-            scheme: endpoint.scheme.to_string(),
-            normalized_host: endpoint.host.to_string(),
-            port: endpoint.port,
-            path_prefix: endpoint.path.to_string(),
-        })
-        .collect()
+    [
+        "0.zone",
+        "fofa",
+        "quake",
+        "hunter",
+        "shodan",
+        "github-public",
+        "rdap",
+    ]
+    .into_iter()
+    .filter_map(fixed_provider_endpoint)
+    .map(|endpoint| TargetIntelFixedProviderEndpoint {
+        scheme: endpoint.scheme.to_string(),
+        normalized_host: endpoint.host.to_string(),
+        port: endpoint.port,
+        path_prefix: endpoint.path.to_string(),
+    })
+    .collect()
+}
+
+pub fn target_intel_provider_endpoints(
+    controlled_fixture: Option<&ControlledFixtureIntelTransportAuthority>,
+) -> Vec<TargetIntelFixedProviderEndpoint> {
+    if let Some(authority) = controlled_fixture {
+        let endpoint = authority.endpoint();
+        return vec![TargetIntelFixedProviderEndpoint {
+            scheme: endpoint.scheme().to_string(),
+            normalized_host: endpoint.host_str().unwrap_or_default().to_string(),
+            port: endpoint.port().unwrap_or_default(),
+            path_prefix: endpoint.path().to_string(),
+        }];
+    }
+    target_intel_fixed_provider_endpoints()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +201,7 @@ fn fixed_provider_endpoint(provider_id: &str) -> Option<FixedProviderEndpoint> {
         "quake" => ("quake.360.net", "/api/v3/search/quake_service"),
         "hunter" => ("hunter.qianxin.com", "/openApi/search"),
         "shodan" => ("api.shodan.io", "/shodan/host/search"),
+        "github-public" => ("api.github.com", "/search/repositories"),
         "rdap" => ("rdap.org", "/domain/"),
         #[cfg(test)]
         "fixture" => ("fixed.provider.example.test", "/v1/query"),
@@ -231,12 +256,40 @@ pub(crate) fn validate_fixed_provider_destination(
     descriptor_url: &str,
     rendered_url: &str,
 ) -> Result<url::Url, ProviderTransportError> {
-    let fixed = fixed_provider_endpoint(provider_id)
-        .ok_or(ProviderTransportError::DestinationPolicyBlocked)?;
+    validate_provider_destination(provider_id, descriptor_url, rendered_url, None)
+}
+
+pub(crate) fn validate_provider_destination(
+    provider_id: &str,
+    descriptor_url: &str,
+    rendered_url: &str,
+    controlled_fixture: Option<&ControlledFixtureIntelTransportAuthority>,
+) -> Result<url::Url, ProviderTransportError> {
     let descriptor = url::Url::parse(descriptor_url)
         .map_err(|_| ProviderTransportError::DestinationPolicyBlocked)?;
     let rendered = url::Url::parse(rendered_url)
         .map_err(|_| ProviderTransportError::DestinationPolicyBlocked)?;
+    if let Some(authority) =
+        controlled_fixture.filter(|authority| provider_id == authority.provider_id())
+    {
+        let exact_endpoint = |url: &url::Url| {
+            let endpoint = authority.endpoint();
+            url.scheme() == endpoint.scheme()
+                && url.host_str() == endpoint.host_str()
+                && url.port() == endpoint.port()
+                && url.path() == endpoint.path()
+                && url.fragment().is_none()
+                && url.username().is_empty()
+                && url.password().is_none()
+        };
+        if exact_endpoint(&descriptor) && exact_endpoint(&rendered) {
+            return Ok(rendered);
+        }
+        return Err(ProviderTransportError::DestinationPolicyBlocked);
+    }
+
+    let fixed = fixed_provider_endpoint(provider_id)
+        .ok_or(ProviderTransportError::DestinationPolicyBlocked)?;
     let exact_authority = |url: &url::Url| {
         url.scheme() == fixed.scheme
             && url.host_str() == Some(fixed.host)
@@ -259,6 +312,14 @@ pub(crate) async fn build_pinned_provider_client(
     endpoint: &url::Url,
     previous_addresses: Option<&[IpAddr]>,
 ) -> Result<(reqwest::Client, Vec<IpAddr>, IpAddr), ProviderTransportError> {
+    build_pinned_provider_client_with_authority(endpoint, previous_addresses, None).await
+}
+
+pub(crate) async fn build_pinned_provider_client_with_authority(
+    endpoint: &url::Url,
+    previous_addresses: Option<&[IpAddr]>,
+    controlled_fixture: Option<&ControlledFixtureIntelTransportAuthority>,
+) -> Result<(reqwest::Client, Vec<IpAddr>, IpAddr), ProviderTransportError> {
     let host = endpoint
         .host_str()
         .ok_or(ProviderTransportError::DestinationPolicyBlocked)?;
@@ -272,7 +333,23 @@ pub(crate) async fn build_pinned_provider_client(
         .collect::<Vec<_>>();
     addresses.sort();
     addresses.dedup();
-    if addresses.is_empty() || addresses.iter().copied().any(prohibited_provider_ip) {
+    let controlled_address = controlled_fixture
+        .filter(|authority| {
+            let expected = authority.endpoint();
+            endpoint.scheme() == expected.scheme()
+                && endpoint.host_str() == expected.host_str()
+                && endpoint.port() == expected.port()
+                && endpoint.path() == expected.path()
+        })
+        .and_then(|authority| authority.endpoint().host_str())
+        .and_then(|host| host.parse::<IpAddr>().ok());
+    let addresses_allowed = match controlled_address {
+        Some(expected) => {
+            expected.is_loopback() && addresses.iter().all(|address| *address == expected)
+        }
+        None => !addresses.iter().copied().any(prohibited_provider_ip),
+    };
+    if addresses.is_empty() || !addresses_allowed {
         return Err(ProviderTransportError::DestinationPolicyBlocked);
     }
     if previous_addresses.is_some_and(|previous| previous != addresses.as_slice()) {
@@ -647,10 +724,12 @@ pub(crate) fn provider_request() -> ProviderExecutionRequest {
 #[cfg(test)]
 mod tool_truth_transport_tests {
     use super::{
-        load_observed_raw_witness, prohibited_provider_ip, provider_request,
-        release_observed_raw_witness, run_provider_with_observed_transport, ProviderEgressFault,
+        build_pinned_provider_client_with_authority, load_observed_raw_witness,
+        prohibited_provider_ip, provider_request, release_observed_raw_witness,
+        run_provider_with_observed_transport, validate_provider_destination, ProviderEgressFault,
         ScriptedToolTruthPinnedTransport,
     };
+    use golish_pentest::config::ControlledFixtureIntelTransportAuthority;
     use std::net::IpAddr;
 
     #[test]
@@ -686,6 +765,48 @@ mod tool_truth_transport_tests {
                 address.parse::<IpAddr>().expect("mapped IPv6 fixture")
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn controlled_fixture_authority_admits_only_its_exact_loopback_endpoint() {
+        let authority = ControlledFixtureIntelTransportAuthority::loopback_http(
+            url::Url::parse("http://127.0.0.1:32123/intel/company.json").unwrap(),
+        )
+        .unwrap();
+        let endpoint = validate_provider_destination(
+            authority.provider_id(),
+            "http://127.0.0.1:32123/intel/company.json?company={{company_name}}",
+            "http://127.0.0.1:32123/intel/company.json?company=Golish",
+            Some(&authority),
+        )
+        .expect("exact controlled endpoint is admitted");
+        let (_, addresses, selected) =
+            build_pinned_provider_client_with_authority(&endpoint, None, Some(&authority))
+                .await
+                .expect("exact literal loopback is pinned");
+        assert_eq!(addresses, vec!["127.0.0.1".parse::<IpAddr>().unwrap()]);
+        assert_eq!(selected, "127.0.0.1".parse::<IpAddr>().unwrap());
+
+        for rendered in [
+            "http://127.0.0.1:32124/intel/company.json?company=Golish",
+            "http://127.0.0.1:32123/intel/other.json?company=Golish",
+            "http://127.0.0.1:32123@attacker.example/intel/company.json",
+        ] {
+            assert!(validate_provider_destination(
+                authority.provider_id(),
+                "http://127.0.0.1:32123/intel/company.json?company={{company_name}}",
+                rendered,
+                Some(&authority),
+            )
+            .is_err());
+        }
+        assert!(validate_provider_destination(
+            authority.provider_id(),
+            "http://127.0.0.1:32123/intel/company.json?company={{company_name}}",
+            "http://127.0.0.1:32123/intel/company.json?company=Golish",
+            None,
+        )
+        .is_err());
     }
 
     #[test]

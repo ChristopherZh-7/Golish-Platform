@@ -703,6 +703,10 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
                     form,
                     json: Value::Null,
                     timeout_secs: 5,
+                    applicable_pivot_kinds: Vec::new(),
+                    wire_query_type: None,
+                    adapter_version: None,
+                    literal_encoder: None,
                 }],
                 request_delay_ms: None,
                 max_retries: None,
@@ -736,6 +740,7 @@ async fn http_json_runtime_posts_fake_data_and_normalizes_candidates() {
         "run-1",
         "小米",
         &AssetIntelHydrateConfig::default(),
+        None,
         None,
     )
     .await
@@ -828,6 +833,10 @@ async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
         },
         json: Value::Null,
         timeout_secs: 5,
+        applicable_pivot_kinds: Vec::new(),
+        wire_query_type: None,
+        adapter_version: None,
+        literal_encoder: None,
     };
     let tool = ToolConfig {
         id: "fake-http".into(),
@@ -878,6 +887,7 @@ async fn http_json_runtime_keeps_partial_data_when_one_request_drops_body() {
         "run-partial",
         "小米",
         &AssetIntelHydrateConfig::default(),
+        None,
         None,
     )
     .await
@@ -951,6 +961,10 @@ async fn http_json_runtime_treats_provider_code_error_as_failed() {
                     form,
                     json: Value::Null,
                     timeout_secs: 5,
+                    applicable_pivot_kinds: Vec::new(),
+                    wire_query_type: None,
+                    adapter_version: None,
+                    literal_encoder: None,
                 }],
                 request_delay_ms: None,
                 max_retries: None,
@@ -984,6 +998,7 @@ async fn http_json_runtime_treats_provider_code_error_as_failed() {
         "run-provider-error",
         "中国平安",
         &AssetIntelHydrateConfig::default(),
+        None,
         None,
     )
     .await
@@ -1281,6 +1296,7 @@ fn asset_intel_skill_args_render_config_bindings() {
             include_branches: Some(true),
             create_candidates: Some(true),
             domain: None,
+            semantic_pivot: None,
         },
         &bindings,
     );
@@ -1854,6 +1870,52 @@ fn fixture_enrichment_profile_fields_cover_observed_provider_keys() {
     }
 }
 
+#[test]
+fn github_public_provider_exposes_only_closed_semantic_repository_routes() {
+    use golish_pentest_domain::models::AssetIntelPivotKind;
+
+    let resources = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("../../..")
+        .join("resources");
+    let scan = golish_pentest::scan_asset_intel_sources(
+        &resources.join("toolsconfig"),
+        &resources.join("intel-providers"),
+    );
+    assert!(scan.success, "toolsconfig scan failed: {:?}", scan.error);
+    let github = expand_provider_tools(&scan.tools)
+        .into_iter()
+        .find(|tool| provider_id_for_tool(tool).as_deref() == Some("github-public"))
+        .and_then(|tool| tool.asset_intel)
+        .expect("github-public descriptor");
+    let golish_pentest::models::AssetIntelRuntimeConfig::HttpJson { requests, .. } = github.runtime
+    else {
+        panic!("github-public must use the pinned HTTP runtime");
+    };
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|request| {
+        request
+            .url
+            .starts_with("https://api.github.com/search/repositories?")
+            && request.literal_encoder.as_deref() == Some("url_query_component.v1")
+            && request.adapter_version.as_deref() == Some("github_public_search.v1")
+    }));
+    let kinds = requests
+        .iter()
+        .flat_map(|request| request.applicable_pivot_kinds.iter().copied())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        kinds,
+        [
+            AssetIntelPivotKind::CompanyName,
+            AssetIntelPivotKind::Brand,
+            AssetIntelPivotKind::GithubOrg,
+            AssetIntelPivotKind::Repository,
+        ]
+        .into_iter()
+        .collect()
+    );
+}
+
 /// End-to-end: a `query_type=apk` 微信公众号 row (carries `msg.wechat_id`,
 /// has no `msg.app_url`) must hydrate the org's `wechat_official_accounts`
 /// intel list — these used to be silently dropped because the only apk rule
@@ -1950,6 +2012,7 @@ fn enrichment_config_disables_candidate_queue_writes() {
         include_branches: Some(true),
         create_candidates: Some(true),
         domain: None,
+        semantic_pivot: None,
     });
 
     assert_eq!(config.min_ownership_percent.as_deref(), Some("35"));
@@ -1969,6 +2032,7 @@ fn enrich_organization_config_disables_candidate_queue_writes() {
             include_branches: Some(true),
             create_candidates: Some(true),
             domain: None,
+            semantic_pivot: None,
         },
     };
 

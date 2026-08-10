@@ -1198,7 +1198,7 @@ async fn read_latest_compatibility_projection(
     };
     let disposition = compatibility_read_disposition(
         contract
-            .investigation_rollout_mode
+            .investigation_rollout_mode()
             .policy()
             .legacy_projection,
         &projection.projection_status,

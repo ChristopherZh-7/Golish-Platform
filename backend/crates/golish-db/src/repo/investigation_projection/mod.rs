@@ -5,6 +5,7 @@
 //! sequence and publishes entity/change rows plus the projection head in one
 //! transaction.
 
+mod campaigns;
 mod comparison;
 mod hypotheses;
 mod legacy;
@@ -12,34 +13,51 @@ mod projector;
 mod summary;
 mod timeline;
 mod types;
+mod version;
 mod worker;
 
+pub use campaigns::{
+    get_investigation_campaign, get_investigation_campaign_for_stage_run,
+    list_investigation_campaigns, list_investigation_campaigns_for_stage_run,
+};
 pub use comparison::{
     compare_and_record_v1, CompareAndRecordV1Input, InvestigationComparisonSampleV1,
 };
 pub use hypotheses::{
-    get_investigation_hypothesis, list_investigation_hypotheses,
+    get_investigation_hypothesis, get_investigation_hypothesis_for_stage_run,
+    list_investigation_hypotheses, list_investigation_hypotheses_for_stage_run,
     PLAN_B_CAPABILITY_STATE_NOT_AVAILABLE,
 };
+pub use legacy::{load_attempt_history, LegacyAttemptHistoryV1};
 pub use projector::{
     capture_projection_head, claim_next_projection_batch, project_next_projection_batch,
     project_projection_batch, read_projection_at_head,
 };
-pub use summary::read_investigation_summary;
+pub use summary::{read_investigation_summary, read_investigation_summary_for_stage_run};
 pub use timeline::{
-    read_investigation_timeline, InvestigationTimelinePage, InvestigationTimelineQuery,
+    read_investigation_timeline, read_investigation_timeline_for_stage_run,
+    InvestigationTimelinePage, InvestigationTimelineQuery,
 };
 pub use types::{
-    CapturedProjectionHead, InvestigationHypothesisDetail, InvestigationHypothesisFilters,
+    CapturedProjectionHead, InvestigationActorTopologyNode, InvestigationCampaignDetail,
+    InvestigationCampaignFilters, InvestigationCampaignListItem, InvestigationCampaignListPage,
+    InvestigationCampaignListQuery, InvestigationCampaignSortKey, InvestigationCoverageDenominator,
+    InvestigationGenerationSummary, InvestigationHypothesisDetail, InvestigationHypothesisFilters,
     InvestigationHypothesisListItem, InvestigationHypothesisListPage,
     InvestigationHypothesisListQuery, InvestigationHypothesisSortKey,
-    InvestigationLegacyProjection, InvestigationOperationReadAuthority,
-    InvestigationPageValidation, InvestigationPageValidationInput, InvestigationProjectionChange,
-    InvestigationProjectionError, InvestigationProjectionResult, InvestigationReadAuthority,
-    InvestigationSummary, InvestigationTemporalReadAuthority, MaterializedProjectionEntity,
+    InvestigationLegacyProjection, InvestigationOpenObligationSummary,
+    InvestigationOperationReadAuthority, InvestigationPageValidation,
+    InvestigationPageValidationInput, InvestigationProjectionChange, InvestigationProjectionError,
+    InvestigationProjectionResult, InvestigationReadAuthority, InvestigationSourceCensusMember,
+    InvestigationStageRunReadAuthority, InvestigationStageRunSelector, InvestigationSummary,
+    InvestigationTemporalReadAuthority, InvestigationWaveSummary, MaterializedProjectionEntity,
     ProjectionBatchClaim, ProjectionBatchEnqueueReceipt, ProjectionBatchReceipt,
-    ProjectionProjectOutcome, ProjectionReadPage, INVESTIGATION_PROJECTION_PAYLOAD_INVALID,
-    INVESTIGATION_PROJECTION_STALE,
+    ProjectionProjectOutcome, ProjectionReadPage, ProjectionStaleReason,
+    INVESTIGATION_PROJECTION_PAYLOAD_INVALID, INVESTIGATION_PROJECTION_STALE,
+};
+pub use version::{
+    begin_read_snapshot, LegacyField, OperationReadAuthority, ProjectionAuthorityTimeV1,
+    ProjectionHead, ProjectionItem, ProjectionPage, ProjectionTemporalStatusV1,
 };
 pub use worker::InvestigationProjectionWorker;
 
@@ -94,18 +112,16 @@ async fn ensure_registry_authority_exact_on(
                   LEFT JOIN candidate_analysis_snapshots snapshot
                     ON snapshot.snapshot_id=generation.snapshot_id
                    AND snapshot.operation_id=$1
-                 WHERE snapshot.snapshot_id IS NULL OR snapshot.snapshot_status<>'sealed_ready'
-                    OR snapshot.relevant_root_count<>4 OR snapshot.bundle_member_count<>4
+                 WHERE snapshot.snapshot_id IS NULL OR snapshot.snapshot_status NOT IN (
+                         'sealed_ready','sealed_analysis_ready_with_residuals'
+                       )
+                    OR snapshot.relevant_root_count<>3 OR snapshot.bundle_member_count<>3
                     OR (SELECT COUNT(*)
                           FROM candidate_analysis_snapshot_authority_bundle_members member
-                         WHERE member.snapshot_id=snapshot.snapshot_id)<>4
+                         WHERE member.snapshot_id=snapshot.snapshot_id)<>3
                     OR (SELECT COUNT(DISTINCT member.root_family)
                           FROM candidate_analysis_snapshot_authority_bundle_members member
-                         WHERE member.snapshot_id=snapshot.snapshot_id)<>4
-                    OR (SELECT COUNT(*)
-                          FROM candidate_analysis_snapshot_authority_bundle_members member
-                         WHERE member.snapshot_id=snapshot.snapshot_id
-                           AND member.member_status='consistent_fresh')<>4
+                         WHERE member.snapshot_id=snapshot.snapshot_id)<>3
                     OR NOT EXISTS(
                          SELECT 1 FROM candidate_analysis_temporal_validity_censuses census
                           WHERE census.snapshot_id=snapshot.snapshot_id
@@ -173,13 +189,16 @@ async fn ensure_registry_authority_exact_on(
     }
 }
 
-struct InvestigationProjectionReadSnapshot<'a> {
-    tx: Transaction<'a, Postgres>,
-    authority: InvestigationReadAuthority,
+pub(super) struct InvestigationProjectionReadSnapshot<'a> {
+    pub(super) tx: Transaction<'a, Postgres>,
+    pub(super) authority: InvestigationReadAuthority,
 }
 
 impl<'a> InvestigationProjectionReadSnapshot<'a> {
-    async fn begin(pool: &'a PgPool, operation_id: Uuid) -> InvestigationProjectionResult<Self> {
+    pub(super) async fn begin(
+        pool: &'a PgPool,
+        operation_id: Uuid,
+    ) -> InvestigationProjectionResult<Self> {
         let mut tx = pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
@@ -344,6 +363,7 @@ impl<'a> InvestigationProjectionReadSnapshot<'a> {
             return Err(InvestigationProjectionError::Stale {
                 code: INVESTIGATION_PROJECTION_STALE,
                 current_change_seq: header.change_seq,
+                reason: ProjectionStaleReason::TemporalCutoffExpired,
             });
         }
 
@@ -370,10 +390,100 @@ impl<'a> InvestigationProjectionReadSnapshot<'a> {
         })
     }
 
-    async fn finish(self) -> InvestigationProjectionResult<()> {
+    pub(super) async fn finish(self) -> InvestigationProjectionResult<()> {
         self.tx.commit().await?;
         Ok(())
     }
+
+    pub(super) async fn begin_for_stage_run(
+        pool: &'a PgPool,
+        operation_id: Uuid,
+        selector: &InvestigationStageRunSelector,
+    ) -> InvestigationProjectionResult<(Self, InvestigationStageRunReadAuthority)> {
+        let mut snapshot = Self::begin(pool, operation_id).await?;
+        let stage_run =
+            validate_exact_stage_run_on(&mut snapshot.tx, operation_id, selector).await?;
+        Ok((snapshot, stage_run))
+    }
+}
+
+async fn validate_exact_stage_run_on(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    selector: &InvestigationStageRunSelector,
+) -> InvestigationProjectionResult<InvestigationStageRunReadAuthority> {
+    if operation_id.is_nil()
+        || selector.stage_execution_id.is_nil()
+        || selector.scope_snapshot_id.is_nil()
+        || selector.stage_run_request_id.trim().is_empty()
+        || selector.stage_run_request_id.len() > 512
+    {
+        return Err(types::invalid_payload(
+            "exact Investigation stage selector is malformed",
+        ));
+    }
+    let rows = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            Uuid,
+            Uuid,
+            String,
+            Uuid,
+            String,
+            bool,
+            i64,
+            i64,
+            i64,
+            String,
+        ),
+    >(
+        r#"SELECT authority_id,operation_id,stage_execution_id,
+                  owning_stage_run_request_id,scope_snapshot_id,run_state,
+                  admission_open,stop_epoch,change_seq,head_version,head_sha256
+             FROM investigation_run_heads
+            WHERE operation_id=$1 AND stage_execution_id=$2
+              AND owning_stage_run_request_id=$3 AND scope_snapshot_id=$4
+            ORDER BY authority_id
+            LIMIT 2"#,
+    )
+    .bind(operation_id)
+    .bind(selector.stage_execution_id)
+    .bind(selector.stage_run_request_id.trim())
+    .bind(selector.scope_snapshot_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if rows.len() != 1 {
+        return Err(types::invalid_payload(
+            "exact Investigation stage selector is unavailable or ambiguous",
+        ));
+    }
+    let (
+        authority_id,
+        operation_id,
+        stage_execution_id,
+        stage_run_request_id,
+        scope_snapshot_id,
+        run_state,
+        admission_open,
+        stop_epoch,
+        change_seq,
+        head_version,
+        head_sha256,
+    ) = rows.into_iter().next().expect("one exact stage-run row");
+    Ok(InvestigationStageRunReadAuthority {
+        authority_id,
+        operation_id,
+        stage_execution_id,
+        stage_run_request_id,
+        scope_snapshot_id,
+        run_state,
+        admission_open,
+        stop_epoch,
+        change_seq,
+        head_version,
+        head_sha256,
+    })
 }
 
 fn apply_expected_page_authority(
@@ -391,13 +501,20 @@ fn apply_expected_page_authority(
             "cursor temporal cutoff is in the database future",
         ));
     }
-    if current.as_of_change_seq != expected.as_of_change_seq
-        || current.authority_epoch_set_hash != expected.authority_epoch_set_hash
-        || current.as_of_temporal_cutoff > expected.earliest_effective_valid_until
-    {
+    let stale_reason = if current.as_of_change_seq != expected.as_of_change_seq {
+        Some(ProjectionStaleReason::ChangeSeqAdvanced)
+    } else if current.authority_epoch_set_hash != expected.authority_epoch_set_hash {
+        Some(ProjectionStaleReason::AuthorityEpochChanged)
+    } else if current.as_of_temporal_cutoff > expected.earliest_effective_valid_until {
+        Some(ProjectionStaleReason::TemporalCutoffExpired)
+    } else {
+        None
+    };
+    if let Some(reason) = stale_reason {
         return Err(InvestigationProjectionError::Stale {
             code: INVESTIGATION_PROJECTION_STALE,
             current_change_seq: current.as_of_change_seq,
+            reason,
         });
     }
     snapshot.authority.temporal.as_of_change_seq = expected.as_of_change_seq;
@@ -447,6 +564,25 @@ pub async fn capture_investigation_read_authority(
     let authority = snapshot.authority.clone();
     snapshot.finish().await?;
     Ok(authority)
+}
+
+/// Capture projection and exact unified-stage authority from one RR/RO
+/// snapshot. This is the only cursor bootstrap used by the six current read
+/// commands; it never resolves a latest stage execution.
+pub async fn capture_investigation_read_authority_for_stage_run(
+    pool: &PgPool,
+    operation_id: Uuid,
+    selector: &InvestigationStageRunSelector,
+) -> InvestigationProjectionResult<(
+    InvestigationReadAuthority,
+    InvestigationStageRunReadAuthority,
+)> {
+    let (snapshot, stage_run) =
+        InvestigationProjectionReadSnapshot::begin_for_stage_run(pool, operation_id, selector)
+            .await?;
+    let authority = snapshot.authority.clone();
+    snapshot.finish().await?;
+    Ok((authority, stage_run))
 }
 
 /// Public typed enqueue seam for canonical sources outside the Hypothesis

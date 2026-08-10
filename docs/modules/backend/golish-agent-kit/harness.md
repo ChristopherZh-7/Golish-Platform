@@ -20,6 +20,12 @@
 
 落地 stage harness MVP（design Doc 1/2/3）。`stage_harness` 主入口（`for_stage` + `validate_gate`）；`operation_graph` 加载 base DAG + profile 投影 + `next_stages`；`intent_classifier` 确定性词库分类；`gate/` 6 个 check 调度；`sprint_contract` 生成 finding 数量范围。
 
+统一 Investigation 的 schema-neutral topology 基座保留两个 closed contract：历史
+`legacy_candidate_verification_v1` 继续逐字节加载原 DAG；
+`unified_investigation_v1` 加载独立资源并固定
+`Vuln Triage → Application Understanding → Investigation → Reporting`。当前 production
+profiles 不包含两个新 stage，持久化/runtime seam 未完成前不得按全局默认切换。
+
 C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式标记为 untrusted data 的 prompt block；它不携带 ToolDefinition/ToolChoice/授权指令，不把 VaultRef 解引用，也拒绝 plaintext secret 与 prompt markup 注入。
 
 ## 公开接口
@@ -37,6 +43,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 | `ReportingGateTruth` / `validate_reporting_gate_truth` | C9 Reporting 的 DB-free Gate contract：current validated revision、完整 source-set、citation/attestation 与 Cleanup closeout |
 | `hypothesis_registry::*` | Plan B host boundary：typed Candidate proposal→core semantic key，operation/org-scoped fixed-order reducer（含split/merge/derive/narrow/collision），四类structured-claim component compiler，host VerificationContract/plan compiler，以及仅消费repository-frozen opaque snapshot的pure Candidate Gate。Gate按固定顺序关闭Plan A multi-root/temporal、signed feed、attempt/read/coverage（含semantic-summary exactness）、mutation、claim/contract/plan、disposition/relation/transition与唯一final submitter exact sets；输出只含non-terminal Candidate mutation |
 | `StageRuntimeContract` / `RuntimeUnitIdentity` / `RuntimeScopeSource` | `StageSpec.runtime_memory` 的 closed typed contract；当前仅 `target_intel` / `external_attack_surface` / `enumeration` / `vuln_triage` 精确声明 schema v2、`stage_execution_organization`、`frozen_operation_snapshot`、worker lease 与 final-seal handoff |
+| `StageTopologyContract` / `FrozenStageTopologyContractMaterial` | server-owned 双态 topology catalog、严格 parse、canonical JSON/domain-separated hash 与 future operation/fork freeze material；不选择 rollout、不持久化 |
 | `CanonicalFactKey::TechniqueOutcomeSet` / `technique_outcome_set_identity` | Vuln final-seal-only 集合 authority：对完整排序后的 `(asset, technique, normalized_state)` 生成稳定 count/hash；不采样、不替代底层 row，也不能作为 FactDelta subject |
 | `render_context_pack_data` | 将已授权 ContextPack 渲染为 escaped、data-only、带 provenance/evidence 的 prompt block |
 
@@ -46,6 +53,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 |---|---|
 | `stage_harness.rs` / `stage_transition.rs` | 主入口 / gate→下一 stage |
 | `operation_graph.rs` / `profile.rs` / `stage_spec.rs` | DAG 投影 / profile / stage 定义 |
+| `stage_topology_contract.rs` | legacy/unified closed topology、稳定 canonical/hash 与 future freeze material；unknown fail closed |
 | `stage_runtime_contract.rs` | specialist Runtime Memory V2 的 declarative owner/scope/lease/final-seal contract；不选择 deployment rollout，也不替代 DB fence |
 | `stage_spec.rs` / workspace `resources/harness/stages/*/spec.json` | stage 运行策略；Target Intel 以 `company_stage_controller` 为唯一 lead，允许按需创建 sibling SubAgent，并冻结 C/G/K 与动态请求预算 |
 | `operation_continuity.rs` | cross-session adoption 的 IO-free cursor math：按 reusable prefix 计算 entry stage + remaining DAG allowlist |
@@ -69,6 +77,7 @@ C7 的 `knowledge_context` 只负责把已授权 `ContextPack` 渲染成显式�
 - **不变量 I7/I8**：gate 是**确定性规则**（schema/scope/contract/vacuous/freshness/DB truth），不能拿模型自报当通过；模型提交里的 `evidence_refs` / `evidence_ids` 只是可选 ledger 调试引用，不能作为必填交付字段。若模型写了 id，runtime 仍必须校验它真实存在，假 id 直接 `needs_fix`。
 - Hypothesis Candidate artifact 使用 `deny_unknown_fields` 且只携带四个非终态；contract/member/count/set/final hash全部来自host compiler。plan objective必须携带sealed `VerificationContractV1`，不能自报id/hash；claim derivation必须同时给出claim/impact/trust-boundary/identity四类typed source。Plan A authority adapter只能接 opaque `CheckedToolTruthAuthorityBundle<'guard>`，输出字段私有并exact-copy temporal window/policy/epoch/revalidation metadata；任一semantic invalid、expired、mixed epoch、skew exceeded或root census不全都只得到blocked disposition。
 - ContextPack 是 data，不是 authority：任何检索内容中的“调用工具/忽略 scope/扩大权限”文本都只能被转义后呈现，不能改变 pre-action authorizer、ToolChoice 或 Gate。
+- `StageKind::ApplicationUnderstanding` / `Investigation` 存在于 closed catalog 不等于 production cutover。只能由 operation-frozen `StageTopologyContract` 选图；当前 profile/legacy graph 不能被当前默认重解释。
 - Candidate V2 已接 wire/Gate/final-seal/terminalizer：模型只能提交 bounded `CandidateDecisionDraft`，每个 server-frozen work item 必须恰好终态为 `candidate` 或 evidence-backed `no_candidate`；Candidate id、plan/hash/risk 与可信 operation/scope/org/submission 都由 server/DB 绑定。Attempt 固定为 `queued|running|submitted|verified|refuted|blocked|retryable_failed|abandoned`；`retryable_failed` 是旧 Attempt 终态，重试必须新建下一 ordinal，不能把旧行改回 queued。Verification submit 只建立 immutable TerminalIntent；active-tool finish、checkpoint barrier 与 server terminalizer 是三个独立的持久化边界，response-loss 只能 exact replay，不能重新执行 action。action journal 已 terminal 但 intent 尚缺时，只允许同一 Attempt/Worker/chain 的 submit-only continuation。`verification_gate` 验证 server-owned `VerificationTruthAuthority(expected_units)` 与 exact snapshot 的双向全等，missing/extra/foreign/duplicate unit 都 fail closed；terminal Finding 只来自 proof-backed verified Attempt 的 compound terminalizer。lease/checkpoint 仍由 P1 WorkerRun 负责。
 - FactDelta 的 kind 是闭集 `created|updated|refuted|new_surface`，自由措辞只能进入 `summary`；未知模型 prose 在 typed DTO 反序列化时直接拒绝，不能泄漏成后续 Candidate technique。follow-on route 必须把 `delta_kind`、`observation_kind`、`allowed_techniques`、`enrichment_required` 四个轴分开：强 typed verifier evidence 才可直接冻结 Candidate observation，`refuted` 只形成 no-attack member；recognized unsupported adapter 整个事务回滚，信息不足只形成 pending enrichment authority并保持 source Wave open。
 - `selector.rs::select_attack_read` 按 operation-frozen attack contract 一次选择一条完整 semantic record：decision children 先按 work-item key 规范排序，candidate/no-candidate child 数必须与对应 authoritative counts 相等，且 closed-review count 不得超过 frozen WaveUnit count。dual mode 只产生 `Match|Mismatch|V2Missing` shadow outcome；`DualWriteReadV2Fallback` 只能整条 fallback，`V2Only` 对 missing/incomplete 直接 `ATTACK_V2_READ_REQUIRED`，禁止 legacy decision + V2 count 逐字段拼接。production runtime-memory adapter 已在 Candidate final-seal transaction 中从 durable sources 构造完整 records并调用该 selector；DB repo 重算 comparison/source/hash后持久化，不能把 hash 当内容授权。
@@ -158,3 +167,20 @@ cd backend && cargo nextest run -p golish-agent-kit harness
 - Gate只接收repository在同一RR snapshot冻结的opaque authority：Plan A四root/temporal/feed、attempt/read receipt、H1/H2/checklist×partition、subreview/synthesis及host-compiled mutation/contract/plan/transition exact sets。它无DB/provider/network能力，不能自行刷新或补齐truth。
 - semantic summary不是自由prose/hash：covered input/checklist、observed H1 proposal、typed missed checklist、blocker codes、outcome与每条subject/input/checklist/proposal observation都必须和leaf/node raw exact sets全等，hash-only或缺项一律BLOCK。
 - `AnalysisArtifactsReady`、Stage Team receipt与Gate PASS都不能产生`verified/refuted`或Plan C终态；canonical mutation只可交给app/DB atomic apply。focused入口：`cargo nextest run -p golish-agent-kit --test hypothesis_registry_gate`。
+
+## Target Intel Goal reviewed finalizer contracts（2026-08-02）
+
+- `intel_goal_contract.rs` owns the operation-frozen runtime mode, completion authority,
+  execution-profile/terminal-contract pairs, and canonical JSON hashing. A missing persisted row
+  decodes as legacy; an unknown value fails closed, and only `intel_goal_v1` may select the new
+  completion authority.
+- `intel_goal_review.rs` freezes exactly four ordered sections (`durable_state`,
+  `observable_actions`, `frozen_contract`, `completion_claim`), binds their hashes into one bundle,
+  and exposes an I/O-free cursor/verdict validator. PASS cannot carry open material findings,
+  REWORK must be actionable, and NEEDS_HUMAN uses a closed requirement taxonomy. Verdict shape,
+  hashes, bounded refs and the inherited material-finding set are exact; extra/cross-operation
+  dispositions cannot enter the persistence layer.
+- `intel_goal_finalizer.rs` is the deterministic non-vacuous authority check: a fresh four-section
+  PASS, exact material revision, no active authoritative work, current-run terminal receipts,
+  evidence/artifact closure, closed frontier/capability gaps, and no unauthorized scope promotion
+  are all required. It performs no persistence and cannot be bypassed by prose or six-axis claims.

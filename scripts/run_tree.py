@@ -12,6 +12,12 @@ into ONE indented tree so a human (or a later AI) can see, at a glance:
   -> final preparation / submit -> Gate PASS/BLOCK. Older Producer/Aggregator
   transcripts remain readable but are explicitly labeled legacy fixed teams.
 
+For operations frozen to `unified_investigation_v1`, `--db` also renders the
+persisted Main -> per-org read session -> Analysis snapshot/generation ->
+Hypothesis -> Verification admission/task/objective Campaign -> outcome ->
+FactDelta -> Reporting authority chain. Missing schema edges are shown as
+`unavailable`, never as checked-empty authority.
+
 What it surfaces from `transcript.json` (all already on disk):
   - gate decisions      (`harness_trace` kind=gate_decision: gate + first_blocking_reason)
   - per-org coverage    (kind=stage_run_org_progress: per-technique found/empty/blocked)
@@ -172,6 +178,95 @@ def _tool_summary(tool: str, args, result, trunc: int) -> str:
             "PREPARE FINAL "
             f"closed={_yes_no(r.get('request_epoch_closed'))} status={r.get('status', '?')}"
         )
+    if tool == "recon_search_intel":
+        pivot = a.get("pivot") if isinstance(a.get("pivot"), dict) else {}
+        org = str(a.get("organization_id") or "")[:8]
+        summaries = r.get("query_summaries") if isinstance(r.get("query_summaries"), list) else []
+        statuses = sorted(
+            {
+                str(item.get("status"))
+                for item in summaries
+                if isinstance(item, dict) and item.get("status")
+            }
+        )
+        bits = [
+            f"org={org or '?'}",
+            f"pivot={pivot.get('kind', '?')}",
+            f"intent={a.get('intent', '?')}",
+            f"queries={len(summaries)}",
+            f"status={','.join(statuses) or r.get('status', '?')}",
+        ]
+        if summaries:
+            bits.append(
+                "receipts="
+                + str(
+                    sum(
+                        len(item.get("query_receipts", []))
+                        for item in summaries
+                        if isinstance(item, dict) and isinstance(item.get("query_receipts"), list)
+                    )
+                )
+            )
+            bits.append(
+                "artifacts="
+                + str(
+                    sum(
+                        len(item.get("artifact_refs", []))
+                        for item in summaries
+                        if isinstance(item, dict) and isinstance(item.get("artifact_refs"), list)
+                    )
+                )
+            )
+        for field, label in (
+            ("receipt_id", "receipt"),
+            ("evidence_id", "evidence"),
+            ("artifact_ref", "artifact"),
+        ):
+            if r.get(field):
+                bits.append(f"{label}={_short(r[field], 64)}")
+        # Provider DSL, raw response bodies, and the semantic pivot value are
+        # intentionally omitted: this view is an audit index, not a data leak.
+        return "INTEL SEARCH " + " ".join(bits)
+    if tool == "stage_team_spawn_intel_subagents":
+        agents = a.get("agents") if isinstance(a.get("agents"), list) else []
+        names = [
+            item.get("name")
+            for item in agents
+            if isinstance(item, dict) and item.get("name")
+        ]
+        bits = [
+            f"requested={len(agents)}",
+            f"accepted={r.get('accepted_count', '?')}",
+            f"status={r.get('status', '?')}",
+        ]
+        if names:
+            bits.append(f"workers={_short(names, min(trunc, 160))}")
+        # Exact prompts stay transcript-addressable by hash/receipt only.
+        if r.get("prompt_sha256"):
+            bits.append(f"prompt_hash={_short(r['prompt_sha256'], 80)}")
+        return "INTEL SPAWN " + " ".join(bits)
+    if tool == "stage_team_request_intel_review":
+        bits = [
+            f"status={r.get('status', '?')}",
+            f"review={_short(r.get('review_id'), 40) or '?'}",
+            f"round={r.get('round', '?')}",
+        ]
+        if r.get("bundle_sha256"):
+            bits.append(f"bundle={_short(r['bundle_sha256'], 80)}")
+        if r.get("decision"):
+            bits.append(f"decision={r['decision']}")
+        return "INTEL REVIEW " + " ".join(bits)
+    if tool in ("intel_public_search", "intel_public_fetch"):
+        bits = [
+            f"status={r.get('status', '?')}",
+            f"evidence={_short(r.get('evidence_ref'), 64) or '?'}",
+            f"audit={_short(r.get('audit_receipt_ref'), 64) or '?'}",
+        ]
+        if r.get("content_sha256"):
+            bits.append(f"content={_short(r['content_sha256'], 80)}")
+        # Do not print queries, URLs, response bodies, redirect locations, or
+        # pinned addresses. Receipt ids preserve the drill-down path.
+        return f"INTEL PUBLIC {tool.rsplit('_', 1)[-1].upper()} " + " ".join(bits)
     if tool == "pentest_run":
         cmd = (a.get("tool_name", "") + " " + a.get("args", "")).strip()
         detail = cmd or _short(a, trunc)
@@ -335,6 +430,45 @@ def _harness_summary(e: dict, trunc: int) -> str | None:
         if act:
             head += f"  ~ {_short(act, 60)}"
         return head
+    if kind == "target_intel_goal_contract":
+        return (
+            "intel contract "
+            f"mode={e.get('runtime_mode', '?')} authority={e.get('completion_authority', '?')} "
+            f"profile={e.get('profile_id', '?')} hash={_short(e.get('contract_sha256'), 80)}"
+        ).rstrip()
+    if kind == "target_intel_semantic_pivot":
+        bits = [
+            f"intel pivot kind={e.get('pivot_kind', '?')}",
+            f"intent={e.get('intent', '?')}",
+            f"outcome={e.get('outcome', '?')}",
+        ]
+        if e.get("receipt_id"):
+            bits.append(f"receipt={_short(e['receipt_id'], 64)}")
+        if e.get("evidence_id"):
+            bits.append(f"evidence={_short(e['evidence_id'], 64)}")
+        return " ".join(bits)
+    if kind in ("intel_review_shadow", "intel_review_divergence"):
+        bits = [
+            f"intel review {e.get('phase', kind.removeprefix('intel_review_'))}",
+            f"round={e.get('round', '?')}",
+            f"decision={e.get('decision', '?')}",
+            f"review={_short(e.get('review_id'), 40) or '?'}",
+        ]
+        if e.get("bundle_sha256"):
+            bits.append(f"bundle={_short(e['bundle_sha256'], 80)}")
+        if e.get("divergence_code"):
+            bits.append(f"divergence={e['divergence_code']}")
+        return " ".join(bits)
+    if kind == "intel_goal_finalizer":
+        bits = [
+            f"intel finalizer {e.get('decision', '?')}",
+            f"review={_short(e.get('review_id'), 40) or '?'}",
+        ]
+        if e.get("code"):
+            bits.append(f"code={e['code']}")
+        if e.get("verdict_sha256"):
+            bits.append(f"verdict={_short(e['verdict_sha256'], 80)}")
+        return " ".join(bits)
     return None
 
 
@@ -966,6 +1100,16 @@ def main() -> int:
     return 0
 
 
+def session_evidence_facts(q, session_id: str):
+    """Read exact-session evidence facts without a shared-DB/global fallback."""
+    return q(
+        "SELECT evidence_technique, evidence_outcome, count(*) FROM audit_log "
+        "WHERE audit_role='evidence' AND evidence_technique IS NOT NULL AND session_id=%s "
+        "GROUP BY 1,2 ORDER BY 1,2",
+        (session_id,),
+    )
+
+
 def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[str]:
     """Deterministic DB checks for root causes transcripts can't show.
 
@@ -1020,7 +1164,13 @@ def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[
         session_start, session_end, row_count = rows[0]
         out.append(f"  audit_log session window: {session_start} .. {session_end} ({row_count} rows)")
 
-    # 1) targets + the organization_id=NULL root cause (gate skips per-org truth).
+    out.append(
+        "  database-wide inventory below is diagnostic only; it is never session evidence"
+    )
+
+    # 1) database-wide targets + the organization_id=NULL root cause. These
+    # totals diagnose shared-DB drift only; the exact session evidence below
+    # never falls back to them.
     rows = q("SELECT count(*), count(*) FILTER (WHERE organization_id IS NULL) FROM targets")
     if rows and rows[0][0] != "ERR":
         total, org_null = rows[0]
@@ -1070,27 +1220,12 @@ def run_db_diagnosis(session_dir: Path, db_url: str | None, trunc: int) -> list[
             out.append(f"    {label}: {count} ids={ids}")
 
     # 5) audit_log evidence facts for THIS session (the gate's coverage truth).
-    facts = q(
-        "SELECT evidence_technique, evidence_outcome, count(*) FROM audit_log "
-        "WHERE audit_role='evidence' AND evidence_technique IS NOT NULL AND session_id=%s "
-        "GROUP BY 1,2 ORDER BY 1,2",
-        (session_id,),
-    )
-    scope = "this session"
-    if (facts and facts[0][0] == "ERR") or not facts:
-        # session had no rows (or session_id column mismatch) -> fall back to global
-        gfacts = q(
-            "SELECT evidence_technique, evidence_outcome, count(*) FROM audit_log "
-            "WHERE audit_role='evidence' AND evidence_technique IS NOT NULL "
-            "GROUP BY 1,2 ORDER BY 1,2"
-        )
-        if not (gfacts and gfacts[0][0] == "ERR"):
-            facts, scope = gfacts, "all sessions (session had none)"
+    facts = session_evidence_facts(q, session_id)
     found_subdomain = 0
     if facts and facts[0][0] == "ERR":
         out.append(f"  audit_log evidence facts: {facts[0][1]}")
     else:
-        out.append(f"  audit_log evidence facts ({scope}):")
+        out.append("  audit_log evidence facts (this session; no global fallback):")
         if not facts:
             out.append("    (none) \u26a0 no evidence rows booked \u2192 gate sees nothing")
         for tech, outcome, n in facts:
@@ -1538,6 +1673,815 @@ def _has_legacy_checkpoint(state_blob: object) -> bool:
     )
 
 
+def _unified_investigation_lines(q, operation_id: str, trunc: int) -> list[str]:
+    """Render one exact unified-Investigation authority chain.
+
+    Every query is rooted at the supplied operation id and deliberately avoids
+    a latest-row fallback.  A missing migration/query edge is reported as
+    unavailable instead of being confused with a checked-empty authority.
+    """
+
+    def records(sql: str) -> tuple[list[dict], str | None]:
+        return _runtime_records(q(sql, (operation_id,)))
+
+    authorities, authorities_error = records(
+        """/* run_tree:investigation_authorities */
+        SELECT jsonb_build_object(
+            'authority_id', authority.authority_id,
+            'stage_execution_id', authority.stage_execution_id,
+            'owning_stage_run_request_id', authority.owning_stage_run_request_id,
+            'scope_snapshot_id', authority.scope_snapshot_id,
+            'contract_version', authority.contract_version,
+            'created_at', authority.created_at
+        )
+        FROM investigation_stage_run_authorities AS authority
+        WHERE authority.operation_id = %s
+        ORDER BY authority.created_at, authority.authority_id"""
+    )
+    read_sessions, read_sessions_error = records(
+        """/* run_tree:investigation_read_sessions */
+        SELECT jsonb_build_object(
+            'authority_id', read_session.authority_id,
+            'session_set_id', session_set.session_set_id,
+            'session_set_status', session_set.status,
+            'session_set_member_count', session_set.member_count,
+            'session_set_member_sha256', session_set.member_set_sha256,
+            'main_read_session_id', read_session.main_read_session_id,
+            'stage_execution_id', read_session.stage_execution_id,
+            'owning_stage_run_request_id', read_session.owning_stage_run_request_id,
+            'stage_run_unit_id', read_session.stage_run_unit_id,
+            'scope_snapshot_id', read_session.scope_snapshot_id,
+            'organization_id', read_session.organization_id,
+            'snapshot_id', read_session.snapshot_id,
+            'snapshot_sha256', read_session.snapshot_sha256,
+            'context_chain_id', read_session.context_chain_id,
+            'transcript_partition_id', read_session.transcript_partition_id,
+            'receipt_id', receipt.receipt_id,
+            'receipt_sha256', receipt.receipt_sha256,
+            'context_item_count', receipt.context_item_count,
+            'methodology_hit_count', receipt.methodology_hit_count,
+            'omission_count', receipt.omission_count,
+            'created_at', read_session.created_at
+        )
+        FROM investigation_main_read_sessions AS read_session
+        JOIN investigation_main_session_sets AS session_set
+          ON session_set.session_set_id=read_session.session_set_id
+        LEFT JOIN investigation_main_read_session_receipts AS receipt
+          ON receipt.main_read_session_id=read_session.main_read_session_id
+        WHERE read_session.operation_id = %s
+        ORDER BY read_session.organization_id, read_session.created_at,
+                 read_session.main_read_session_id"""
+    )
+    analysis_authorities, analysis_authorities_error = records(
+        """/* run_tree:investigation_analysis_authorities */
+        SELECT jsonb_build_object(
+            'snapshot_id', snapshot.snapshot_id,
+            'authority_id', snapshot.authority_id,
+            'stage_execution_id', snapshot.stage_execution_id,
+            'owning_stage_run_request_id', snapshot.owning_stage_run_request_id,
+            'stage_run_unit_id', snapshot.stage_run_unit_id,
+            'scope_snapshot_id', snapshot.scope_snapshot_id,
+            'organization_id', snapshot.organization_id,
+            'snapshot_sha256', snapshot.snapshot_sha256,
+            'context_item_count', snapshot.context_item_count,
+            'methodology_hit_count', snapshot.methodology_hit_count,
+            'omission_count', snapshot.omission_count,
+            'sealed_at', snapshot.sealed_at
+        )
+        FROM investigation_analysis_snapshot_authorities AS snapshot
+        WHERE snapshot.operation_id = %s
+        ORDER BY snapshot.organization_id, snapshot.sealed_at, snapshot.snapshot_id"""
+    )
+    candidate_snapshots, candidate_snapshots_error = records(
+        """/* run_tree:investigation_candidate_snapshots */
+        SELECT jsonb_build_object(
+            'snapshot_id', snapshot.snapshot_id,
+            'organization_id', snapshot.organization_id,
+            'wave_ordinal', snapshot.wave_ordinal,
+            'genesis', snapshot.genesis,
+            'previous_generation_seal_id', snapshot.previous_generation_seal_id,
+            'fact_delta_watermark', snapshot.fact_delta_watermark,
+            'snapshot_status', snapshot.snapshot_status,
+            'authority_hash', snapshot.candidate_snapshot_authority_hash,
+            'created_at', snapshot.created_at
+        )
+        FROM candidate_analysis_snapshots AS snapshot
+        WHERE snapshot.operation_id = %s
+        ORDER BY snapshot.organization_id, snapshot.wave_ordinal, snapshot.snapshot_id"""
+    )
+    generations, generations_error = records(
+        """/* run_tree:investigation_generations */
+        SELECT jsonb_build_object(
+            'generation_id', generation.generation_id,
+            'organization_id', generation.organization_id,
+            'generation_ordinal', generation.generation_ordinal,
+            'candidate_snapshot_id', generation.candidate_snapshot_id,
+            'previous_generation_id', generation.previous_generation_id,
+            'generation_seal_id', seal.seal_id,
+            'member_count', seal.member_count,
+            'member_set_hash', seal.member_set_hash,
+            'open_obligation_set_hash', seal.open_obligation_set_hash,
+            'generation_hash', seal.generation_hash,
+            'sealed_at', seal.sealed_at,
+            'created_at', generation.created_at
+        )
+        FROM hypothesis_generations AS generation
+        LEFT JOIN hypothesis_generation_seals AS seal
+          ON seal.generation_id=generation.generation_id
+        WHERE generation.operation_id = %s
+        ORDER BY generation.organization_id, generation.generation_ordinal,
+                 generation.generation_id"""
+    )
+    hypotheses, hypotheses_error = records(
+        """/* run_tree:investigation_hypotheses */
+        SELECT jsonb_build_object(
+            'generation_id', generation.generation_id,
+            'generation_member_id', generation_member.generation_member_id,
+            'generation_ordinal', generation.generation_ordinal,
+            'member_ordinal', generation_member.ordinal,
+            'organization_id', generation.organization_id,
+            'root_id', revision.root_id,
+            'revision_id', revision.revision_id,
+            'revision_ordinal', revision.revision_ordinal,
+            'revision_hash', revision.revision_hash,
+            'subject_kind', revision.subject_kind,
+            'epistemic_state', revision.epistemic_state,
+            'lifecycle_state', revision.lifecycle_state,
+            'planning_readiness', revision.planning_readiness,
+            'priority', revision.priority,
+            'is_current_head', head.head_revision_id=revision.revision_id,
+            'head_version', head.head_version
+        )
+        FROM hypothesis_generations AS generation
+        JOIN hypothesis_generation_members AS generation_member
+          ON generation_member.generation_id=generation.generation_id
+        JOIN attack_hypothesis_revisions AS revision
+          ON revision.revision_id=generation_member.revision_id
+        LEFT JOIN attack_hypothesis_heads AS head
+          ON head.root_id=revision.root_id
+        WHERE generation.operation_id = %s
+        ORDER BY generation.organization_id, generation.generation_ordinal,
+                 generation_member.ordinal, revision.revision_id"""
+    )
+    admissions, admissions_error = records(
+        """/* run_tree:investigation_admissions */
+        SELECT jsonb_build_object(
+            'admission_set_id', admission_set.admission_set_id,
+            'generation_id', admission_set.generation_id,
+            'organization_id', admission_set.organization_id,
+            'stage_execution_id', admission_set.stage_execution_id,
+            'stage_run_unit_id', admission_set.stage_run_unit_id,
+            'status', admission_set.status,
+            'member_count', admission_set.member_count,
+            'member_set_sha256', admission_set.member_set_sha256,
+            'admission_member_id', admission_member.admission_member_id,
+            'generation_member_id', admission_member.generation_member_id,
+            'hypothesis_revision_id', admission_member.hypothesis_revision_id,
+            'disposition', admission_member.disposition,
+            'reason_code', admission_member.reason_code,
+            'task_id', admission_member.task_id,
+            'member_sha256', admission_member.member_sha256
+        )
+        FROM verification_admission_sets AS admission_set
+        LEFT JOIN verification_admission_members AS admission_member
+          ON admission_member.admission_set_id=admission_set.admission_set_id
+        WHERE admission_set.operation_id = %s
+        ORDER BY admission_set.organization_id, admission_set.created_at,
+                 admission_set.admission_set_id, admission_member.hypothesis_revision_id"""
+    )
+    tasks, tasks_error = records(
+        """/* run_tree:investigation_tasks */
+        SELECT jsonb_build_object(
+            'task_id', task.task_id,
+            'organization_id', task.organization_id,
+            'stage_execution_id', task.stage_execution_id,
+            'stage_run_unit_id', task.stage_run_unit_id,
+            'hypothesis_revision_id', task.hypothesis_revision_id,
+            'hypothesis_revision_sha256', task.hypothesis_revision_sha256,
+            'verification_plan_id', task.verification_plan_id,
+            'verification_plan_sha256', task.verification_plan_sha256,
+            'first_admission_generation_id', task.first_admission_generation_id,
+            'task_contract_version', task.task_contract_version,
+            'current_state', head.current_state,
+            'head_version', head.head_version,
+            'latest_event_id', head.latest_event_id
+        )
+        FROM hypothesis_verification_tasks AS task
+        LEFT JOIN hypothesis_verification_task_state_heads AS head
+          ON head.task_id=task.task_id
+        WHERE task.operation_id = %s
+        ORDER BY task.organization_id, task.created_at, task.task_id"""
+    )
+    delegation_census, delegation_census_error = records(
+        """/* run_tree:investigation_delegation_census */
+        SELECT jsonb_build_object(
+            'task_plan_id', plan.task_plan_id,
+            'organization_id', plan.organization_id,
+            'task_plan_status', plan.status,
+            'subtask_count', plan.subtask_count,
+            'subtask_set_sha256', plan.subtask_set_sha256,
+            'census_seal_id', census.census_seal_id,
+            'primary_dispatch_receipt_id', census.primary_dispatch_receipt_id,
+            'primary_worker_run_id', census.primary_worker_run_id,
+            'runnable_subtask_count', census.runnable_subtask_count,
+            'runnable_subtask_set_sha256', census.runnable_subtask_set_sha256,
+            'dispatch_count', census.dispatch_count,
+            'dispatch_set_sha256', census.dispatch_set_sha256,
+            'pipeline_event_count', census.pipeline_event_count,
+            'pipeline_event_set_sha256', census.pipeline_event_set_sha256,
+            'seal_sha256', census.seal_sha256
+        )
+        FROM investigation_pentagi_task_plans AS plan
+        LEFT JOIN investigation_pentagi_delegation_census_seals AS census
+          ON census.task_plan_id=plan.task_plan_id
+        WHERE plan.operation_id = %s
+        ORDER BY plan.organization_id, plan.created_at, plan.task_plan_id"""
+    )
+    assignments, assignments_error = records(
+        """/* run_tree:investigation_assignments */
+        SELECT jsonb_build_object(
+            'assignment_set_id', assignment_set.assignment_set_id,
+            'task_id', assignment_set.task_id,
+            'hypothesis_revision_id', assignment_set.hypothesis_revision_id,
+            'verification_plan_id', assignment_set.verification_plan_id,
+            'status', assignment_set.status,
+            'member_count', assignment_set.member_count,
+            'member_set_sha256', assignment_set.member_set_sha256,
+            'assignment_member_id', assignment_member.assignment_member_id,
+            'plan_objective_id', assignment_member.plan_objective_id,
+            'verification_objective_id', assignment_member.verification_objective_id,
+            'assignment_kind', assignment_member.assignment_kind,
+            'campaign_id', assignment_member.campaign_id,
+            'campaign_state', campaign.state,
+            'campaign_version', campaign.campaign_version,
+            'campaign_terminal_decision', terminal.terminal_decision,
+            'campaign_terminal_hash', terminal.terminal_hash
+        )
+        FROM hypothesis_verification_task_assignment_sets AS assignment_set
+        JOIN hypothesis_verification_tasks AS task
+          ON task.task_id=assignment_set.task_id
+        LEFT JOIN hypothesis_verification_task_assignment_members AS assignment_member
+          ON assignment_member.assignment_set_id=assignment_set.assignment_set_id
+        LEFT JOIN verification_campaigns AS campaign
+          ON campaign.campaign_id=assignment_member.campaign_id
+        LEFT JOIN verification_campaign_terminal_decisions AS terminal
+          ON terminal.campaign_id=campaign.campaign_id
+        WHERE task.operation_id = %s
+        ORDER BY task.organization_id, assignment_set.created_at,
+                 assignment_set.assignment_set_id, assignment_member.plan_objective_id"""
+    )
+    prepared_actions, prepared_actions_error = records(
+        """/* run_tree:investigation_prepared_actions */
+        SELECT jsonb_build_object(
+            'prepared_action_id', action.prepared_action_id,
+            'campaign_id', action.campaign_id,
+            'organization_id', action.organization_id,
+            'action_ordinal', action.action_ordinal,
+            'action_contract_kind', action.action_contract_kind,
+            'action_kind', action.action_kind,
+            'canonical_request_hash', action.canonical_request_hash,
+            'renderer_version', action.renderer_version,
+            'risk_tier', action.risk_tier,
+            'state', action.state,
+            'reason_code', action.reason_code,
+            'residual_id', action.residual_id,
+            'row_version', action.row_version
+        )
+        FROM verification_prepared_actions AS action
+        WHERE action.operation_id = %s
+        ORDER BY action.organization_id, action.campaign_id,
+                 action.action_ordinal, action.prepared_action_id"""
+    )
+    action_authorizations, action_authorizations_error = records(
+        """/* run_tree:investigation_action_authorizations */
+        SELECT jsonb_build_object(
+            'authorization_receipt_id', auth.authorization_receipt_id,
+            'prepared_action_id', auth.prepared_action_id,
+            'campaign_id', auth.campaign_id,
+            'organization_id', auth.organization_id,
+            'decision', auth.decision,
+            'decision_reason_code', auth.decision_reason_code,
+            'reviewed_action_hash', auth.reviewed_action_hash,
+            'authorization_hash', auth.authorization_hash,
+            'actor_kind', auth.actor_kind,
+            'operator_channel', auth.operator_channel,
+            'residual_id', auth.residual_id
+        )
+        FROM verification_prepared_action_authorizations AS auth
+        WHERE auth.operation_id = %s
+        ORDER BY auth.organization_id, auth.decided_at,
+                 auth.authorization_receipt_id"""
+    )
+    action_executions, action_executions_error = records(
+        """/* run_tree:investigation_action_executions */
+        SELECT jsonb_build_object(
+            'action_execution_id', execution.action_execution_id,
+            'prepared_action_id', execution.prepared_action_id,
+            'authorization_receipt_id', execution.authorization_receipt_id,
+            'organization_id', execution.organization_id,
+            'execution_ordinal', execution.execution_ordinal,
+            'execution_kind', execution.execution_kind,
+            'state', execution.state,
+            'durable_begin_hash', execution.durable_begin_hash,
+            'capability_execution_receipt_id', execution.capability_execution_receipt_id,
+            'closeout_hash', execution.closeout_hash,
+            'row_version', execution.row_version
+        )
+        FROM verification_action_executions AS execution
+        WHERE execution.operation_id = %s
+        ORDER BY execution.organization_id, execution.prepared_action_id,
+                 execution.execution_ordinal, execution.action_execution_id"""
+    )
+    outcomes, outcomes_error = records(
+        """/* run_tree:investigation_outcomes */
+        SELECT jsonb_build_object(
+            'outcome_set_id', outcome_set.outcome_set_id,
+            'assignment_set_id', outcome_set.assignment_set_id,
+            'task_id', outcome_set.task_id,
+            'status', outcome_set.status,
+            'member_count', outcome_set.member_count,
+            'member_set_sha256', outcome_set.member_set_sha256,
+            'outcome_member_id', outcome_member.outcome_member_id,
+            'campaign_id', outcome_member.campaign_id,
+            'outcome_kind', outcome_member.outcome_kind,
+            'terminal_receipt_id', outcome_member.terminal_receipt_id,
+            'terminal_receipt_sha256', outcome_member.terminal_receipt_sha256
+        )
+        FROM hypothesis_verification_task_outcome_sets AS outcome_set
+        JOIN hypothesis_verification_tasks AS task
+          ON task.task_id=outcome_set.task_id
+        LEFT JOIN hypothesis_verification_task_outcome_members AS outcome_member
+          ON outcome_member.outcome_set_id=outcome_set.outcome_set_id
+        WHERE task.operation_id = %s
+        ORDER BY task.organization_id, outcome_set.created_at,
+                 outcome_set.outcome_set_id, outcome_member.campaign_id"""
+    )
+    fact_deltas, fact_deltas_error = records(
+        """/* run_tree:investigation_fact_deltas */
+        SELECT jsonb_build_object(
+            'fact_delta_bundle_id', delta.fact_delta_bundle_id,
+            'campaign_id', delta.campaign_id,
+            'campaign_terminal_decision_id', delta.campaign_terminal_decision_id,
+            'organization_id', delta.organization_id,
+            'hypothesis_revision_id', delta.hypothesis_revision_id,
+            'verification_objective_id', delta.verification_objective_id,
+            'delta_kind', delta.delta_kind,
+            'fact_delta_hash', delta.fact_delta_hash,
+            'consumption_id', consumption.fact_delta_consumption_id,
+            'generation_id', consumption.generation_id,
+            'disposition', consumption.disposition,
+            'consumption_hash', consumption.consumption_hash
+        )
+        FROM verification_fact_delta_bundles AS delta
+        LEFT JOIN fact_delta_consumptions AS consumption
+          ON consumption.fact_delta_bundle_id=delta.fact_delta_bundle_id
+        WHERE delta.operation_id = %s
+        ORDER BY delta.organization_id, delta.created_at, delta.fact_delta_bundle_id,
+                 consumption.generation_id"""
+    )
+    fuel, fuel_error = records(
+        """/* run_tree:investigation_fuel */
+        SELECT jsonb_build_object(
+            'budget_id', budget.budget_id,
+            'scope_kind', budget.scope_kind,
+            'owner_id', budget.owner_id,
+            'organization_id', budget.organization_id,
+            'task_id', budget.task_id,
+            'axis', head.axis,
+            'limit_amount', head.limit_amount,
+            'reserved_amount', head.reserved_amount,
+            'consumed_amount', head.consumed_amount,
+            'unknown_held_amount', head.unknown_held_amount,
+            'refunded_before_begin_amount', head.refunded_before_begin_amount,
+            'head_version', head.head_version
+        )
+        FROM investigation_fuel_budgets AS budget
+        JOIN investigation_fuel_budget_heads AS head
+          ON head.budget_id=budget.budget_id
+        WHERE budget.operation_id = %s
+        ORDER BY budget.scope_kind, budget.owner_id, head.axis"""
+    )
+    residuals, residuals_error = records(
+        """/* run_tree:investigation_residuals */
+        SELECT jsonb_build_object(
+            'residual_id', residual.residual_id,
+            'organization_id', residual.organization_id,
+            'revision_id', residual.revision_id,
+            'snapshot_id', residual.snapshot_id,
+            'reason_code', residual.reason_code,
+            'owner_kind', residual.owner_kind,
+            'residual_hash', residual.residual_hash,
+            'closed_at', residual.closed_at,
+            'created_at', residual.created_at
+        )
+        FROM hypothesis_residual_risks AS residual
+        WHERE residual.operation_id = %s
+        ORDER BY residual.organization_id, residual.created_at, residual.residual_id"""
+    )
+    closures, closures_error = records(
+        """/* run_tree:investigation_closures */
+        SELECT jsonb_build_object(
+            'closure_id', closure.closure_id,
+            'authority_id', closure.authority_id,
+            'stage_execution_id', closure.stage_execution_id,
+            'stop_intent_id', closure.stop_intent_id,
+            'stop_epoch', closure.stop_epoch,
+            'disposition', closure.disposition,
+            'work_count', closure.work_count,
+            'work_set_sha256', closure.work_set_sha256,
+            'task_plan_count', closure.task_plan_count,
+            'task_plan_set_sha256', closure.task_plan_set_sha256,
+            'dispatch_count', closure.dispatch_count,
+            'dispatch_set_sha256', closure.dispatch_set_sha256,
+            'residual_set_sha256', closure.residual_set_sha256,
+            'closure_sha256', closure.closure_sha256,
+            'frozen_work_count', stop.frozen_work_count,
+            'frozen_work_set_sha256', stop.frozen_work_set_sha256,
+            'stop_receipt_sha256', stop.receipt_sha256,
+            'closed_at', closure.closed_at
+        )
+        FROM investigation_run_closures AS closure
+        JOIN investigation_stop_intents AS stop
+          ON stop.stop_intent_id=closure.stop_intent_id
+        WHERE closure.operation_id = %s
+        ORDER BY closure.closed_at, closure.closure_id"""
+    )
+    reporting, reporting_error = records(
+        """/* run_tree:investigation_reporting */
+        SELECT jsonb_build_object(
+            'report_id', report.report_id,
+            'scope_snapshot_id', report.scope_snapshot_id,
+            'current_revision_id', report.current_revision_id,
+            'revision_id', revision.revision_id,
+            'revision_number', revision.revision_number,
+            'row_version', revision.row_version,
+            'source_set_hash', revision.source_set_hash,
+            'validation_status', revision.validation_status,
+            'publication_status', revision.publication_status,
+            'input_seal_id', input_seal.seal_id,
+            'input_source_member_count', input_seal.source_member_count,
+            'input_source_set_hash', encode(input_seal.source_set_hash,'hex'),
+            'report_input_hash', encode(input_seal.report_input_hash,'hex'),
+            'source_manifest_count', (
+                SELECT count(*) FROM report_source_manifest AS manifest
+                WHERE manifest.revision_id=revision.revision_id
+            )
+        )
+        FROM reports AS report
+        LEFT JOIN report_revisions AS revision
+          ON revision.report_id=report.report_id
+        LEFT JOIN report_input_seals AS input_seal
+          ON input_seal.revision_id=revision.revision_id
+        WHERE report.operation_id = %s
+        ORDER BY report.report_id, revision.revision_number, revision.revision_id"""
+    )
+
+    out = ["      unified Investigation authority chain:"]
+    if authorities_error:
+        out.append(f"        Main authority: unavailable ({authorities_error})")
+    elif not authorities:
+        out.append("        Main authority: (none for exact operation)")
+    else:
+        for authority in authorities:
+            out.append(
+                f"        Main authority={authority.get('authority_id')} "
+                f"execution={authority.get('stage_execution_id')} "
+                f"request={authority.get('owning_stage_run_request_id')} "
+                f"scope={authority.get('scope_snapshot_id')} "
+                f"contract={authority.get('contract_version')}"
+            )
+
+    if authorities_error or read_sessions_error:
+        out.append("        Main: unavailable (authority schema/query unavailable)")
+    elif not read_sessions:
+        out.append("        Main read sessions: (none for exact operation)")
+    else:
+        out.append("        Main per-organization read sessions:")
+        for read_session in read_sessions:
+            out.append(
+                f"          org={read_session.get('organization_id')} "
+                f"read_session={read_session.get('main_read_session_id')} "
+                f"unit={read_session.get('stage_run_unit_id')} "
+                f"session_set={read_session.get('session_set_id')} "
+                f"status={read_session.get('session_set_status')} "
+                f"members={read_session.get('session_set_member_count')}"
+            )
+            out.append(
+                f"            authority_snapshot={read_session.get('snapshot_id')} "
+                f"context_chain={read_session.get('context_chain_id')} "
+                f"transcript_partition={read_session.get('transcript_partition_id')} "
+                f"receipt={read_session.get('receipt_id')} "
+                f"items={read_session.get('context_item_count')} "
+                f"methodology_hits={read_session.get('methodology_hit_count')} "
+                f"omissions={read_session.get('omission_count')}"
+            )
+
+    if analysis_authorities_error:
+        out.append(f"        Analysis authority: unavailable ({analysis_authorities_error})")
+    elif not analysis_authorities:
+        out.append("        Analysis authorities: (none for exact operation)")
+    else:
+        for authority in analysis_authorities:
+            out.append(
+                f"        Analysis authority_snapshot={authority.get('snapshot_id')} "
+                f"org={authority.get('organization_id')} "
+                f"unit={authority.get('stage_run_unit_id')} "
+                f"items={authority.get('context_item_count')} "
+                f"methodology_hits={authority.get('methodology_hit_count')} "
+                f"omissions={authority.get('omission_count')} "
+                f"hash={_short(authority.get('snapshot_sha256'), trunc)}"
+            )
+
+    if candidate_snapshots_error:
+        out.append(f"        Analysis snapshots: unavailable ({candidate_snapshots_error})")
+    elif not candidate_snapshots:
+        out.append("        Analysis snapshots: (none for exact operation)")
+    else:
+        for snapshot in candidate_snapshots:
+            out.append(
+                f"        Analysis snapshot={snapshot.get('snapshot_id')} "
+                f"wave={snapshot.get('wave_ordinal')} status={snapshot.get('snapshot_status')} "
+                f"org={snapshot.get('organization_id')} genesis={_yes_no(snapshot.get('genesis'))} "
+                f"previous_seal={snapshot.get('previous_generation_seal_id')} "
+                f"fact_delta_watermark={snapshot.get('fact_delta_watermark')} "
+                f"authority={_short(snapshot.get('authority_hash'), trunc)}"
+            )
+
+    if generations_error:
+        out.append(f"        Analysis generations: unavailable ({generations_error})")
+    elif not generations:
+        out.append("        Analysis generations: (none for exact operation)")
+    else:
+        for generation in generations:
+            out.append(
+                f"          generation={generation.get('generation_id')} "
+                f"ordinal={generation.get('generation_ordinal')} "
+                f"org={generation.get('organization_id')} "
+                f"snapshot={generation.get('candidate_snapshot_id')} "
+                f"previous={generation.get('previous_generation_id')} "
+                f"seal={generation.get('generation_seal_id')} "
+                f"members={generation.get('member_count')}"
+            )
+
+    if hypotheses_error:
+        out.append(f"        Hypotheses: unavailable ({hypotheses_error})")
+    elif not hypotheses:
+        out.append("        Hypotheses: (none for exact operation)")
+    else:
+        for hypothesis in hypotheses:
+            out.append(
+                f"        Hypothesis revision={hypothesis.get('revision_id')} "
+                f"root={hypothesis.get('root_id')} "
+                f"generation={hypothesis.get('generation_id')}#{hypothesis.get('generation_ordinal')} "
+                f"member={hypothesis.get('generation_member_id')}#{hypothesis.get('member_ordinal')} "
+                f"subject={hypothesis.get('subject_kind')} "
+                f"state={hypothesis.get('epistemic_state')}/{hypothesis.get('lifecycle_state')} "
+                f"readiness={hypothesis.get('planning_readiness')} "
+                f"priority={hypothesis.get('priority')} "
+                f"current_head={_yes_no(hypothesis.get('is_current_head'))} "
+                f"head_version={hypothesis.get('head_version')}"
+            )
+
+    if admissions_error:
+        out.append(f"        Verification admissions: unavailable ({admissions_error})")
+    elif not admissions:
+        out.append("        Verification admissions: (none for exact operation)")
+    else:
+        last_admission_set = None
+        for admission in admissions:
+            admission_set_id = admission.get("admission_set_id")
+            if admission_set_id != last_admission_set:
+                out.append(
+                    f"        Verification admission_set={admission_set_id} "
+                    f"generation={admission.get('generation_id')} "
+                    f"org={admission.get('organization_id')} status={admission.get('status')} "
+                    f"members={admission.get('member_count')} "
+                    f"hash={_short(admission.get('member_set_sha256'), trunc)}"
+                )
+                last_admission_set = admission_set_id
+            if admission.get("admission_member_id") is not None:
+                out.append(
+                    f"          member={admission.get('admission_member_id')} "
+                    f"revision={admission.get('hypothesis_revision_id')} "
+                    f"disposition={admission.get('disposition')} "
+                    f"reason={admission.get('reason_code')} task={admission.get('task_id')}"
+                )
+
+    if tasks_error:
+        out.append(f"        Verification tasks: unavailable ({tasks_error})")
+    elif not tasks:
+        out.append("        Verification tasks: (none for exact operation)")
+    else:
+        for task in tasks:
+            out.append(
+                f"        Verification task={task.get('task_id')} "
+                f"state={task.get('current_state')} org={task.get('organization_id')} "
+                f"revision={task.get('hypothesis_revision_id')} "
+                f"plan={task.get('verification_plan_id')} "
+                f"admission_generation={task.get('first_admission_generation_id')} "
+                f"head_version={task.get('head_version')}"
+            )
+
+    if delegation_census_error:
+        out.append(f"        PentAGI delegation census: unavailable ({delegation_census_error})")
+    elif not delegation_census:
+        out.append("        PentAGI delegation census: (none for exact operation)")
+    else:
+        for census in delegation_census:
+            out.append(
+                f"        PentAGI task_plan={census.get('task_plan_id')} "
+                f"org={census.get('organization_id')} status={census.get('task_plan_status')} "
+                f"subtasks={census.get('subtask_count')} "
+                f"census={census.get('census_seal_id')} "
+                f"primary_dispatch={census.get('primary_dispatch_receipt_id')} "
+                f"primary_worker={census.get('primary_worker_run_id')} "
+                f"runnable={census.get('runnable_subtask_count')} "
+                f"dispatches={census.get('dispatch_count')} "
+                f"pipeline_events={census.get('pipeline_event_count')} "
+                f"seal={_short(census.get('seal_sha256'), trunc)}"
+            )
+
+    if assignments_error:
+        out.append(f"        Verification assignments: unavailable ({assignments_error})")
+    elif not assignments:
+        out.append("        Verification assignments: (none for exact operation)")
+    else:
+        last_assignment_set = None
+        for assignment in assignments:
+            assignment_set_id = assignment.get("assignment_set_id")
+            if assignment_set_id != last_assignment_set:
+                out.append(
+                    f"          assignment_set={assignment_set_id} "
+                    f"task={assignment.get('task_id')} status={assignment.get('status')} "
+                    f"members={assignment.get('member_count')} "
+                    f"hash={_short(assignment.get('member_set_sha256'), trunc)}"
+                )
+                last_assignment_set = assignment_set_id
+            if assignment.get("assignment_member_id") is not None:
+                out.append(
+                    f"          objective={assignment.get('verification_objective_id')} "
+                    f"assignment={assignment.get('assignment_kind')} "
+                    f"campaign={assignment.get('campaign_id')} "
+                    f"state={assignment.get('campaign_state')} "
+                    f"version={assignment.get('campaign_version')} "
+                    f"terminal={assignment.get('campaign_terminal_decision')} "
+                    f"terminal_hash={_short(assignment.get('campaign_terminal_hash'), trunc)}"
+                )
+
+    if prepared_actions_error:
+        out.append(f"        Prepared Actions: unavailable ({prepared_actions_error})")
+    elif not prepared_actions:
+        out.append("        Prepared Actions: (none for exact operation)")
+    else:
+        for action in prepared_actions:
+            out.append(
+                f"        Prepared Action={action.get('prepared_action_id')} "
+                f"campaign={action.get('campaign_id')} ordinal={action.get('action_ordinal')} "
+                f"kind={action.get('action_contract_kind')}/{action.get('action_kind')} "
+                f"risk={action.get('risk_tier')} state={action.get('state')} "
+                f"reason={action.get('reason_code')} residual={action.get('residual_id')}"
+            )
+
+    if action_authorizations_error:
+        out.append(f"        Action authorizations: unavailable ({action_authorizations_error})")
+    elif not action_authorizations:
+        out.append("        Action authorizations: (none for exact operation)")
+    else:
+        for authorization in action_authorizations:
+            out.append(
+                f"        Action authorization={authorization.get('authorization_receipt_id')} "
+                f"prepared={authorization.get('prepared_action_id')} "
+                f"decision={authorization.get('decision')} "
+                f"reason={authorization.get('decision_reason_code')} "
+                f"actor={authorization.get('actor_kind')} "
+                f"channel={authorization.get('operator_channel')} "
+                f"residual={authorization.get('residual_id')}"
+            )
+
+    if action_executions_error:
+        out.append(f"        Action executions: unavailable ({action_executions_error})")
+    elif not action_executions:
+        out.append("        Action executions: (none for exact operation)")
+    else:
+        for execution in action_executions:
+            out.append(
+                f"        Action execution={execution.get('action_execution_id')} "
+                f"prepared={execution.get('prepared_action_id')} "
+                f"authorization={execution.get('authorization_receipt_id')} "
+                f"ordinal={execution.get('execution_ordinal')} "
+                f"kind={execution.get('execution_kind')} state={execution.get('state')} "
+                f"capability_receipt={execution.get('capability_execution_receipt_id')} "
+                f"closeout={_short(execution.get('closeout_hash'), trunc)}"
+            )
+
+    if fact_deltas_error:
+        out.append(f"        FactDelta: unavailable ({fact_deltas_error})")
+    elif not fact_deltas:
+        out.append("        FactDelta: (none for exact operation)")
+    else:
+        for delta in fact_deltas:
+            out.append(
+                f"        FactDelta={delta.get('fact_delta_bundle_id')} "
+                f"kind={delta.get('delta_kind')} consumption={delta.get('consumption_id')} "
+                f"campaign={delta.get('campaign_id')} "
+                f"objective={delta.get('verification_objective_id')} "
+                f"generation={delta.get('generation_id')} "
+                f"disposition={delta.get('disposition')} "
+                f"hash={_short(delta.get('fact_delta_hash'), trunc)}"
+            )
+
+    if outcomes_error:
+        out.append(f"        Campaign outcomes: unavailable ({outcomes_error})")
+    elif not outcomes:
+        out.append("        Campaign outcomes: (none for exact operation)")
+    else:
+        last_outcome_set = None
+        for outcome in outcomes:
+            outcome_set_id = outcome.get("outcome_set_id")
+            if outcome_set_id != last_outcome_set:
+                out.append(
+                    f"        campaign_outcome_set={outcome_set_id} "
+                    f"status={outcome.get('status')} task={outcome.get('task_id')} "
+                    f"members={outcome.get('member_count')} "
+                    f"hash={_short(outcome.get('member_set_sha256'), trunc)}"
+                )
+                last_outcome_set = outcome_set_id
+            if outcome.get("outcome_member_id") is not None:
+                out.append(
+                    f"          campaign={outcome.get('campaign_id')} "
+                    f"outcome={outcome.get('outcome_kind')} "
+                    f"terminal_receipt={outcome.get('terminal_receipt_id')} "
+                    f"receipt_hash={_short(outcome.get('terminal_receipt_sha256'), trunc)}"
+                )
+
+    if fuel_error:
+        out.append(f"        Investigation fuel: unavailable ({fuel_error})")
+    elif not fuel:
+        out.append("        Investigation fuel: (none for exact operation)")
+    else:
+        for budget in fuel:
+            out.append(
+                f"        Fuel budget={budget.get('budget_id')} "
+                f"scope={budget.get('scope_kind')}:{budget.get('owner_id')} "
+                f"axis={budget.get('axis')} limit={budget.get('limit_amount')} "
+                f"reserved={budget.get('reserved_amount')} "
+                f"consumed={budget.get('consumed_amount')} "
+                f"unknown_held={budget.get('unknown_held_amount')} "
+                f"refunded_before_begin={budget.get('refunded_before_begin_amount')} "
+                f"head_version={budget.get('head_version')}"
+            )
+
+    if residuals_error:
+        out.append(f"        Residual risks: unavailable ({residuals_error})")
+    elif not residuals:
+        out.append("        Residual risks: (none for exact operation)")
+    else:
+        for residual in residuals:
+            out.append(
+                f"        Residual={residual.get('residual_id')} "
+                f"org={residual.get('organization_id')} "
+                f"revision={residual.get('revision_id')} snapshot={residual.get('snapshot_id')} "
+                f"reason={residual.get('reason_code')} owner={residual.get('owner_kind')} "
+                f"closed={_yes_no(residual.get('closed_at') is not None)} "
+                f"hash={_short(residual.get('residual_hash'), trunc)}"
+            )
+
+    if closures_error:
+        out.append(f"        Investigation run closure: unavailable ({closures_error})")
+    elif not closures:
+        out.append("        Investigation run closure: (none for exact operation)")
+    else:
+        for closure in closures:
+            out.append(
+                f"        Investigation run closure={closure.get('closure_id')} "
+                f"authority={closure.get('authority_id')} stop={closure.get('stop_intent_id')} "
+                f"epoch={closure.get('stop_epoch')} disposition={closure.get('disposition')} "
+                f"work={closure.get('work_count')}/{closure.get('frozen_work_count')} "
+                f"task_plans={closure.get('task_plan_count')} "
+                f"dispatches={closure.get('dispatch_count')} "
+                f"closure_hash={_short(closure.get('closure_sha256'), trunc)}"
+            )
+
+    if reporting_error:
+        out.append(f"        Reporting: unavailable ({reporting_error})")
+    elif not reporting:
+        out.append("        Reporting: (none for exact operation)")
+    else:
+        for report in reporting:
+            out.append(
+                f"        Reporting report={report.get('report_id')} "
+                f"revision={report.get('revision_id')}#{report.get('revision_number')} "
+                f"current={_yes_no(report.get('current_revision_id') == report.get('revision_id'))} "
+                f"validation={report.get('validation_status')} "
+                f"publication={report.get('publication_status')} "
+                f"input_seal={report.get('input_seal_id')} "
+                f"input_sources={report.get('input_source_member_count')} "
+                f"manifest_sources={report.get('source_manifest_count')} "
+                f"source_set={_short(report.get('source_set_hash'), trunc)}"
+            )
+    return out
+
+
 def _runtime_memory_lines(
     q,
     session_id: str,
@@ -1609,6 +2553,11 @@ def _runtime_memory_lines(
             'operation_id', os.operation_id,
             'runtime_memory_contract', os.runtime_memory_contract,
             'attack_execution_contract', os.attack_execution_contract,
+            'investigation_contract_version', os.investigation_contract_version,
+            'investigation_rollout_mode', os.investigation_rollout_mode,
+            'stage_topology_contract', os.stage_topology_contract,
+            'stage_topology_sha256', os.stage_topology_sha256,
+            'stage_topology_freeze_source', os.stage_topology_freeze_source,
             'task_status', (
                 SELECT task.status::text
                 FROM tasks AS task
@@ -1664,12 +2613,22 @@ def _runtime_memory_lines(
             f"superseded_by={operation.get('superseded_by')}"
         )
         out.append(
+            f"      investigation_contract={operation.get('investigation_contract_version')} "
+            f"rollout={operation.get('investigation_rollout_mode')} "
+            f"topology={operation.get('stage_topology_contract')} "
+            f"topology_hash={operation.get('stage_topology_sha256')} "
+            f"freeze_source={operation.get('stage_topology_freeze_source')}"
+        )
+        out.append(
             "      legacy_checkpoint_present=" + ("yes" if legacy_present else "no")
         )
         if operation.get("superseded_by") is not None:
             out.append(
                 f"      ⚠ anomaly: operation is superseded by {operation.get('superseded_by')}"
             )
+
+        if operation.get("stage_topology_contract") == "unified_investigation_v1":
+            out.extend(_unified_investigation_lines(q, operation_id, trunc))
 
         def fetch_records(label: str, sql: str) -> list[dict]:
             records, error = _runtime_records(q(sql, (operation_id,)))
@@ -2587,8 +3546,41 @@ def _runtime_memory_lines(
             and str(unit.get("stage_execution_id")) == selected_execution_id
             and bool(unit.get("scope_member"))
         ]
+        reporting_completion = []
+        if selected_execution_id and current_stage == "reporting":
+            reporting_completion = fetch_records(
+                "runtime_reporting_completion",
+                """/* run_tree:runtime_reporting_completion */
+                SELECT jsonb_build_object(
+                    'report_id', report.report_id,
+                    'revision_id', revision.revision_id,
+                    'validation_status', revision.validation_status,
+                    'publication_status', revision.publication_status,
+                    'source_manifest_count', (
+                        SELECT COUNT(*)
+                        FROM report_source_manifest AS manifest
+                        WHERE manifest.revision_id=revision.revision_id
+                    )
+                )
+                FROM reports AS report
+                JOIN report_revisions AS revision
+                  ON revision.revision_id=report.current_revision_id
+                 AND revision.report_id=report.report_id
+                WHERE report.operation_id=%s""",
+            )
+        reporting_v2_complete = (
+            len(reporting_completion) == 1
+            and reporting_completion[0].get("validation_status") == "validated"
+            and reporting_completion[0].get("publication_status")
+            in {"unpublished", "published"}
+            and int(reporting_completion[0].get("source_manifest_count") or 0) > 0
+        )
         v2_complete = selected_execution is not None and (
-            current_stage == "scoping" or (snapshot_sealed and bool(current_units))
+            current_stage == "scoping"
+            or (
+                snapshot_sealed
+                and (bool(current_units) or reporting_v2_complete)
+            )
         )
         if contract == "legacy_v1":
             selected_source, fallback = "legacy", "disabled"

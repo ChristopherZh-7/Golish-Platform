@@ -76,6 +76,269 @@ pub struct FailRevalidationObligation {
     pub reason_code: String,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RevalidationDispatchMode {
+    ManualOnly,
+    AutoPassiveT0T1,
+}
+
+impl RevalidationDispatchMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualOnly => "manual_only",
+            Self::AutoPassiveT0T1 => "auto_passive_t0_t1",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SetRevalidationDispatchHold {
+    pub operation_id: Uuid,
+    pub next_held: bool,
+    pub expected_generation: i64,
+    pub expected_row_version: i64,
+    pub reason_code: String,
+    pub evidence_manifest_hash: String,
+    pub principal_id: Uuid,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Eq, PartialEq)]
+pub struct RevalidationDispatchHeadRow {
+    pub operation_id: Uuid,
+    pub dispatch_state: String,
+    pub generation: i64,
+    pub row_version: i64,
+    pub updated_at: DateTime<Utc>,
+}
+
+fn valid_tagged_hash(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Initializes the immutable policy and held generation-0 dispatch head in the
+/// same transaction that creates the operation. Forks copy the source policy;
+/// ordinary creates use the conservative manual-only policy.
+pub async fn initialize_dispatch_authority_on(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    source_operation_id: Option<Uuid>,
+) -> Result<()> {
+    let (
+        mode,
+        max_risk_tier,
+        max_attempts,
+        max_retries,
+        max_no_progress,
+        lease_seconds,
+        deadline_seconds,
+    ) = if let Some(source_operation_id) = source_operation_id {
+        sqlx::query_as::<_, (String, String, i32, i32, i32, i32, i32)>(
+            r#"SELECT dispatch_mode,max_risk_tier,max_attempts,max_retries,
+                          max_no_progress,lease_seconds,deadline_seconds
+                     FROM tool_truth_revalidation_dispatch_policies
+                    WHERE operation_id=$1 FOR SHARE"#,
+        )
+        .bind(source_operation_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| fail(AUTHORITY_STALE))?
+    } else {
+        (
+            RevalidationDispatchMode::ManualOnly.as_str().to_owned(),
+            "T1".to_owned(),
+            3,
+            2,
+            2,
+            300,
+            86_400,
+        )
+    };
+    if !matches!(mode.as_str(), "manual_only" | "auto_passive_t0_t1") {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    let policy_hash = sha256_json(&serde_json::json!({
+        "contract":"tool_truth_revalidation_dispatch_policy.v1",
+        "dispatch_mode":mode,
+        "max_risk_tier":max_risk_tier,
+        "max_attempts":max_attempts,
+        "max_retries":max_retries,
+        "max_no_progress":max_no_progress,
+        "lease_seconds":lease_seconds,
+        "deadline_seconds":deadline_seconds,
+    }))?;
+    sqlx::query(
+        r#"INSERT INTO tool_truth_revalidation_dispatch_policies(
+               operation_id,dispatch_mode,max_risk_tier,max_attempts,max_retries,
+               max_no_progress,lease_seconds,deadline_seconds,policy_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)"#,
+    )
+    .bind(operation_id)
+    .bind(&mode)
+    .bind(&max_risk_tier)
+    .bind(max_attempts)
+    .bind(max_retries)
+    .bind(max_no_progress)
+    .bind(lease_seconds)
+    .bind(deadline_seconds)
+    .bind(&policy_hash)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO tool_truth_revalidation_dispatch_heads(
+               operation_id,dispatch_state,generation,row_version
+           ) VALUES($1,'held',0,0)"#,
+    )
+    .bind(operation_id)
+    .execute(&mut **tx)
+    .await?;
+    let event_hash = sha256_json(&serde_json::json!({
+        "contract":"tool_truth_revalidation_dispatch_event.v1",
+        "operation_id":operation_id,
+        "generation":0,
+        "event_type":"initialized",
+        "dispatch_state":"held",
+        "policy_hash":policy_hash,
+    }))?;
+    sqlx::query(
+        r#"INSERT INTO tool_truth_revalidation_dispatch_events(
+               id,operation_id,generation,event_type,dispatch_state,event_hash
+           ) VALUES($1,$2,0,'initialized','held',$3)"#,
+    )
+    .bind(Uuid::new_v5(
+        &operation_id,
+        b"revalidation-dispatch-initialized.v1",
+    ))
+    .bind(operation_id)
+    .bind(event_hash)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Owner-repo CAS for the operation-specific revalidation dispatch hold.
+/// Releasing this hold never authorizes T2/T3 actions; those remain governed by
+/// Plan C Prepared Action/JIT authority.
+pub async fn set_dispatch_hold_on(
+    tx: &mut Transaction<'_, Postgres>,
+    request: SetRevalidationDispatchHold,
+) -> Result<RevalidationDispatchHeadRow> {
+    if request.operation_id.is_nil()
+        || request.reason_code.trim().is_empty()
+        || request.reason_code.len() > 2048
+        || !valid_tagged_hash(&request.evidence_manifest_hash)
+    {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text,617236184))")
+        .bind(request.operation_id)
+        .execute(&mut **tx)
+        .await?;
+    let principal_is_active: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1 FROM operator_principals
+                WHERE id=$1 AND active AND principal_kind='local_operator'
+           )"#,
+    )
+    .bind(request.principal_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !principal_is_active {
+        return Err(fail(AUTHORITY_STALE));
+    }
+    let current = sqlx::query_as::<_, RevalidationDispatchHeadRow>(
+        r#"SELECT operation_id,dispatch_state,generation,row_version,updated_at
+             FROM tool_truth_revalidation_dispatch_heads
+            WHERE operation_id=$1 FOR UPDATE"#,
+    )
+    .bind(request.operation_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| fail(AUTHORITY_STALE))?;
+    let previous_held = current.dispatch_state == "held";
+    if current.generation != request.expected_generation
+        || current.row_version != request.expected_row_version
+        || previous_held == request.next_held
+    {
+        return Err(fail(AUTHORITY_STALE));
+    }
+    let next_generation = current
+        .generation
+        .checked_add(1)
+        .ok_or_else(|| fail(CONTRACT_INVALID))?;
+    let next_row_version = current
+        .row_version
+        .checked_add(1)
+        .ok_or_else(|| fail(CONTRACT_INVALID))?;
+    let next_state = if request.next_held {
+        "held"
+    } else {
+        "released"
+    };
+    let event_type = next_state;
+    let event_hash = sha256_json(&serde_json::json!({
+        "contract":"tool_truth_revalidation_dispatch_event.v1",
+        "operation_id":request.operation_id,
+        "previous_state":current.dispatch_state,
+        "next_state":next_state,
+        "previous_generation":current.generation,
+        "next_generation":next_generation,
+        "previous_row_version":current.row_version,
+        "next_row_version":next_row_version,
+        "reason_code":request.reason_code.trim(),
+        "evidence_manifest_hash":request.evidence_manifest_hash,
+        "principal_id":request.principal_id,
+    }))?;
+    let event_id = Uuid::new_v5(
+        &request.operation_id,
+        format!("revalidation-dispatch:{next_generation}:{event_hash}").as_bytes(),
+    );
+    sqlx::query(
+        r#"INSERT INTO tool_truth_revalidation_dispatch_events(
+               id,operation_id,generation,event_type,dispatch_state,event_hash,
+               previous_dispatch_state,previous_row_version,next_row_version,
+               reason_code,evidence_manifest_hash,principal_id
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
+    )
+    .bind(event_id)
+    .bind(request.operation_id)
+    .bind(next_generation)
+    .bind(event_type)
+    .bind(next_state)
+    .bind(&event_hash)
+    .bind(&current.dispatch_state)
+    .bind(current.row_version)
+    .bind(next_row_version)
+    .bind(request.reason_code.trim())
+    .bind(&request.evidence_manifest_hash)
+    .bind(request.principal_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("SELECT set_config('golish.tool_truth_revalidation_dispatch_event_id',$1,TRUE)")
+        .bind(event_id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    sqlx::query_as::<_, RevalidationDispatchHeadRow>(
+        r#"UPDATE tool_truth_revalidation_dispatch_heads
+              SET dispatch_state=$2,generation=$3,row_version=$4,
+                  updated_at=statement_timestamp()
+            WHERE operation_id=$1 AND generation=$5 AND row_version=$6
+            RETURNING operation_id,dispatch_state,generation,row_version,updated_at"#,
+    )
+    .bind(request.operation_id)
+    .bind(next_state)
+    .bind(next_generation)
+    .bind(next_row_version)
+    .bind(request.expected_generation)
+    .bind(request.expected_row_version)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| fail(AUTHORITY_STALE))
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize, PartialEq)]
 pub struct RevalidationObligationRow {
     pub id: Uuid,

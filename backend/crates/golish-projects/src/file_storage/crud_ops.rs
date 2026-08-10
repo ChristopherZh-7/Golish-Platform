@@ -282,6 +282,28 @@ pub async fn verify_report_artifact(
     }
 }
 
+/// Read a content-addressed report blob through the same anchored, no-follow
+/// path walk used by verification. Bytes are returned only after the open
+/// handle, named entry, digest and length all match the trusted metadata.
+pub async fn read_verified_report_artifact(
+    project_root: &Path,
+    artifact: &StoredReportArtifact,
+) -> Result<Vec<u8>> {
+    #[cfg(unix)]
+    {
+        return super::report_artifacts_unix::read_verified(project_root, artifact).await;
+    }
+    #[cfg(windows)]
+    {
+        return super::report_artifacts_windows::read_verified(project_root, artifact).await;
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (project_root, artifact);
+        anyhow::bail!("report_artifact_storage_unsupported_os")
+    }
+}
+
 pub async fn discard_staged_report_artifact(
     project_root: &Path,
     staged: &StagedReportArtifact,

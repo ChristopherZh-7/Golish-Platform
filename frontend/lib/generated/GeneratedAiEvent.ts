@@ -283,7 +283,7 @@ stderr_tail: string,
 /**
  * Total wall-clock duration of the job in milliseconds.
  */
-duration_ms: bigint, } | { "type": "harness_trace", operation_id: string, stage: string, agent_path: string, } & ({ "kind": "gate_decision",
+duration_ms: bigint, } | { "type": "investigation_projection_changed", operation_id: string, stage_execution_id: string, stage_run_request_id: string, change_seq: number, } | { "type": "harness_trace", operation_id: string, stage: string, agent_path: string, } & ({ "kind": "gate_decision",
 /**
  * `"PASS"` | `"BLOCK"`.
  */

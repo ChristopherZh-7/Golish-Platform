@@ -11,6 +11,13 @@ pub const INVESTIGATION_PROJECTION_STALE: &str = "INVESTIGATION_PROJECTION_STALE
 pub const INVESTIGATION_PROJECTION_PAYLOAD_INVALID: &str =
     "INVESTIGATION_PROJECTION_PAYLOAD_INVALID";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionStaleReason {
+    ChangeSeqAdvanced,
+    TemporalCutoffExpired,
+    AuthorityEpochChanged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionBatchEnqueueReceipt {
     pub batch_id: Uuid,
@@ -86,6 +93,32 @@ pub struct InvestigationTemporalReadAuthority {
 pub struct InvestigationReadAuthority {
     pub operation: InvestigationOperationReadAuthority,
     pub temporal: InvestigationTemporalReadAuthority,
+}
+
+/// Exact externally visible Investigation stage identity. Read commands must
+/// supply all three members; the repository never resolves a newest run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationStageRunSelector {
+    pub stage_execution_id: Uuid,
+    pub stage_run_request_id: String,
+    pub scope_snapshot_id: Uuid,
+}
+
+/// Server-owned control authority captured in the same read-only repeatable
+/// read transaction as the materialized projection head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationStageRunReadAuthority {
+    pub authority_id: Uuid,
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_request_id: String,
+    pub scope_snapshot_id: Uuid,
+    pub run_state: String,
+    pub admission_open: bool,
+    pub stop_epoch: i64,
+    pub change_seq: i64,
+    pub head_version: i64,
+    pub head_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +210,7 @@ pub struct InvestigationHypothesisDetail {
     pub application_context_ref_ids: Vec<String>,
     pub gap_ref_ids: Vec<String>,
     pub verification_objective_summaries: Vec<String>,
+    pub actor_topology: Vec<InvestigationActorTopologyNode>,
     pub legacy_unavailable_fields: Vec<String>,
 }
 
@@ -189,6 +223,130 @@ pub struct InvestigationSummary {
     pub closed_hypothesis_count: i64,
     pub contested_hypothesis_count: i64,
     pub residual_count: i64,
+    pub generation_count: i64,
+    pub wave_count: i64,
+    pub campaign_count: i64,
+    pub open_obligation_count: i64,
+    pub control_decision: String,
+    pub coverage_grade: String,
+    pub coverage_denominator: InvestigationCoverageDenominator,
+    pub coverage_sufficiency: String,
+    pub generations: Vec<InvestigationGenerationSummary>,
+    pub waves: Vec<InvestigationWaveSummary>,
+    pub open_obligations: Vec<InvestigationOpenObligationSummary>,
+    pub source_census: Vec<InvestigationSourceCensusMember>,
+    pub main_actor: Option<InvestigationActorTopologyNode>,
+    pub actor_topology: Vec<InvestigationActorTopologyNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct InvestigationSourceCensusMember {
+    pub organization_id: Uuid,
+    pub snapshot_id: Uuid,
+    pub context_item_count: i64,
+    pub context_item_set_sha256: String,
+    pub methodology_hit_count: i64,
+    pub methodology_result_set_sha256: String,
+    pub omission_count: i64,
+    pub omission_set_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct InvestigationActorTopologyNode {
+    pub actor_kind: String,
+    pub organization_id: Uuid,
+    pub hypothesis_revision_id: Option<Uuid>,
+    pub task_id: Option<Uuid>,
+    pub subtask_id: Option<Uuid>,
+    pub worker_run_id: Uuid,
+    pub owning_stage_run_request_id: String,
+    pub transcript_request_id: String,
+    pub parent_actor_transcript_request_id: Option<String>,
+    pub parent_dispatch_tool_request_id: Option<String>,
+    pub status: String,
+    pub identity_valid: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationGenerationSummary {
+    pub generation_id: Uuid,
+    pub generation_ordinal: i64,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationWaveSummary {
+    pub wave_id: Uuid,
+    pub wave_ordinal: i64,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationOpenObligationSummary {
+    pub obligation_id: String,
+    pub obligation_kind: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InvestigationCoverageDenominator {
+    pub planned: i64,
+    pub tested_complete: i64,
+    pub tested_degraded: i64,
+    pub untested: i64,
+    pub blocked: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct InvestigationCampaignSortKey {
+    pub wave_ordinal: i64,
+    pub campaign_ordinal: i64,
+    pub campaign_id: Uuid,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InvestigationCampaignFilters {
+    pub wave_ids: Vec<Uuid>,
+    pub campaign_states: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationCampaignListQuery {
+    pub filters: InvestigationCampaignFilters,
+    pub after: Option<InvestigationCampaignSortKey>,
+    pub expected_page_authority: Option<InvestigationPageValidationInput>,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationCampaignListItem {
+    pub sort_key: InvestigationCampaignSortKey,
+    pub campaign_id: Uuid,
+    pub wave_id: Uuid,
+    pub hypothesis_revision_id: Uuid,
+    pub label: String,
+    pub state: String,
+    pub coverage_status: String,
+    pub authority_ref_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationCampaignListPage {
+    pub authority: InvestigationReadAuthority,
+    pub campaigns: Vec<InvestigationCampaignListItem>,
+    pub next_key: Option<InvestigationCampaignSortKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationCampaignDetail {
+    pub authority: InvestigationReadAuthority,
+    pub campaign: InvestigationCampaignListItem,
+    pub organization_id: Uuid,
+    pub round_ids: Vec<Uuid>,
+    pub prepared_action_ids: Vec<Uuid>,
+    pub authorized_action_count: u64,
+    pub blocked_action_count: u64,
+    pub open_residual_ids: Vec<Uuid>,
+    pub redacted_round_summaries: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,6 +406,7 @@ pub enum InvestigationProjectionError {
     Stale {
         code: &'static str,
         current_change_seq: i64,
+        reason: ProjectionStaleReason,
     },
 }
 
@@ -273,6 +432,13 @@ impl InvestigationProjectionError {
 
     pub const fn restart_required(&self) -> bool {
         matches!(self, Self::Stale { .. })
+    }
+
+    pub const fn stale_reason(&self) -> Option<ProjectionStaleReason> {
+        match self {
+            Self::Stale { reason, .. } => Some(*reason),
+            _ => None,
+        }
     }
 }
 

@@ -116,6 +116,14 @@ fn classify(input: &RefineInput<'_>) -> RefineClass {
     if !input.fabricated_ids.is_empty() {
         return RefineClass::Fabricated;
     }
+    // A Scoping lifecycle blocker means the model still owes a typed host action
+    // such as `ask_human(scope_review)` or the subsidiary-scope choice.  The
+    // generic missing-deliverable rule must not turn that repair into a
+    // submit-only retry: doing so removes the very tools required to satisfy the
+    // deterministic gate and deadlocks the stage.
+    if input.red_team_flow_correction.is_some() {
+        return RefineClass::ScopingFlow;
+    }
     if input.missing_deliverable {
         if input.confirm_only_stage || !input.available_real_ids.is_empty() {
             return RefineClass::SubmitOnly;
@@ -137,12 +145,9 @@ fn classify(input: &RefineInput<'_>) -> RefineClass {
 /// vacuous + coverage(complete / corroborated / denominator) 全走 C 类（设计 §5.1：
 /// 诊断段从「仅 coverage BLOCK」扩展到 vacuous——live run 两连 BLOCK 缺的那块）。
 fn reasons_hit_coverage_or_vacuous(reasons: &[String]) -> bool {
-    reasons.iter().any(|r| {
-        r.contains("vacuous")
-            || r.contains("GOLISH-INTEL-")
-            || r.contains("never attempted")
-            || r.contains("corroborat")
-    })
+    reasons
+        .iter()
+        .any(|r| r.contains("vacuous") || r.contains("never attempted") || r.contains("corroborat"))
 }
 
 /// 主因之外的并存质量问题压成一行附录（防信号丢失，又不回到链式拼接的大杂烩）。
@@ -236,7 +241,7 @@ fn render_redo_stage(input: &RefineInput<'_>) -> String {
     )
 }
 
-/// C · 诊断式模板：gate 原因素体 + DB 真值现状 + 每类被动情报的下一步动作。
+/// C · 诊断式模板：gate 原因素体 + DB 真值现状。
 /// vacuous 与 coverage BLOCK 都触发（设计 §5.1 对 PR-C 的扩展）。
 fn render_coverage_or_vacuous(input: &RefineInput<'_>) -> String {
     let mut s = render_gate_reasons_body(input);
@@ -245,16 +250,9 @@ fn render_coverage_or_vacuous(input: &RefineInput<'_>) -> String {
             s.push_str(&db_status);
         }
     }
-    s.push_str("\n### Suggested next target_intel actions\n");
-    for tech in PASSIVE_INTEL_TECHNIQUES {
-        if let Some(cmd) = passive_intel_command_hint(tech) {
-            s.push_str(&format!("- {tech}: {cmd}\n"));
-        }
-    }
     s.push_str(
-        "\nAfter running these, re-collect evidence and resubmit. The gate measures the \
-         DATABASE: a technique counts as covered only once its data is actually persisted \
-         (organizations.asns/.certificates, target_assets, dns_records).\n",
+        "\nRepair the exact reported gap, re-collect evidence, and resubmit. The gate measures \
+         persisted database truth rather than prose.\n",
     );
     s
 }
@@ -329,6 +327,7 @@ fn render_gate_reasons_body(input: &RefineInput<'_>) -> String {
 
 /// 设计 2026-06-12 §5.4 · 被动情报 technique → 具体下一步命令建议（确定性表）。
 /// `None` = 未知 technique（不臆造命令，保守）。`<asset>` 由模型按 in-scope 资产替换。
+#[allow(dead_code)]
 pub(crate) fn passive_intel_command_hint(technique: &str) -> Option<&'static str> {
     match technique {
         "GOLISH-INTEL-DNS" => Some(
@@ -361,6 +360,7 @@ pub(crate) fn passive_intel_command_hint(technique: &str) -> Option<&'static str
 }
 
 /// 被动情报 technique 全集（target_intel `expected_techniques` 镜像）。
+#[allow(dead_code)]
 pub(crate) const PASSIVE_INTEL_TECHNIQUES: &[&str] = &[
     "GOLISH-INTEL-DNS",
     "GOLISH-INTEL-WHOIS",
@@ -399,7 +399,7 @@ mod tests {
 
     fn base_input<'a>(reasons: &'a [String], kinds: &'a HashMap<i64, String>) -> RefineInput<'a> {
         RefineInput {
-            stage: StageKind::TargetIntel,
+            stage: StageKind::Enumeration,
             gate_reasons: reasons,
             gate_recovery: None,
             missing_deliverable: false,
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn coverage_never_attempted_routes_to_coverage_class() {
-        let reasons = vec!["GOLISH-INTEL-DNS on *.moresec.cn never attempted".to_string()];
+        let reasons = vec!["directory discovery on app.example.com never attempted".to_string()];
         let kinds = HashMap::new();
         let d = refine(&base_input(&reasons, &kinds));
         assert_eq!(d.class, RefineClass::CoverageOrVacuous);
@@ -499,6 +499,25 @@ mod tests {
         let d = refine(&i);
         assert_eq!(d.class, RefineClass::ScopingFlow);
         assert_eq!(d.correction, "RUN-THE-UNIT-REVIEW-FLOW");
+    }
+
+    #[test]
+    fn missing_scoping_lifecycle_never_locks_required_human_tools() {
+        let kinds = HashMap::new();
+        let mut i = base_input(&[], &kinds);
+        i.stage = StageKind::Scoping;
+        i.missing_deliverable = true;
+        i.confirm_only_stage = true;
+        i.available_real_ids = &[2247];
+        i.red_team_flow_correction = Some(
+            "SCOPING TARGET REVIEW INCOMPLETE — exactly one scope_review is required for a non-empty trusted snapshot, but 0 were observed; no successful parseable scope_review was persisted.",
+        );
+
+        let d = refine(&i);
+
+        assert_eq!(d.class, RefineClass::ScopingFlow);
+        assert!(!d.submit_only_lock);
+        assert!(d.correction.contains("scope_review"));
     }
 
     #[test]
@@ -553,34 +572,30 @@ mod tests {
     }
 
     #[test]
-    fn coverage_template_includes_db_diagnosis_and_actions_for_vacuous() {
+    fn coverage_template_includes_generic_db_diagnosis_for_vacuous() {
         let reasons = vec!["deliverable vacuous: no claims".to_string()];
         let kinds = HashMap::new();
         let facts = vec![EvidenceFact {
             asset: "moresec.cn".into(),
-            technique: "GOLISH-INTEL-SUBDOMAIN".into(),
+            technique: "CONTENT-DISCOVERY".into(),
             outcome: EvidenceOutcome::Found,
             evidence_id: 0,
         }];
         let mut i = base_input(&reasons, &kinds);
         i.evidence_facts = Some(&facts);
         let d = refine(&i);
-        assert!(
-            d.correction.contains("Suggested next target_intel actions"),
-            "vacuous BLOCK 也必须附下一步动作诊断（live run 两连 BLOCK 的修复锚点）"
-        );
-        assert!(d.correction.contains("GOLISH-INTEL-DNS"));
         assert!(d.correction.contains("DB truth status"));
-        assert!(d.correction.contains("moresec.cn × GOLISH-INTEL-SUBDOMAIN"));
+        assert!(d.correction.contains("moresec.cn × CONTENT-DISCOVERY"));
+        assert!(d.correction.contains("Repair the exact reported gap"));
     }
 
     #[test]
     fn coverage_template_omits_db_section_when_no_found_facts() {
-        let reasons = vec!["GOLISH-INTEL-DNS on x never attempted".to_string()];
+        let reasons = vec!["directory discovery on x never attempted".to_string()];
         let kinds = HashMap::new();
         let d = refine(&base_input(&reasons, &kinds));
         assert!(!d.correction.contains("DB truth status"));
-        assert!(d.correction.contains("Suggested next target_intel actions"));
+        assert!(d.correction.contains("Repair the exact reported gap"));
     }
 
     #[test]

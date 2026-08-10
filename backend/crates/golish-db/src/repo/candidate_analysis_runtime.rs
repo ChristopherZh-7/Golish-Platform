@@ -160,6 +160,7 @@ pub async fn revalidate_candidate_runtime_authority(
                 "replacement_snapshot_id":replacement.snapshot_id,
                 "replacement_disposition":match replacement.disposition {
                     super::candidate_analysis::CandidateSnapshotDispositionRow::SealedReady => "sealed_ready",
+                    super::candidate_analysis::CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals => "sealed_analysis_ready_with_residuals",
                     super::candidate_analysis::CandidateSnapshotDispositionRow::BlockedAuthorityBundle => "blocked_authority_bundle",
                 },
             }))

@@ -54,8 +54,8 @@
 - `api/attack.ts` 只接受 ts-rs 生成的 operation/wave scope、Candidate id/plan hash/row version/decision/expiry，以及 recovery case/request-id/双 expected versions/closed decision/exact evidence ids；actor/project/org/target/action args/budget/lease/checkpoint 不得进入 mutation DTO。Verification queue read model同样由 ts-rs 生成，可包含只读 pending FactDelta enrichment 的安全 subject/reason/allowed-techniques 元数据，但不得返回 raw request/evidence；`ATTACK_RECOVERY_CONFLICT` 与既有 `ATTACK_*` code 由 `error-codes.ts` 稳定翻译。
 - `api/cleanup.ts` 只消费 ts-rs 生成的 operation/org read scope 与 exact operation/project-scope/snapshot/org/obligation/row-version waiver CAS；request 不含 actor id，可信 local principal 只在后端解析。
 - `api/reporting.ts` 只消费 ts-rs 生成的 operation scope 与 revision/source CAS；`buildReportReadModel`、read/list/artifact/finalize 都走该 wrapper。actor、project root、storage path/content key 不得出现在 request DTO。
-- `api/investigation.ts` 只消费 ts-rs 生成的 `sessionId + operationId`（detail再加revision，list再加closed filters/cursor）selector。`sessionId`由当前 Tool detail pane提供，后端用它解析live bridge workspace并重验operation/task/session/project；request禁止携带workspace path、project id或principal。
-- `api/investigation.ts`公开`getInvestigationSummary` / `listInvestigationHypotheses` / `getInvestigationHypothesis`，对应后端三个readonly command。list cursor是后端签发的opaque v2 token，`expectedChangeSeq`与`InvestigationTemporalSnapshotView`用于拒绝跨head/过期分页；前端不得解析、改写或从本地列表重建cursor。
+- `api/investigation.ts` 只消费 ts-rs 生成的 exact `sessionId + operationId + stageExecutionId + stageRunRequestId` selector。summary/list可传optional-all-or-none snapshot quartet，detail必须传完整 quartet；`sessionId`由当前 Tool detail pane提供，后端用它解析live bridge workspace并重验operation/task/session/project。request禁止携带workspace path、project id、principal或“latest”回退。
+- `api/investigation.ts`公开summary、hypothesis list/detail、campaign list/detail、timeline list与explicit stop七个wrapper。cursor是后端签发的opaque token；`expectedChangeSeq + expectedTemporalCutoff + expectedAuthorityEpochSetHash + expectedEarliestEffectiveValidUntil`共同固定一次exact snapshot，前端不得解析/改写cursor或从本地列表/event重建authority。stop request只接受server control projection给出的exact run-state head/change seq与stable idempotency key。
 - Plan B ts-rs closed enums为`ProjectionEntityKind`、`ProjectionInvalidationReason`、`ProjectionSourceTimeStatusV1`、`TimelineEventKind`；相关request/envelope/view也全部从`generated/`导入。V1 legacy projection仅作历史兼容并显式显示unavailable字段，不能补齐Registry authority。
 - `generated/GeneratedAiEvent.ts` 与 `GeneratedHarnessTraceKind.ts` 的 Candidate V2 terminal/consolidation 分支由 ts-rs 生成：字段只允许 immutable scope/wave/unit/org/candidate/attempt/consolidation ids、terminal status/decision、聚合 counts 与 replay flag；没有 plan/result body/lease/exploit payload，也没有新的 attack command DTO。改 Rust wire 后必须用类型生成流程同步，禁止手改生成文件。
 - `api/temporal-graph.ts` 只消费 ts-rs 生成的 closed scope/request/result；它与手写 legacy `lib/ai/kg.ts` 分离，不能添加 actorId/projectPath authority 字段。
@@ -89,4 +89,8 @@ just test-fe    # vitest
 
 ## Hypothesis Registry readonly client（Plan B，2026-07-30）
 
-- wrapper与generated wire只支持summary/list/detail读取；没有promotion、canonical mutation、Campaign、Prepared Action或Plan C/D command。focused consumer入口为`HypothesisRegistryAudit.test.tsx`与`ToolCallDetailView.candidate.test.tsx`，类型链另由ts-rs drift/typecheck覆盖。
+- 历史operation-only Registry audit不再拥有production IPC入口；组件源码仅接受测试注入并默认fail closed。不得把它的selector伪装成unified exact-stage request；focused退役入口为`HypothesisRegistryAudit.test.tsx`与`ToolCallDetailView.candidate.test.tsx`。
+
+## Unified Investigation exact client（2026-08-08）
+
+- Plan B legacy Registry audit与unified exact-stage adapter是两条authority链：legacy组件不得把operation-only selector灌入新wrapper；unified direct route不得回退legacy Registry/Campaign authority。focused wrapper入口为`frontend/lib/api/investigation.test.ts`，production chain由`InvestigationWorkspaceRoute.test.tsx`覆盖。

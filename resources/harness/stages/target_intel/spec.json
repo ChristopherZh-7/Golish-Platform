@@ -1,6 +1,6 @@
 {
-  "$schema": "../../../../docs/design/2026-05-26-stage-harness-mvp-external-attack-surface.md#4.1",
-  "$comment": "Stage spec: target_intel. Passive intel collection (DNS / ASN / whois / CT). L1 passive_intel. Phase A.",
+  "$schema": "../../../../docs/design/2026-08-04-scoping-and-autonomous-corporate-asset-discovery.md#3-golish-corporate-asset-discovery-methodology-v1",
+  "$comment": "Target Intel is one persistent, company-scoped Corporate Asset Discovery Goal. The Main AI reads durable state/frontier, chooses semantic pivots and controlled tools by information gain, revises its plan after results, and requests independent review. Discovery lands observations first; only host-validated owned + reachable candidates can be atomically promoted and handed to EAS.",
 
   "id": "target_intel",
   "kind": "target_intel",
@@ -9,101 +9,35 @@
   "requires_stages": ["scoping"],
   "allowed_next_stages": ["external_attack_surface"],
 
+  "$comment_allowed_tool_types": "No raw scan/CLI category is exposed. Production tools are closed host-owned capabilities: semantic recon_search_intel, artifact-first public-source adapters, generic bounded SubAgents, attribution/reachability/promotion operators, review section tools, and submission/finalization primitives. The model never receives raw provider syntax, credentials, arbitrary destination control, Target mutation, full scanning, login, or exploit tools.",
   "allowed_tool_types": [],
 
+  "$comment_completion_authority": "Completion authority is the operation-frozen intel_goal_v1 review plus deterministic finalizer. It evaluates non-vacuous current-run receipts, evidence/artifact closure, material frontier and residual dispositions, attribution, fresh reachability, dedupe/conflicts, scope-safe promotion, review freshness, and zero active work. The same-chain Company Controller first persists one bounded model-authored StageDeliverable completion-claim envelope; that envelope triggers the host freeze/review flow but never grants PASS authority.",
   "deliverable_schema": "StageDeliverable",
-  "gate_validator": "validate_stage_gate",
-
-  "$comment_findings_allowed": "Passive-intel stage: the deliverable is observations (claims) + the 6-technique coverage matrix, NOT vulnerabilities. submit_stage_deliverable drops any findings submitted here and tells the model to put discoveries in claims. Design 2026-06-15-recon-stage-findings-suppression.",
+  "gate_validator": "validate_target_intel_goal",
   "findings_allowed": false,
 
-  "gate_rules": [
-    {
-      "op": "for_all",
-      "over": "claims",
-      "require": { "pred": "non_empty", "field": "evidence_ids" },
-      "on_fail": { "reason": "claim evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_ids unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "for_all",
-      "over": "findings",
-      "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "finding evidence ids are optional; cited ids, if any, must be real", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "for_all",
-      "over": "coverage",
-      "where": { "pred": "eq", "field": "status", "value": "found" },
-      "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "coverage evidence ids are optional; found intel cells are resolved from DB/ledger truth", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "for_all",
-      "over": "coverage",
-      "where": { "pred": "eq", "field": "status", "value": "checked_empty" },
-      "require": { "pred": "non_empty", "field": "evidence_refs" },
-      "on_fail": { "reason": "coverage evidence ids are optional; checked_empty intel cells are terminal, not unchecked", "hints": ["omit evidence_refs unless a real ledger id is explicitly available"] }
-    },
-    {
-      "op": "coverage_complete",
-      "derive_from_items": true,
-      "derive_from_evidence": true,
-      "authoritative_found": true,
-      "require_note_for_other": true,
-      "error_is_terminal": false,
-      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT"],
-      "$comment_authoritative": "Found for all six passive techniques is decided by fresh DB/ledger truth, not self-report, against the per-asset coverage axis frozen at stage_started_at plus the stable organization context row. recon_map_assets consumes only the current invocation's normalized domain/IP observations, canonicalizes and deduplicates them, and directly upserts exact organization-bound scope=in targets with source=asset_intel before writing DNS, service, and subdomain handoff rows. Those newly landed targets are EAS handoff output and do not expand this Target Intel run's denominator. observedTargets is not the durable targets count, and an Ok(0)/zero landed count never means found. source=asset_intel targets may enter EAS only after the active-scan approval boundary and are excluded from recursive provider-query roots; only trusted pre-stage UI/CLI source rows may seed domain-keyed expansion. WHOIS may consume newly landed domains for the org-level registration cell without adding per-target cells. ASN/CT/OSINT remain organization-context truth. No scan-tool fallback is allowed.",
-      "on_fail": {
-        "reason": "intel coverage incomplete: some (stage-start asset \u00d7 expected intel technique) cells were never attempted",
-        "hints": ["for every asset in the stage_started_at coverage snapshot, give each expected intel technique a terminal status: found / checked_empty / blocked|not_applicable+note; do not add current-run handoff Targets", "the gate reads the DATABASE, not your self-report: a frozen-axis/org-context cell is 'found' only if its provider/registry tool ran and positive business rows landed (recon_map_assets\u2192dns_records/target_assets/organizations.*, recon_lookup_whois\u2192organizations.whois); newly inserted target rows are handoff output, while observedTargets or Ok(0) is not found", "no provider/credential for a technique (e.g. OSINT, CT, ASN, DNS or SUBDOMAIN provider survey)? record it blocked+note \u2014 never fabricate; run only the target_intel registry tools to make found cells real", "BREAK THE LOOP: if a technique's provider/source is unavailable or keeps failing, submit that (asset x technique) cell as status=blocked with a note naming the failed/absent source. A blocked cell is TERMINAL and clears the gap; do NOT resubmit the same matrix expecting that cell to fill, it will loop forever."]
-      }
-    },
-    {
-      "op": "source_coverage",
-      "authoritative_techniques": ["GOLISH-INTEL-DNS", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-ASN", "GOLISH-INTEL-CT", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-OSINT"],
-      "$comment_authoritative": "source_query_log rows are required as source-attempt proof for provider-backed found/checked_empty intel. They do NOT make a cell found: source-level found, normalized observations, and Ok(0) remain non-authoritative until positive business rows land. blocked/not_applicable cells with a note are terminal and do not force a provider call.",
-      "on_fail": {
-        "reason": "intel source coverage incomplete: some provider/source attempts have no terminal source_query_log row",
-        "hints": ["run target_intel registry tools once: recon_map_assets records providerStatus rows for DNS/SUBDOMAIN/ASN/CT/OSINT provider survey, recon_lookup_whois records the RDAP WHOIS source row", "do not call shell discovery tools in target_intel; they are not allowed in this stage", "if a source/provider is unavailable, submit blocked or not_applicable coverage with a non-empty note naming the source instead of rerunning the same provider loop"],
-        "missing_evidence_kinds": ["source_query_log"]
-      }
-    },
-    {
-      "op": "coverage_corroborated",
-      "authoritative": true,
-      "$comment_authoritative": "Phase C (design 2026-06-22-intel-perdim-freshness-slim-deliverable, 瘦身交付物): target_intel adjudicates coverage from DB truth (facts_from_db_truth + coverage_complete authoritative_found above), so the agent submits a SLIM deliverable — it runs the collection tools and lets the DB-truth projection fill the matrix. Requiring a technique-tagged claim/finding per found cell contradicts that, so coverage_corroborated is an explicit no-op here. Kept (not deleted) to document intent and stay available to any future non-authoritative intel stage. Completeness is still enforced by coverage_complete (authoritative, reads the DB); a vacuous/empty submission still BLOCKs via vacuous_check + empty DB truth.",
-      "on_fail": {
-        "reason": "every 'found' intel coverage cell must be corroborated by a technique-tagged claim/finding on the same asset",
-        "hints": ["tag each intel claim/finding with its `technique` id (GOLISH-INTEL-DNS / -WHOIS / -ASN / -CT / -SUBDOMAIN / -OSINT)", "use the SAME subject string as the coverage cell's asset"]
-      }
-    }
-  ],
+  "gate_rules": [],
+  "min_invocations": {},
+  "max_other_skips": 0,
 
-  "$comment_expected_techniques": "Passive GOLISH-INTEL-* techniques are applied to the authoritative org-scoped target axis snapshotted at stage_started_at, plus a separate organization:<uuid> context row that owns WHOIS/ASN/OSINT only and can never enter EAS. Current-run domain/IP identities directly landed by recon_map_assets are EAS handoff output, not new Target Intel denominator rows; they receive no per-target cells until a later stage/run. WHOIS may read those domains only to finish the current org-level registration cell. The gate never falls back to model-invented scope or legacy target-candidate JSON. A wildcard target owns exactly GOLISH-INTEL-SUBDOMAIN; provider output never materializes wildcard literals. Its other five Intel techniques and every EAS/Enumeration technique are not_applicable.",
-  "expected_techniques": [
-    "GOLISH-INTEL-DNS", "GOLISH-INTEL-WHOIS", "GOLISH-INTEL-ASN",
-    "GOLISH-INTEL-CT", "GOLISH-INTEL-SUBDOMAIN", "GOLISH-INTEL-OSINT"
-  ],
-
-  "$comment_stage_run": "stage_run fan-out (design 2026-06-13-stage-run-fanout §3.2): specialist = the per-org sub-agent the stage_run tool fans out (intel → recon, the passive collector split from Pentester); coverage_axis = the human-readable technique columns the StageRunView renders per org row.",
   "specialist": "recon",
+  "$comment_team_scheduler": "One durable Company Controller is the Goal owner. It may request zero or more dynamically named generic workers with exact prompts and subject refs; no provider/fact-category business role is a required lane. Children return evidence-backed observations and never own planning, scope, promotion, review, or final publication.",
   "team_scheduler": {
     "schema_version": 1,
     "enabled_in_v2_only": true,
-    "allowed_roles": ["company_stage_controller", "intel_provider", "intel_coverage_critic"],
-    "aggregator_kind": "aggregate_stage_unit",
+    "allowed_roles": ["company_stage_controller", "generic_intel_worker"],
+    "aggregator_kind": "corporate_asset_discovery_goal",
     "aggregator_role": "company_stage_controller",
     "max_company_units_active": 3,
     "global_provider_cap": 8,
     "max_workers": 4,
-    "max_dynamic_requests": 12,
-    "allowed_dynamic_request_kinds": [
-      "coverage_recheck",
-      "provider_followup"
-    ],
-    "max_dynamic_subject_refs": 16,
-    "risk_lane": "passive"
+    "max_dynamic_requests": 32,
+    "allowed_dynamic_request_kinds": ["semantic_frontier_task"],
+    "max_dynamic_subject_refs": 32,
+    "risk_lane": "passive_and_low_impact"
   },
+
   "runtime_memory": {
     "schema_version": 2,
     "unit_identity": "stage_execution_organization",
@@ -111,36 +45,17 @@
     "requires_worker_lease": true,
     "publishes_handoff_after_final_seal": true
   },
-  "coverage_axis": ["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"],
 
-  "$comment_min_invocations": "No scan-tool selectors are exposed in this zero-touch stage. SUBDOMAIN/DNS/ASN/CT/OSINT coverage remains required on the stage-start axis/org context, and found states must come from positive provider/registry business landing (recon_map_assets DNS/target_assets/organization facts; WHOIS via recon_lookup_whois). Current-run target rows prove EAS handoff but neither join the denominator nor independently create a per-target found cell. A successful landing call with zero rows is not found. If no configured provider/source can land a technique, the agent must record blocked/checked_empty/not_applicable with evidence or note instead of running a CLI fallback. Completeness is enforced by coverage_complete (authoritative_found, reads the DB).",
-  "min_invocations": {},
-
-  "max_other_skips": 2,
-  "$comment_facts_from_db_truth": "target_intel is facts-only: coverage/claims/evidence are adjudicated from DB truth (coverage_complete authoritative + coverage_truth) for the stage-start axis and stable organization context. Newly landed targets remain durable EAS handoff output but are excluded from this run's per-asset projection. observedTargets, provider prose, a source-level found marker, and Ok(0) never substitute for a positive applicable dns_records/target_assets/organization fact. Vacuous_check may be satisfied by real DB/ledger facts, while empty DB truth still blocks.",
-  "facts_from_db_truth": true,
-
-  "$comment_freshness_window": "The stage start is both the coverage-axis cutoff and the evidence freshness cutoff. The per-asset denominator contains only in-scope Targets present at operation_state.stage_started_at; source=asset_intel Targets inserted after that timestamp are EAS handoff output and cannot create current-run pending cells. For the frozen asset rows plus organization context, DB truth (org intel ASN/CT/WHOIS/OSINT + per-asset DNS/SUBDOMAIN) only counts data collected at/after stage_started_at, so prior-run facts do not satisfy this run. WHOIS may read newly landed domains to populate fresh organization-level registration truth without admitting them to the asset axis. Requires the write-path *_collected_at stamping (migration 20260622000001) to be live.",
-  "freshness_window": true,
-
-  "$comment_host_aware_coverage": "Coverage is class-aware: bare IP/CIDR rows do not receive domain-only DNS/SUBDOMAIN/CT cells; wildcard patterns receive exactly one passive SUBDOMAIN cell and no other Intel cells; organization WHOIS/ASN/OSINT lives on a separate non-executable organization context row. Unknown classes remain fail-safe.",
-  "host_aware_coverage": true,
-
-  "$comment_coverage_anchor_only": "The authoritative Target Intel axis is frozen at stage_started_at before current-run asset landing. coverage_anchor_only then removes a strict subdomain when another frozen in-scope domain is its parent before deriving the matrix, retaining maximal domain roots and independent IP identities. source=asset_intel Targets created during this run never enter the matrix, so asset discovery cannot cause a denominator treadmill. A non-empty frozen axis never becomes empty.",
-  "coverage_anchor_only": true,
-
-  "$comment_human_approval": "scope=in is the durable Target Intel handoff, not permission to touch a host immediately. Active EAS probes remain blocked until the profile/stage human approval boundary authorizes active_scan.",
-  "$comment_legacy_candidate_compat": "Asset-map target candidates are transient normalization adapters and are neither persisted nor consumed as a TargetPanel review queue. Legacy OrganizationCandidate DTOs, JSON fields, and candidate commands remain schema-compatible for older data and for subsidiary ask_human(unit_review).",
+  "$comment_handoff": "The handoff contains only exact canonical Targets promoted by the host from observations with owned attribution, fresh low-impact reachability, Evidence, provider/query metadata and promotion lineage. Shared, third-party, ambiguous, rejected, unreachable and outcome-unknown observations remain residual evidence and never enter the executable exact set. Promotion does not itself authorize later active scanning.",
   "human_approval": {
     "required_before": ["active_scan"]
   },
 
-  "agent_continuity": "single_session",
-
+  "agent_continuity": "multi_session_relay",
   "inherits_evidence_from": [
     {
       "stage_kind": "scoping",
-      "evidence_kinds": ["scope_rule"]
+      "evidence_kinds": ["company_identity", "scope_policy"]
     }
   ]
 }

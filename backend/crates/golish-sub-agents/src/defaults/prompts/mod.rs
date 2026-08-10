@@ -10,17 +10,23 @@
 //! - [`reporting`]          — reporter, researcher_fallback, refiner
 //! - [`orchestration`]      — orchestrator, worker_fallback, browser, enricher
 
+mod application_understanding;
 mod code_research;
 mod execution_planning;
 mod hypothesis_analysis;
 mod orchestration;
 mod reporting;
+mod verification_campaign;
 
+pub(super) use application_understanding::{
+    build_application_understanding_company_synthesizer_prompt,
+    build_application_understanding_shard_modeler_prompt,
+};
 pub(super) use code_research::{build_coder_prompt, build_researcher_prompt};
 pub(super) use execution_planning::{
     build_adviser_prompt, build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
     build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
-    build_reflector_prompt, build_vuln_scanner_prompt,
+    build_reflector_prompt, build_resolution_analyst_prompt, build_vuln_scanner_prompt,
 };
 pub(super) use hypothesis_analysis::{
     build_candidate_hypothesis_analyst_prompt, build_candidate_hypothesis_controller_prompt,
@@ -32,6 +38,9 @@ pub(super) use orchestration::{
 };
 pub(super) use reporting::{
     build_refiner_prompt, build_reporter_prompt, build_researcher_prompt_fallback,
+};
+pub(super) use verification_campaign::{
+    build_verification_campaign_prompt, VerificationCampaignRole,
 };
 
 /// System prompt used when generating optimized prompts for worker agents.

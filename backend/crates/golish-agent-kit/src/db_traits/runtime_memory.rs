@@ -45,6 +45,15 @@ pub struct ProjectScopeRegistration {
     pub row_version: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedCompanyIdentityIntake {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub organization_id: Uuid,
+    pub canonical_legal_name: String,
+    pub session_id: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CreateRuntimeOperation {
     pub operation_id: Uuid,
@@ -54,6 +63,7 @@ pub struct CreateRuntimeOperation {
     pub input: String,
     pub profile: String,
     pub entry_stage: String,
+    pub application_model_contract: golish_core::ApplicationModelContract,
     pub project_scope: ProjectScopeRegistration,
     /// Trusted CLI-only scope material. When present, operation creation must
     /// freeze this decision and organization snapshot in the same transaction
@@ -116,6 +126,156 @@ pub struct CreatedRuntimeOperation {
     pub task: TaskView,
     pub operation: OperationStateView,
     pub initial_stage_execution_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreezeTargetIntelGoalUnitContract {
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub team_plan_id: Uuid,
+    pub controller_work_item_id: Uuid,
+    pub controller_worker_run_id: Uuid,
+    pub controller_message_chain_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenTargetIntelGoalUnitContractView {
+    pub goal_epoch_id: Uuid,
+    pub goal_epoch: i64,
+    pub operation_contract_sha256: String,
+    pub runtime_mode: crate::harness::IntelGoalRuntimeMode,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FreezeTargetIntelReview {
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub team_plan_id: Uuid,
+    pub controller_work_item_id: Uuid,
+    pub controller_worker_run_id: Uuid,
+    pub expected_goal_epoch: i64,
+    pub expected_plan_row_version: i64,
+    pub completion_claim: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrozenTargetIntelReviewView {
+    pub review_id: Uuid,
+    pub reviewer_work_item_id: Option<Uuid>,
+    pub review_round: u32,
+    pub bundle_sha256: String,
+    pub runtime_mode: crate::harness::IntelGoalRuntimeMode,
+    pub detached_shadow: bool,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadTargetIntelReviewSection {
+    pub review_id: Uuid,
+    pub reviewer_worker_run_id: Uuid,
+    pub requested_kind: crate::harness::IntelReviewSectionKind,
+    pub expected_bundle_sha256: String,
+    pub expected_worker_attempt_epoch: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetIntelReviewSectionView {
+    pub review_id: Uuid,
+    pub review_row_version: i64,
+    pub section_kind: crate::harness::IntelReviewSectionKind,
+    pub section_sha256: String,
+    pub payload: Value,
+    pub next_section: Option<crate::harness::IntelReviewSectionKind>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordTargetIntelReviewVerdict {
+    pub review_id: Uuid,
+    pub reviewer_worker_run_id: Uuid,
+    pub expected_worker_attempt_epoch: i64,
+    pub expected_review_row_version: i64,
+    pub expected_bundle_sha256: String,
+    pub verdict: crate::harness::IntelReviewVerdict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedTargetIntelReviewView {
+    pub review_id: Uuid,
+    pub review_row_version: i64,
+    pub decision: crate::harness::IntelReviewDecision,
+    pub verdict_sha256: String,
+    pub successor_goal_epoch: Option<i64>,
+    pub hold_id: Option<Uuid>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompleteTargetIntelReviewer {
+    pub fence: RuntimeWorkerFence,
+    pub stage_team_plan_id: Uuid,
+    pub reviewer_work_item_id: Uuid,
+    pub review_id: Uuid,
+    pub expected_work_item_row_version: i64,
+    pub expected_bundle_sha256: String,
+    pub terminal_checkpoint: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedTargetIntelReviewerView {
+    pub review_id: Uuid,
+    pub work_item: StageWorkItemView,
+    pub worker: RuntimeWorkerView,
+    pub review_row_version: i64,
+    pub decision: crate::harness::IntelReviewDecision,
+    pub bundle_sha256: String,
+    pub verdict_sha256: String,
+    pub operation_contract_sha256: String,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeTargetIntelGoalAfterRework {
+    pub review_id: Uuid,
+    pub expected_review_row_version: i64,
+    pub expected_controller_work_item_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeTargetIntelGoalAfterHuman {
+    pub review_id: Uuid,
+    pub hold_id: Uuid,
+    pub expected_hold_row_version: i64,
+    pub fulfillment_kind: String,
+    pub authority_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumedTargetIntelGoalView {
+    pub operation_id: Uuid,
+    pub team_plan_id: Uuid,
+    pub controller_work_item_id: Uuid,
+    pub controller_message_chain_id: Uuid,
+    pub successor_goal_epoch: i64,
+    pub server_message: String,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FinalizeTargetIntelGoalPass {
+    pub operation_id: Uuid,
+    pub organization_id: Uuid,
+    pub review_id: Uuid,
+    pub expected_review_row_version: i64,
+    pub expected_bundle_sha256: String,
+    pub expected_verdict_sha256: String,
+    pub expected_operation_contract_sha256: String,
+    /// Server-built StageTeam seal. No model-facing DTO can populate this
+    /// compound authority; the repository rechecks both halves in one DB tx.
+    pub stage_team: FinalizeStageTeamUnit,
 }
 
 /// SQLx-free command for one immutable trusted deliverable submission. Every
@@ -567,6 +727,21 @@ pub struct StageWorkerOutputView {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Exact immutable cognition-output manifest for one Investigation PentAGI
+/// task plan. The task-plan identity is an additional boundary inside a
+/// StageTeam plan: synthesis must not consume Primary, recovery, or sibling
+/// task-plan outputs merely because they share the same TeamPlan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadInvestigationTaskPlanOutputs {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub organization_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub dispatch_epoch: i64,
+    pub task_plan_id: Uuid,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageWorkerRequestDecision {
     Accepted,
@@ -816,6 +991,10 @@ pub struct ClaimStageWorkItem {
     pub stage_execution_id: Uuid,
     pub stage_run_unit_id: Uuid,
     pub stage_team_plan_id: Uuid,
+    /// Optional host-owned exact WorkItem selector. Generic rolling drains use
+    /// `None`; synchronous nested Investigation delegation must use `Some` so
+    /// a queued sibling can never be claimed under the nested dispatch edge.
+    pub exact_work_item_id: Option<Uuid>,
     pub lease_owner: String,
     pub lease_seconds: i32,
     pub session_id: Uuid,
@@ -898,6 +1077,79 @@ pub struct ClaimStageTeamLeader {
     pub claim: ClaimStageWorkItem,
 }
 
+/// Recover the exact VerificationTask Primary after its PentAGI plan and
+/// advisory envelope are already durably sealed. This is intentionally a
+/// separate authority from the ordinary open-plan leader claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverInvestigationAdvisoryPrimary {
+    pub claim: ClaimStageWorkItem,
+    pub verification_task_id: Uuid,
+    pub subject_fingerprint_sha256: String,
+}
+
+/// Open the next per-VerificationTask governance epoch after the exact prior
+/// Primary and all of its required cognitive children are terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RearmInvestigationTaskPrimary {
+    pub previous_primary_fence: RuntimeWorkerFence,
+    pub stage_team_plan_id: Uuid,
+    pub previous_primary_work_item_id: Uuid,
+    pub verification_task_id: Uuid,
+    pub subject_fingerprint_sha256: String,
+    pub expected_plan_row_version: i64,
+    pub expected_previous_work_item_row_version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RearmedInvestigationTaskPrimaryView {
+    pub plan: StageTeamPlanView,
+    pub previous_primary_work_item: StageWorkItemView,
+    pub primary_work_item: StageWorkItemView,
+    pub primary_worker: RuntimeWorkerView,
+    pub message_chain_id: Uuid,
+    pub replayed: bool,
+}
+
+/// Durable stage-local cursor for the unified Investigation runner. The
+/// database derives this phase from the current Primary WorkItem and immutable
+/// VerificationTask rearm receipts; callers cannot advance it by assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvestigationRuntimeCursorPhase {
+    Analysis,
+    VerificationTask,
+    Campaigns,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadInvestigationRuntimeCursor {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationRuntimeCursorView {
+    pub phase: InvestigationRuntimeCursorPhase,
+    pub verification_task_id: Option<Uuid>,
+    pub analysis_read_session_sealed: bool,
+    pub dispatch_epoch: i64,
+    pub plan_row_version: i64,
+}
+
+/// Ensure the unique per-VerificationTask Primary exists, or return that same
+/// queued/running durable WorkerRun after a process restart. The repository
+/// derives the prior completed Primary fence and never accepts it from AI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureInvestigationTaskPrimary {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub verification_task_id: Uuid,
+    pub subject_fingerprint_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParkStageTeamLeader {
     pub fence: RuntimeWorkerFence,
@@ -946,6 +1198,21 @@ pub struct AdoptedLegacyVulnTerminalOutcomesView {
     pub adopted_cells: usize,
     pub source_stage_execution_id: Option<Uuid>,
     pub source_stage_started_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealExhaustedVulnResidualOutcomes {
+    pub fence: RuntimeWorkerFence,
+    pub stage_team_plan_id: Uuid,
+    pub leader_work_item_id: Uuid,
+    pub expected_attempt_ordinal: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SealedExhaustedVulnResidualOutcomesView {
+    pub sealed_cells: usize,
+    pub found_cells: usize,
+    pub blocked_cells: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1382,6 +1649,32 @@ pub struct CompletedStageWorkerView {
     pub replayed: bool,
 }
 
+/// Terminalize the unique planning-only Investigation Task Primary after its
+/// request epoch, independent-worker barrier and PentAGI delegation census are
+/// all sealed. This closes the per-Unit governance plan but deliberately keeps
+/// the stage Unit running; only the stage-level Investigation closure may pass
+/// that Unit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteInvestigationTaskPrimary {
+    pub fence: RuntimeWorkerFence,
+    pub stage_team_plan_id: Uuid,
+    pub primary_work_item_id: Uuid,
+    pub expected_work_item_row_version: i64,
+    pub expected_plan_row_version: i64,
+    pub expected_dispatch_epoch: i64,
+    pub expected_barrier_manifest_sha256: String,
+    pub terminal_checkpoint: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompletedInvestigationTaskPrimaryView {
+    pub unit: RuntimeStageUnitView,
+    pub plan: StageTeamPlanView,
+    pub work_item: StageWorkItemView,
+    pub worker: RuntimeWorkerView,
+    pub replayed: bool,
+}
+
 /// Finish one producer/helper execution attempt without manufacturing a
 /// business output. The repository either puts the immutable WorkItem back on
 /// the durable queue or marks that item exhausted after its frozen retry
@@ -1592,6 +1885,19 @@ pub struct LoadInheritedStageHandoffs {
 
 #[async_trait]
 pub trait RuntimeMemoryRepository: Send + Sync {
+    /// Re-derive the aggregate Investigation closeout token from the one
+    /// immutable closure publication owned by `operation_id`. This is a
+    /// server-only response-loss seam: the coordinator may omit the token from
+    /// its model-authored tool arguments, but it may never invent completion
+    /// authority or choose the publication/member denominator.
+    async fn load_investigation_coordinator_pass_token(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<Option<String>, RuntimeMemoryError> {
+        let _ = operation_id;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     async fn project_scope_register_first_open(
         &self,
         canonical_path: &str,
@@ -1611,6 +1917,17 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         &self,
         input: CreateRuntimeOperation,
     ) -> Result<CreatedRuntimeOperation, RuntimeMemoryError>;
+
+    /// Freeze adapter-confirmed Company Identity authority before the first
+    /// Scoping model turn. Implementations must persist evidence and the
+    /// immutable receipt together; an ordinary organization row is not enough.
+    async fn freeze_trusted_company_identity(
+        &self,
+        input: TrustedCompanyIdentityIntake,
+    ) -> Result<(), RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
 
     /// Read the exact durable started execution for one operation. Missing and
     /// duplicate active rows both fail closed in the concrete repository.
@@ -1751,6 +2068,38 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         Err(RuntimeMemoryError::Unavailable)
     }
 
+    async fn recover_investigation_advisory_primary(
+        &self,
+        input: RecoverInvestigationAdvisoryPrimary,
+    ) -> Result<Option<ClaimedStageWorkItemView>, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn rearm_investigation_task_primary(
+        &self,
+        input: RearmInvestigationTaskPrimary,
+    ) -> Result<RearmedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn load_investigation_runtime_cursor(
+        &self,
+        input: LoadInvestigationRuntimeCursor,
+    ) -> Result<InvestigationRuntimeCursorView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn ensure_investigation_task_primary(
+        &self,
+        input: EnsureInvestigationTaskPrimary,
+    ) -> Result<RearmedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     /// Atomically checkpoint and release the Company Controller while its
     /// durable sibling WorkItems execute.
     async fn park_stage_team_leader(
@@ -1785,6 +2134,18 @@ pub trait RuntimeMemoryRepository: Send + Sync {
             source_stage_execution_id: None,
             source_stage_started_at: None,
         })
+    }
+
+    /// Convert only current, evidence-backed Nuclei cells whose server-owned
+    /// retry fuel is exhausted into terminal positive or inconclusive-residual
+    /// projections. Scanner/runtime errors without an accepted observation or
+    /// a complete no-match batch remain nonterminal.
+    async fn seal_exhausted_vuln_residual_outcomes(
+        &self,
+        input: SealExhaustedVulnResidualOutcomes,
+    ) -> Result<SealedExhaustedVulnResidualOutcomesView, RuntimeMemoryError> {
+        let _ = input;
+        Ok(SealedExhaustedVulnResidualOutcomesView::default())
     }
 
     /// Bind the already-running Controller as the sole final submitter after
@@ -1841,6 +2202,18 @@ pub trait RuntimeMemoryRepository: Send + Sync {
     async fn load_stage_team_outputs(
         &self,
         input: LoadStageTeamBarrier,
+    ) -> Result<Vec<StageWorkerOutputView>, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    /// Load only immutable worker/nested-worker outputs admitted by the exact
+    /// Investigation PentAGI task plan. Production implementations must reject
+    /// missing, duplicate, or foreign output bindings; the Primary dispatch is
+    /// governance/synthesis authority and must never appear in this manifest.
+    async fn load_investigation_task_plan_outputs(
+        &self,
+        input: LoadInvestigationTaskPlanOutputs,
     ) -> Result<Vec<StageWorkerOutputView>, RuntimeMemoryError> {
         let _ = input;
         Err(RuntimeMemoryError::Unavailable)
@@ -2063,6 +2436,14 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         Err(RuntimeMemoryError::Unavailable)
     }
 
+    async fn complete_investigation_task_primary(
+        &self,
+        input: CompleteInvestigationTaskPrimary,
+    ) -> Result<CompletedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     /// Persist execution failure separately from `StageWorkerOutput`. A
     /// provider/runtime failure is never converted into a business `blocked`
     /// result merely to make the sibling barrier advance.
@@ -2145,6 +2526,70 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         &self,
         input: LoadInheritedStageHandoffs,
     ) -> Result<Vec<RuntimeStageHandoffView>, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn freeze_target_intel_review(
+        &self,
+        input: FreezeTargetIntelReview,
+    ) -> Result<FrozenTargetIntelReviewView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn freeze_target_intel_goal_unit_contract(
+        &self,
+        input: FreezeTargetIntelGoalUnitContract,
+    ) -> Result<FrozenTargetIntelGoalUnitContractView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn read_target_intel_review_section(
+        &self,
+        input: ReadTargetIntelReviewSection,
+    ) -> Result<TargetIntelReviewSectionView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn record_target_intel_review_verdict(
+        &self,
+        input: RecordTargetIntelReviewVerdict,
+    ) -> Result<RecordedTargetIntelReviewView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn complete_target_intel_reviewer(
+        &self,
+        input: CompleteTargetIntelReviewer,
+    ) -> Result<CompletedTargetIntelReviewerView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn resume_target_intel_goal_after_rework(
+        &self,
+        input: ResumeTargetIntelGoalAfterRework,
+    ) -> Result<ResumedTargetIntelGoalView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn resume_target_intel_goal_after_human(
+        &self,
+        input: ResumeTargetIntelGoalAfterHuman,
+    ) -> Result<ResumedTargetIntelGoalView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn finalize_target_intel_goal_pass(
+        &self,
+        input: FinalizeTargetIntelGoalPass,
+    ) -> Result<FinalizedStageTeamUnitView, RuntimeMemoryError> {
         let _ = input;
         Err(RuntimeMemoryError::Unavailable)
     }

@@ -43,8 +43,15 @@ function backgroundRunMetaFromResult(result: unknown): BackgroundRunMeta | undef
   return {
     jobId: value.job_id,
     backgroundedAt: Date.now(),
-    softTimeoutMs: typeof value.soft_timeout_ms === "number" ? value.soft_timeout_ms : undefined,
-    hardTimeoutMs: typeof value.hard_timeout_ms === "number" ? value.hard_timeout_ms : undefined,
+    initialYieldMs:
+      typeof value.initial_yield_ms === "number"
+        ? value.initial_yield_ms
+        : typeof value.inline_wait_ms === "number"
+          ? value.inline_wait_ms
+          : typeof value.soft_timeout_ms === "number"
+            ? value.soft_timeout_ms
+            : undefined,
+    automaticKill: false,
   };
 }
 

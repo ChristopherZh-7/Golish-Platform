@@ -18,6 +18,7 @@
 mod extractors;
 mod multi_turn;
 mod single_turn;
+mod target_intel_goal_shadow;
 mod types;
 
 #[cfg(test)]
@@ -26,5 +27,9 @@ mod tests;
 pub use multi_turn::{run_multi_turn_eval, MultiTurnEvalOutput};
 pub use single_turn::{
     run_eval_agentic_loop, run_eval_agentic_loop_with_tools, CustomToolExecutor,
+};
+pub use target_intel_goal_shadow::{
+    production_profile_enables_goal_shadow, select_goal_shadow, CapabilityManifest, FakeTransport,
+    FixtureCapabilityStatus, GoalShadowMode, TargetIntelGoalShadowFixture,
 };
 pub use types::{EvalAgentOutput, EvalConfig, EvalToolCall};

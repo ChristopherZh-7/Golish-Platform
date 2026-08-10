@@ -7,8 +7,11 @@ description = "Agent skills discovery, parsing, and matching for Golish"
 
 [dependencies]
 anyhow = { workspace = true }
+chrono = { workspace = true }
 golish-core = { workspace = true }
+libc = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }

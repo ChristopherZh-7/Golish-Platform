@@ -1,0 +1,191 @@
+{
+  "schema": "golish.recovery_investigation_full_chain_evidence.v1",
+  "recordedAt": "2026-08-10",
+  "recovery": {
+    "originalWorktree": "/private/tmp/golish-plan-b-v2.h9tNiG",
+    "codexSnapshotTree": "398c7769ba46c7112323ebbed3aa9fd4bd4fcd24",
+    "snapshotObservedAt": "2026-08-07T10:31:00+08:00",
+    "unresolvedAuditQueue": {
+      "path": "/private/tmp/golish-recovery-unresolved.json",
+      "sha256": "0af0b4b5032a7371ff5692727397e38abcd40ca6880924627be5b4f5c5c0144c",
+      "pathCount": 68,
+      "pathsPresentInRecovery": 68,
+      "interpretation": "audit queue of patches that were not automatically applied; not a list of missing files"
+    },
+    "codexSessionPatchAudit": {
+      "successfulPatchPathCount": 525,
+      "currentPathCount": 524,
+      "intentionalMove": "backend/crates/golish-db/migrations/20260802000004_application_understanding_model.sql -> backend/crates/golish-db/migrations/20260802000006_application_understanding_model.sql",
+      "finalDisposition": "the recovered simplified AU replacement was subsequently removed; mature application_model_contract authority remains"
+    },
+    "targetIntelAuthorityHashes": {
+      "specSha256": "b12d0341f0f6b52083603ccdbf0440f52e04d4e5ec9f3b42d889fd9930e53968",
+      "methodologySha256": "196a6de5550b6ccabfaf2383d60a01df28e1d8cc304577f073925739152998e7"
+    },
+    "simplifiedAuRemoved": [
+      "backend/crates/golish-core/src/application_model.rs",
+      "backend/crates/golish-db/migrations/20260802000006_application_understanding_model.sql",
+      "backend/crates/golish-db/src/repo/application_understanding_models.rs"
+    ]
+  },
+  "investigationToolCatalog": {
+    "schema": "investigation_tool_catalog.v1",
+    "exactToolIds": [
+      "arjun",
+      "kiterunner",
+      "schemathesis",
+      "jwt-tool",
+      "graphql-cop",
+      "testssl-sh",
+      "ssh-audit",
+      "enum4linux-ng",
+      "trivy",
+      "interactsh-client"
+    ],
+    "admissionBoundary": "catalog membership is metadata admission only; execution still requires exact Prepared Action, JIT/operator authority, scope, budget, lease, capability and adapter authority",
+    "currentCatalogDisposition": "all ten entries remain contract_pending or disabled and therefore cannot reach network execution"
+  },
+  "realEntity": {
+    "workspace": "/Users/christopherzheng/golish-platform/RecoveryAcceptanceMoresecRootOnly-20260810-Fresh01",
+    "organization": "默安科技",
+    "subsidiariesIncluded": false,
+    "target": "https://moresec.cn:443",
+    "operationId": "f76e47ba-a468-4393-852a-4c2bf8ee5682",
+    "taskId": "f76e47ba-a468-4393-852a-4c2bf8ee5682",
+    "sessionId": "0545d4b1-fc16-45fa-a106-b767ca899e68",
+    "chatSessionId": "stage-run-2d7aed6b-2ada-4f5a-ae99-a4983451af0a",
+    "organizationId": "af9ebcb7-27fb-459d-b5ad-6ed959dbb037",
+    "scopeSnapshotId": "2ec95efd-c6cc-5109-8a40-927430c265bc",
+    "reportingStageExecutionId": "a1d45fe2-52a4-4b3f-b605-37f21e034cff",
+    "reportId": "b15e4a65-98c6-5ef9-95a2-41500b0b2d87",
+    "reportRevisionId": "e41f0c5c-4ed6-5308-b5e4-fb8d3232698d",
+    "terminal": {
+      "taskStatus": "finished",
+      "reportValidation": "validated",
+      "publication": "unpublished",
+      "verificationCampaignsTerminal": 3,
+      "factDeltasInconclusive": 3,
+      "preparedActions": 0,
+      "actionAuthorizations": 0,
+      "actionExecutions": 0,
+      "resumeExitCode": 0
+    },
+    "safety": {
+      "exploitExecuted": false,
+      "postExploitExecuted": false,
+      "operatorAuthorizedActionExecuted": false
+    },
+    "runLog": "/Users/christopherzheng/golish-platform/RecoveryAcceptanceMoresecRootOnly-20260810-Fresh01/.golish/transcripts/stage-run-2d7aed6b-2ada-4f5a-ae99-a4983451af0a/run.log"
+  },
+  "controlledFixture": {
+    "workspace": "/Users/christopherzheng/golish-platform/ControlledFixtureAcceptance-20260810-Fresh02",
+    "target": "http://127.0.0.1:62140",
+    "operationId": "299a056c-7c13-469d-9286-8105f861714c",
+    "taskId": "299a056c-7c13-469d-9286-8105f861714c",
+    "sessionId": "ee63667c-8dda-4add-8f65-9f5898d9508a",
+    "chatSessionId": "stage-run-7e3c147a-728d-475f-ab2e-5d019d2f4452",
+    "organizationId": "493ee71f-0d69-4c23-8696-5db237941748",
+    "scopeSnapshotId": "6c3f44be-f957-47b4-a4f8-5d5ee980dede",
+    "safetyHold": {
+      "initialReason": "initial_rollout_hold",
+      "initialGeneration": 0,
+      "initialRowVersion": 0,
+      "releaseReceiptId": "ad257174-3817-5c0f-860b-5ece9acc8213",
+      "releaseMechanism": "explicit stage-run campaign authority packet",
+      "autoApproveBypassedAuthorization": false
+    },
+    "terminal": {
+      "taskStatus": "finished",
+      "completedStageRuns": 8,
+      "completedStages": [
+        "scoping",
+        "target_intel",
+        "external_attack_surface",
+        "enumeration",
+        "vuln_triage",
+        "application_understanding",
+        "investigation",
+        "reporting"
+      ],
+      "verificationCampaignsTerminal": 4,
+      "factDeltasInconclusive": 4,
+      "preparedActions": 0,
+      "actionAuthorizations": 0,
+      "actionExecutions": 0,
+      "reports": 1,
+      "reportId": "ea15e13d-e2ba-594c-bf90-51f23c42dd75",
+      "reportRevisionId": "6c36a7e9-dc21-545d-a3aa-6bc60e39a6c3",
+      "reportValidation": "validated",
+      "reportPublication": "unpublished",
+      "reportArtifacts": 0,
+      "resumeExitCode": 0
+    },
+    "requestAudit": {
+      "totalRequests": 1911,
+      "uniqueRequests": 1868,
+      "blockedExternalSdkHits": 0,
+      "controlledIntelProviderHits": 1
+    }
+  },
+  "memoryAndRag": {
+    "corpusRoot": "~/Library/Application Support/golish-platform/methodology/corpus",
+    "manifestSha256Prefix": "df3049bd",
+    "skillHashesMatchManifest": true,
+    "mainReadSession": {
+      "methodologyHitCount": 2,
+      "methodologyResultSetSha256Prefix": "sha256:5ab316",
+      "contextItemCount": 5,
+      "contextSetSha256Prefix": "sha256:fb3294",
+      "omissionCount": 9,
+      "omissionSetSha256Prefix": "sha256:30c4",
+      "receiptSha256Prefix": "sha256:71663f"
+    },
+    "generatedMemory": {
+      "knowledgeAssertions": 4,
+      "knowledgeDocuments": 4,
+      "sourceStages": [
+        "target_intel",
+        "external_attack_surface",
+        "enumeration",
+        "vuln_triage"
+      ],
+      "evidenceBound": true
+    },
+    "readEvidence": {
+      "externalAttackSurfaceVectorPriors": 1,
+      "enumerationVectorPriors": 2,
+      "laterContext": {
+        "canonical": 1,
+        "runtime": 2,
+        "handoffs": 3,
+        "episodes": 4
+      },
+      "negativeKnowledgeBaseSearches": "preserved as residuals and never promoted to positive proof"
+    }
+  },
+  "reporting": {
+    "mode": "concise evidence-linked summary",
+    "templateReplacementUsed": false,
+    "templateArtifactsCreated": 0
+  },
+  "verification": {
+    "entityChainsClosed": true,
+    "guiEndToEndRunPerformed": false,
+    "guiInference": "headless entity closure proves backend/runtime contracts but does not by itself prove every UI interaction",
+    "finalTargetedGateStatus": "passed",
+    "targetedEvidence": [
+      "validate_all_tools: 57 ok, 0 fail",
+      "nextest 60f7ecc4-dc9b-410a-afc6-11bf1425a469: 15/15 catalog/config/smoke tests",
+      "nextest b930046b-0081-4f2b-abaa-f1b90012aa4a: 1/1 raw-action isolation",
+      "nextest 252096c9-e1da-42a2-8199-aa9519e3de36: 1/1 four-stage runtime fixture",
+      "scoped Clippy -D warnings: 15 affected crates, exit 0",
+      "frontend typecheck: exit 0",
+      "focused Vitest: 7 files, 69/69",
+      "browser collection Node tests: 30/30",
+      "stage-smoke/run-tree Python tests: 39/39",
+      "run_tree.py --db --full on retained controlled operation: exit 0",
+      "cargo fmt --all -- --check: exit 0"
+    ],
+    "largeOptionalGate": "just precommit not run; project policy permits targeted evidence and the user explicitly requested avoiding repeated multi-minute full loops"
+  }
+}

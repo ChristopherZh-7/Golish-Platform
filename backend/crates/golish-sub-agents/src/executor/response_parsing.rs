@@ -12,23 +12,27 @@ use std::time::Duration;
 use rig::completion::CompletionModel as RigCompletionModel;
 use rig::message::{Text, ToolCall, ToolResult, ToolResultContent, UserContent};
 use rig::one_or_many::OneOrMany;
+use sha2::{Digest, Sha256};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_helpers::{epoch_secs, extract_file_path, is_write_tool};
 use crate::executor_types::{
     cancellation_requested, coverage_gap_action_instruction, normalize_probe_target,
-    wait_for_cancelled, CoverageGapAction, EasWebRepairTarget, StageTeamLeaderBinding,
-    SubAgentExecutorContext, SubAgentToolObservation, SubmitRepairKind, SubmitRepairMode,
-    ToolProvider, BARRIER_TOOL_NAME, STAGE_TEAM_DISPATCH_ACCEPTED_STATUS,
-    STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME, STAGE_TEAM_PREPARE_FINAL_STATUS,
-    STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
+    wait_for_cancelled, BegunBoundWorkerNestedDelegation, BoundWorkerChainContext,
+    BoundWorkerNestedDelegationCompletion, BoundWorkerNestedDelegationLifecycle, CoverageGapAction,
+    EasWebRepairTarget, StageTeamLeaderBinding, SubAgentExecutorContext, SubAgentToolObservation,
+    SubmitRepairKind, SubmitRepairMode, ToolProvider, BARRIER_TOOL_NAME,
+    STAGE_TEAM_DISPATCH_ACCEPTED_STATUS, STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME,
+    STAGE_TEAM_PREPARE_FINAL_STATUS, STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
 };
 use crate::transcript::SubAgentTranscriptWriter;
 use golish_core::events::{AiEvent, ToolSource};
 use golish_core::utils::{is_tool_result_success, truncate_str};
 
 const HARD_SUPERVISOR_MARKER: &str = "--- EXECUTION SUPERVISOR (HARD) ---";
+const BOUND_WORKER_NESTED_DELEGATION_BLOCKED_CODE: &str = "BOUND_WORKER_NESTED_DELEGATION_BLOCKED";
 
 /// Result of dispatching tool calls within a sub-agent iteration.
 pub(super) struct ToolDispatchResult {
@@ -114,14 +118,37 @@ pub(super) fn stage_submission_barrier_response(
     }
 }
 
+/// The read-only Target Intel reviewer has no generic `submit_result` surface.
+/// Its exact durable verdict is both the business result and the host barrier.
+/// Recognize only the reserved reviewer role, reserved tool, successful router
+/// result, and explicit terminal marker so ordinary tools cannot end a loop.
+fn target_intel_reviewer_verdict_barrier_response(
+    agent_id: &str,
+    tool_name: &str,
+    result: &serde_json::Value,
+    success: bool,
+) -> Option<String> {
+    (agent_id == "target_intel_reviewer"
+        && tool_name == crate::TARGET_INTEL_RECORD_REVIEW_VERDICT
+        && success
+        && result.get("terminal").and_then(serde_json::Value::as_bool) == Some(true)
+        && matches!(
+            result.get("decision").and_then(serde_json::Value::as_str),
+            Some("PASS" | "REWORK" | "NEEDS_HUMAN")
+        ))
+    .then(|| serde_json::to_string(result).ok())
+    .flatten()
+}
+
 /// A claimed Company Controller coordination turn is host-owned and can only
 /// return through one of its trusted router tools. `submit_result` is the
 /// generic specialist barrier; accepting it here would let model prose bypass
 /// the durable dispatch/prepare-final state machine.
 fn stage_team_controller_submit_result_rejection(
     active_company_controller: bool,
+    planning_only: bool,
 ) -> Option<serde_json::Value> {
-    active_company_controller.then(|| {
+    (active_company_controller && !planning_only).then(|| {
         serde_json::json!({
             "error": "Company Controller coordination cannot end with submit_result. Call exactly one trusted coordination tool: stage_team_dispatch_workers or stage_team_prepare_final_submission.",
             "code": "STAGE_TEAM_CONTROLLER_REQUIRES_ROUTER",
@@ -2329,6 +2356,298 @@ fn background_failure_runtime_correction(
 /// Preserve the typed Stage Team child output across the generic sub-agent
 /// barrier. Generic sub-agents still submit a string; durable stage children
 /// submit an object that must reach the scheduler as one pure JSON object.
+fn json_schema_type_matches(expected: &str, value: &serde_json::Value) -> bool {
+    match expected {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "integer" => value
+            .as_number()
+            .is_some_and(|number| number.as_i64().is_some() || number.as_u64().is_some()),
+        "number" => value.is_number(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        _ => false,
+    }
+}
+
+fn validate_terminal_result_schema_at(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    path: &str,
+) -> Result<(), String> {
+    if let Some(allowed) = schema.as_bool() {
+        return allowed
+            .then_some(())
+            .ok_or_else(|| format!("{path}: rejected by false schema"));
+    }
+    let object = schema
+        .as_object()
+        .ok_or_else(|| format!("{path}: result schema must be an object or boolean"))?;
+    for keyword in object.keys() {
+        if !matches!(
+            keyword.as_str(),
+            "$schema"
+                | "$id"
+                | "title"
+                | "description"
+                | "default"
+                | "examples"
+                | "deprecated"
+                | "readOnly"
+                | "writeOnly"
+                | "type"
+                | "format"
+                | "const"
+                | "enum"
+                | "minimum"
+                | "maximum"
+                | "minLength"
+                | "maxLength"
+                | "minItems"
+                | "maxItems"
+                | "uniqueItems"
+                | "items"
+                | "properties"
+                | "required"
+                | "additionalProperties"
+        ) {
+            return Err(format!(
+                "{path}: unsupported result-schema keyword `{keyword}`"
+            ));
+        }
+    }
+
+    if let Some(expected) = object.get("type") {
+        let matches = match expected {
+            serde_json::Value::String(expected) => json_schema_type_matches(expected, value),
+            serde_json::Value::Array(expected) => expected.iter().any(|expected| {
+                expected
+                    .as_str()
+                    .is_some_and(|expected| json_schema_type_matches(expected, value))
+            }),
+            _ => false,
+        };
+        if !matches {
+            return Err(format!("{path}: value does not match declared type"));
+        }
+    }
+    if object
+        .get("const")
+        .is_some_and(|expected| expected != value)
+    {
+        return Err(format!("{path}: value does not match the host constant"));
+    }
+    if let Some(allowed) = object.get("enum").and_then(serde_json::Value::as_array) {
+        if !allowed.contains(value) {
+            return Err(format!("{path}: value is not in the allowed enum"));
+        }
+    }
+
+    if let Some(text) = value.as_str() {
+        let length = text.chars().count() as u64;
+        if object
+            .get("minLength")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|minimum| length < minimum)
+        {
+            return Err(format!("{path}: string is shorter than minLength"));
+        }
+        if object
+            .get("maxLength")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|maximum| length > maximum)
+        {
+            return Err(format!("{path}: string is longer than maxLength"));
+        }
+        if let Some(format) = object.get("format").and_then(serde_json::Value::as_str) {
+            match format {
+                "uuid" if Uuid::parse_str(text).is_err() => {
+                    return Err(format!("{path}: string is not a UUID"));
+                }
+                "uuid" => {}
+                unsupported => {
+                    return Err(format!(
+                        "{path}: unsupported result-schema format `{unsupported}`"
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(number) = value.as_f64() {
+        if object
+            .get("minimum")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|minimum| number < minimum)
+        {
+            return Err(format!("{path}: number is below minimum"));
+        }
+        if object
+            .get("maximum")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|maximum| number > maximum)
+        {
+            return Err(format!("{path}: number is above maximum"));
+        }
+    }
+
+    if let Some(items) = value.as_array() {
+        let length = items.len() as u64;
+        if object
+            .get("minItems")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|minimum| length < minimum)
+        {
+            return Err(format!("{path}: array has fewer than minItems"));
+        }
+        if object
+            .get("maxItems")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|maximum| length > maximum)
+        {
+            return Err(format!("{path}: array has more than maxItems"));
+        }
+        if object
+            .get("uniqueItems")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            let mut unique = HashSet::with_capacity(items.len());
+            for item in items {
+                let encoded = serde_json::to_string(item)
+                    .map_err(|error| format!("{path}: cannot compare unique items: {error}"))?;
+                if !unique.insert(encoded) {
+                    return Err(format!("{path}: array items are not unique"));
+                }
+            }
+        }
+        if let Some(item_schema) = object.get("items") {
+            for (index, item) in items.iter().enumerate() {
+                validate_terminal_result_schema_at(item_schema, item, &format!("{path}[{index}]"))?;
+            }
+        }
+    }
+
+    if let Some(instance) = value.as_object() {
+        let properties = object
+            .get("properties")
+            .and_then(serde_json::Value::as_object);
+        if let Some(required) = object.get("required") {
+            let required = required
+                .as_array()
+                .ok_or_else(|| format!("{path}: schema required must be an array"))?;
+            for field in required {
+                let field = field
+                    .as_str()
+                    .ok_or_else(|| format!("{path}: schema required entries must be strings"))?;
+                if !instance.contains_key(field) {
+                    return Err(format!("{path}: missing required property `{field}`"));
+                }
+            }
+        }
+        if let Some(properties) = properties {
+            for (field, field_schema) in properties {
+                if let Some(field_value) = instance.get(field) {
+                    validate_terminal_result_schema_at(
+                        field_schema,
+                        field_value,
+                        &format!("{path}.{field}"),
+                    )?;
+                }
+            }
+        }
+        for (field, field_value) in instance {
+            if properties.is_some_and(|properties| properties.contains_key(field)) {
+                continue;
+            }
+            match object.get("additionalProperties") {
+                Some(serde_json::Value::Bool(false)) => {
+                    return Err(format!(
+                        "{path}: additional property `{field}` is forbidden"
+                    ));
+                }
+                Some(schema @ serde_json::Value::Object(_)) => {
+                    validate_terminal_result_schema_at(
+                        schema,
+                        field_value,
+                        &format!("{path}.{field}"),
+                    )?;
+                }
+                Some(serde_json::Value::Bool(true)) | None => {}
+                Some(_) => {
+                    return Err(format!(
+                        "{path}: schema additionalProperties must be boolean or object"
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_terminal_result_schema(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    validate_terminal_result_schema_at(schema, value, "$result")
+}
+
+fn terminal_result_validation_failure(
+    schema: &serde_json::Value,
+    args: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let result = match args.get("result") {
+        Some(result) => result,
+        None => {
+            return Some(serde_json::json!({
+                "status": "invalid_result",
+                "code": "SUBMIT_RESULT_SCHEMA_INVALID",
+                "error": "$result: missing submit_result.result",
+                "instruction": "Correct the result to match the exact host schema, then call submit_result again in this same WorkerRun.",
+            }));
+        }
+    };
+    if let Err(error) = validate_terminal_result_schema(schema, result) {
+        return Some(serde_json::json!({
+            "status": "invalid_result",
+            "code": "SUBMIT_RESULT_SCHEMA_INVALID",
+            "error": error,
+            "instruction": "Correct the result to match the exact host schema, then call submit_result again in this same WorkerRun.",
+        }));
+    }
+    None
+}
+
+fn terminal_contract_validation_failure(
+    contract: &crate::executor_types::BoundTerminalExecutionContract,
+    args: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if let Some(failure) = terminal_result_validation_failure(&contract.result_schema, args) {
+        return Some(failure);
+    }
+    let result = args
+        .get("result")
+        .expect("schema validation accepted only an existing result");
+    contract
+        .result_validator
+        .as_ref()
+        .and_then(|validator| validator.validate(result).err())
+        .map(|error| {
+            serde_json::json!({
+                "status": "invalid_result",
+                "code": "SUBMIT_RESULT_CONTRACT_INVALID",
+                "contract_code": error.code(),
+                "error": "The result violates the exact host semantic contract.",
+                "instruction": error.instruction(),
+            })
+        })
+}
+
+/// Preserve the typed Stage Team child output across the generic sub-agent
+/// barrier. Generic sub-agents still submit a string; durable stage children
+/// submit an object that must reach the scheduler as one pure JSON object.
 fn submit_result_barrier_response(args: &serde_json::Value) -> String {
     match args.get("result") {
         Some(serde_json::Value::String(result)) if !result.is_empty() => result.clone(),
@@ -2341,6 +2660,53 @@ fn submit_result_barrier_response(args: &serde_json::Value) -> String {
             .unwrap_or("")
             .to_string(),
     }
+}
+
+fn submit_result_request_event(
+    agent_id: &str,
+    args: &serde_json::Value,
+    request_id: &str,
+    parent_request_id: &str,
+) -> AiEvent {
+    AiEvent::SubAgentToolRequest {
+        agent_id: agent_id.to_string(),
+        tool_name: BARRIER_TOOL_NAME.to_string(),
+        args: args.clone(),
+        request_id: request_id.to_string(),
+        parent_request_id: parent_request_id.to_string(),
+    }
+}
+
+fn submit_result_result_event(
+    agent_id: &str,
+    request_id: &str,
+    parent_request_id: &str,
+    success: bool,
+    result: serde_json::Value,
+) -> AiEvent {
+    AiEvent::SubAgentToolResult {
+        agent_id: agent_id.to_string(),
+        tool_name: BARRIER_TOOL_NAME.to_string(),
+        success,
+        result,
+        request_id: request_id.to_string(),
+        parent_request_id: parent_request_id.to_string(),
+    }
+}
+
+#[cfg(test)]
+fn submit_result_events(
+    agent_id: &str,
+    args: &serde_json::Value,
+    request_id: &str,
+    parent_request_id: &str,
+    success: bool,
+    result: serde_json::Value,
+) -> (AiEvent, AiEvent) {
+    (
+        submit_result_request_event(agent_id, args, request_id, parent_request_id),
+        submit_result_result_event(agent_id, request_id, parent_request_id, success, result),
+    )
 }
 
 /// Dispatch and execute a batch of tool calls from a sub-agent iteration.
@@ -2397,6 +2763,153 @@ async fn finish_bound_worker_tool(
         .await
         .inspect_err(|_error| {
             bound.mark_lease_lost();
+        })
+}
+
+fn bound_worker_nested_delegation_lifecycle(
+    bound: Option<&BoundWorkerChainContext>,
+) -> anyhow::Result<Option<Arc<dyn BoundWorkerNestedDelegationLifecycle>>> {
+    let Some(bound) = bound else {
+        return Ok(None);
+    };
+    if bound.lease_is_lost() {
+        anyhow::bail!("worker lease was lost before nested delegation")
+    }
+    let lifecycle = bound.tool_lifecycle.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "nested delegation is disabled for a prebound V2 stage worker; no host lifecycle is bound"
+        )
+    })?;
+    lifecycle.nested_delegation_lifecycle().map(Some).ok_or_else(|| {
+        anyhow::anyhow!(
+            "nested delegation is disabled for a prebound V2 stage worker; no host-owned nested lifecycle capability is bound"
+        )
+    })
+}
+
+fn bound_worker_nested_delegation_blocked_result(error: &anyhow::Error) -> serde_json::Value {
+    serde_json::json!({
+        "success": false,
+        "error": error.to_string(),
+        "code": BOUND_WORKER_NESTED_DELEGATION_BLOCKED_CODE,
+    })
+}
+
+fn validate_nested_child_binding(
+    parent: &BoundWorkerChainContext,
+    delegate_id: &str,
+    begun: &BegunBoundWorkerNestedDelegation,
+) -> anyhow::Result<()> {
+    let child = &begun.child_bound;
+    anyhow::ensure!(
+        child.operation_id == parent.operation_id
+            && child.stage_execution_id == parent.stage_execution_id
+            && child.organization_id == parent.organization_id
+            && child.session_id == parent.session_id,
+        "host nested delegation returned a child outside the trusted parent scope"
+    );
+    anyhow::ensure!(
+        child.agent_type == delegate_id,
+        "host nested delegation returned agent type '{}' for delegate '{}'",
+        child.agent_type,
+        delegate_id
+    );
+    anyhow::ensure!(
+        child.worker_lease.worker_run_id != parent.worker_lease.worker_run_id,
+        "host nested delegation reused the parent worker_run_id"
+    );
+    anyhow::ensure!(
+        child.worker_lease.lease_token != parent.worker_lease.lease_token,
+        "host nested delegation reused the parent worker lease token"
+    );
+    anyhow::ensure!(
+        child.chain_id != parent.chain_id,
+        "host nested delegation reused the parent message chain"
+    );
+    anyhow::ensure!(
+        !Arc::ptr_eq(&child.checkpoint_version, &parent.checkpoint_version)
+            && !Arc::ptr_eq(&child.checkpoint_body, &parent.checkpoint_body)
+            && !Arc::ptr_eq(&child.lease_lost, &parent.lease_lost)
+            && !Arc::ptr_eq(&child.mutation_lock, &parent.mutation_lock),
+        "host nested delegation reused parent lease/checkpoint synchronization state"
+    );
+    anyhow::ensure!(
+        !child.lease_is_lost(),
+        "host nested delegation returned an already-lost child lease"
+    );
+    anyhow::ensure!(
+        !begun.dispatch_token.0.trim().is_empty(),
+        "host nested delegation returned an empty dispatch token"
+    );
+    Ok(())
+}
+
+async fn begin_bound_worker_nested_delegation(
+    lifecycle: Arc<dyn BoundWorkerNestedDelegationLifecycle>,
+    parent: &BoundWorkerChainContext,
+    delegate_id: &str,
+    nested_tool_request_id: &str,
+    args: &serde_json::Value,
+) -> anyhow::Result<BegunBoundWorkerNestedDelegation> {
+    let begun = lifecycle
+        .begin(parent, delegate_id, nested_tool_request_id, args)
+        .await?;
+    if let Err(validation_error) = validate_nested_child_binding(parent, delegate_id, &begun) {
+        parent.mark_lease_lost();
+        begun.child_bound.mark_lease_lost();
+        let completion = nested_delegation_completion(serde_json::json!({
+            "success": false,
+            "error": validation_error.to_string(),
+            "code": "BOUND_WORKER_NESTED_DELEGATION_INVALID_CHILD_BINDING",
+        }));
+        lifecycle
+            .finish(&begun.dispatch_token, &completion)
+            .await
+            .map_err(|finish_error| {
+                anyhow::anyhow!(
+                    "{validation_error}; failed to close invalid nested dispatch: {finish_error}"
+                )
+            })?;
+        return Err(validation_error);
+    }
+    Ok(begun)
+}
+
+fn nested_delegation_completion(
+    outcome: serde_json::Value,
+) -> BoundWorkerNestedDelegationCompletion {
+    let success = outcome
+        .get("success")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let serialized = serde_json::to_vec(&outcome)
+        .expect("serde_json::Value serialization is infallible for nested outcomes");
+    let result_sha256 = format!(
+        "sha256:{}",
+        Sha256::digest(serialized)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    BoundWorkerNestedDelegationCompletion {
+        success,
+        result_sha256,
+        outcome,
+    }
+}
+
+async fn finish_bound_worker_nested_delegation(
+    lifecycle: &Arc<dyn BoundWorkerNestedDelegationLifecycle>,
+    parent: &BoundWorkerChainContext,
+    begun: &BegunBoundWorkerNestedDelegation,
+    completion: &BoundWorkerNestedDelegationCompletion,
+) -> anyhow::Result<()> {
+    lifecycle
+        .finish(&begun.dispatch_token, completion)
+        .await
+        .inspect_err(|_error| {
+            parent.mark_lease_lost();
+            begun.child_bound.mark_lease_lost();
         })
 }
 
@@ -2530,41 +3043,143 @@ where
 
         // ── Barrier tool ────────────────────────────────────────────────
         if tool_name == BARRIER_TOOL_NAME {
-            if let Some(result_value) = stage_team_controller_submit_result_rejection(
+            let args = &tool_call.function.arguments;
+            let request_event =
+                submit_result_request_event(agent_id, args, &tool_call.id, parent_request_id);
+            let _ = ctx.event_tx.send(request_event.clone());
+            if let Some(ref writer) = transcript_writer {
+                if let Err(e) = writer.append(&request_event).await {
+                    tracing::warn!("Failed to write barrier request to transcript: {}", e);
+                }
+            }
+
+            let lifecycle_record_id = match begin_bound_worker_tool(
+                ctx.bound_worker_chain.as_ref(),
+                bound_worker_lifecycle_request_id(&tool_call.id),
+                BARRIER_TOOL_NAME,
+                args,
+            )
+            .await
+            {
+                Ok(record_id) => record_id,
+                Err(error) => {
+                    let result_value = serde_json::json!({
+                        "code": "WORKER_TOOL_FENCE_BEGIN_FAILED",
+                        "error": format!("submit_result dispatch fence failed: {error}"),
+                    });
+                    let result_event = submit_result_result_event(
+                        agent_id,
+                        &tool_call.id,
+                        parent_request_id,
+                        false,
+                        result_value.clone(),
+                    );
+                    let _ = ctx.event_tx.send(result_event.clone());
+                    if let Some(ref writer) = transcript_writer {
+                        if let Err(error) = writer.append(&result_event).await {
+                            tracing::warn!(
+                                "Failed to write fenced barrier result to transcript: {}",
+                                error
+                            );
+                        }
+                    }
+                    tool_results.push(tool_result_for_history(&tool_call, result_value));
+                    last_activity.store(epoch_secs(), Ordering::Relaxed);
+                    continue;
+                }
+            };
+
+            if let Some(contract) = ctx
+                .bound_worker_chain
+                .as_ref()
+                .and_then(|bound| bound.terminal_execution.as_ref())
+            {
+                if let Some(mut result_value) = terminal_contract_validation_failure(contract, args)
+                {
+                    if let Err(error) = finish_bound_worker_tool(
+                        ctx.bound_worker_chain.as_ref(),
+                        lifecycle_record_id,
+                        false,
+                        &result_value,
+                    )
+                    .await
+                    {
+                        result_value = serde_json::json!({
+                            "code": "WORKER_TOOL_FENCE_FINISH_FAILED",
+                            "error": format!("invalid submit_result landing fence failed: {error}"),
+                            "stale_result_rejected": true,
+                        });
+                    }
+                    let result_event = submit_result_result_event(
+                        agent_id,
+                        &tool_call.id,
+                        parent_request_id,
+                        false,
+                        result_value.clone(),
+                    );
+                    let _ = ctx.event_tx.send(result_event.clone());
+                    if let Some(ref writer) = transcript_writer {
+                        if let Err(error) = writer.append(&result_event).await {
+                            tracing::warn!(
+                                "Failed to write invalid barrier result to transcript: {}",
+                                error
+                            );
+                        }
+                    }
+                    tool_results.push(tool_result_for_history(&tool_call, result_value));
+                    last_activity.store(epoch_secs(), Ordering::Relaxed);
+                    continue;
+                }
+            }
+
+            if let Some(mut result_value) = stage_team_controller_submit_result_rejection(
                 ctx.bound_worker_chain
                     .as_ref()
                     .is_some_and(|bound| bound.stage_team_leader.is_some()),
+                ctx.bound_worker_chain
+                    .as_ref()
+                    .and_then(|bound| bound.stage_team_leader.as_ref())
+                    .is_some_and(|leader| leader.planning_only),
             ) {
                 tracing::warn!(
                     target: "harness::stage_team_controller",
                     agent_id = %agent_id,
                     "rejected generic submit_result barrier from an active Company Controller"
                 );
-                let result_event = AiEvent::SubAgentToolResult {
-                    agent_id: agent_id.to_string(),
-                    tool_name: BARRIER_TOOL_NAME.to_string(),
-                    success: false,
-                    result: result_value.clone(),
-                    request_id: tool_call.id.clone(),
-                    parent_request_id: parent_request_id.to_string(),
-                };
+                if let Err(error) = finish_bound_worker_tool(
+                    ctx.bound_worker_chain.as_ref(),
+                    lifecycle_record_id,
+                    false,
+                    &result_value,
+                )
+                .await
+                {
+                    result_value = serde_json::json!({
+                        "code": "WORKER_TOOL_FENCE_FINISH_FAILED",
+                        "error": format!("rejected submit_result landing fence failed: {error}"),
+                        "stale_result_rejected": true,
+                    });
+                }
+                let result_event = submit_result_result_event(
+                    agent_id,
+                    &tool_call.id,
+                    parent_request_id,
+                    false,
+                    result_value.clone(),
+                );
                 let _ = ctx.event_tx.send(result_event.clone());
                 if let Some(ref writer) = transcript_writer {
-                    let writer = Arc::clone(writer);
-                    tokio::spawn(async move {
-                        if let Err(e) = writer.append(&result_event).await {
-                            tracing::warn!(
-                                "Failed to write rejected Controller barrier to transcript: {}",
-                                e
-                            );
-                        }
-                    });
+                    if let Err(e) = writer.append(&result_event).await {
+                        tracing::warn!(
+                            "Failed to write rejected Controller barrier to transcript: {}",
+                            e
+                        );
+                    }
                 }
                 tool_results.push(tool_result_for_history(&tool_call, result_value));
                 last_activity.store(epoch_secs(), Ordering::Relaxed);
                 continue;
             }
-            let args = &tool_call.function.arguments;
             let result_text = submit_result_barrier_response(args);
             let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -2575,29 +3190,59 @@ where
                 result_text.len()
             );
 
-            barrier_response = Some(if result_text.is_empty() {
+            let submitted_response = if result_text.is_empty() {
                 summary.to_string()
             } else {
                 result_text
-            });
-
-            let result_value = serde_json::json!({ "status": "result submitted" });
-            let result_event = AiEvent::SubAgentToolResult {
-                agent_id: agent_id.to_string(),
-                tool_name: BARRIER_TOOL_NAME.to_string(),
-                success: true,
-                result: result_value.clone(),
-                request_id: tool_call.id.clone(),
-                parent_request_id: parent_request_id.to_string(),
             };
+
+            let mut result_value = serde_json::json!({ "status": "result submitted" });
+            if let Err(error) = finish_bound_worker_tool(
+                ctx.bound_worker_chain.as_ref(),
+                lifecycle_record_id,
+                true,
+                &result_value,
+            )
+            .await
+            {
+                result_value = serde_json::json!({
+                    "code": "WORKER_TOOL_FENCE_FINISH_FAILED",
+                    "error": format!("submit_result landing fence failed: {error}"),
+                    "stale_result_rejected": true,
+                });
+                let result_event = submit_result_result_event(
+                    agent_id,
+                    &tool_call.id,
+                    parent_request_id,
+                    false,
+                    result_value.clone(),
+                );
+                let _ = ctx.event_tx.send(result_event.clone());
+                if let Some(ref writer) = transcript_writer {
+                    if let Err(error) = writer.append(&result_event).await {
+                        tracing::warn!(
+                            "Failed to write stale barrier result to transcript: {}",
+                            error
+                        );
+                    }
+                }
+                tool_results.push(tool_result_for_history(&tool_call, result_value));
+                last_activity.store(epoch_secs(), Ordering::Relaxed);
+                continue;
+            }
+            barrier_response = Some(submitted_response);
+            let result_event = submit_result_result_event(
+                agent_id,
+                &tool_call.id,
+                parent_request_id,
+                true,
+                result_value.clone(),
+            );
             let _ = ctx.event_tx.send(result_event.clone());
             if let Some(ref writer) = transcript_writer {
-                let writer = Arc::clone(writer);
-                tokio::spawn(async move {
-                    if let Err(e) = writer.append(&result_event).await {
-                        tracing::warn!("Failed to write barrier result to transcript: {}", e);
-                    }
-                });
+                if let Err(e) = writer.append(&result_event).await {
+                    tracing::warn!("Failed to write barrier result to transcript: {}", e);
+                }
             }
             tool_results.push(tool_result_for_history(&tool_call, result_value));
 
@@ -2643,69 +3288,130 @@ where
                 });
             }
 
-            let delegate_result = if ctx.bound_worker_chain.is_some() {
-                serde_json::json!({
-                    "success": false,
-                    "error": "nested delegation is disabled for a prebound V2 stage worker; the exact worker lease may have only one executor",
-                    "code": "BOUND_WORKER_NESTED_DELEGATION_BLOCKED",
-                })
+            let nested_lifecycle =
+                bound_worker_nested_delegation_lifecycle(ctx.bound_worker_chain.as_ref());
+            let delegate_result = if let Err(error) = nested_lifecycle.as_ref() {
+                bound_worker_nested_delegation_blocked_result(error)
             } else if let Some(registry) = ctx.sub_agent_registry {
                 let reg = registry.read().await;
                 if let Some(delegate_def) = reg.get(delegate_id) {
                     let delegate_def = delegate_def.clone();
                     drop(reg);
-                    let nested_ctx = SubAgentExecutorContext {
-                        event_tx: ctx.event_tx,
-                        tool_registry: ctx.tool_registry,
-                        workspace: ctx.workspace,
-                        provider_name: ctx.provider_name,
-                        model_name: ctx.model_name,
-                        resume: None,
-                        sub_tool_router: None,
-                        active_org_id_source: ctx.active_org_id_source.clone(),
-                        active_org_id_override: ctx.active_org_id_override,
-                        operation_id: ctx.operation_id,
-                        session_id: ctx.session_id,
-                        persistence_session_id: ctx.persistence_session_id,
-                        transcript_base_dir: ctx.transcript_base_dir,
-                        api_request_stats: ctx.api_request_stats,
-                        briefing: None,
-                        temperature_override: delegate_def.temperature,
-                        max_tokens_override: delegate_def.max_tokens,
-                        top_p_override: delegate_def.top_p,
-                        chain_persistence: ctx.chain_persistence,
-                        bound_worker_chain: ctx.bound_worker_chain.clone(),
-                        sub_agent_registry: ctx.sub_agent_registry,
-                        post_shell_hook: ctx.post_shell_hook.clone(),
-                        post_tool_result_hook: ctx.post_tool_result_hook.clone(),
-                        tool_observer: ctx.tool_observer.clone(),
-                        initial_submit_repair_mode: effective_submit_repair_mode.clone(),
-                        cancelled: ctx.cancelled,
-                        // Propagate the stage boundary to nested sub-agents so a
-                        // deeper delegate can't bypass the stage's forbidden tools.
-                        stage_tool_guard: ctx.stage_tool_guard.clone(),
-                        // Same for the D1 tool-list filter (hide scan tools).
-                        hide_tool_in_stage: ctx.hide_tool_in_stage.clone(),
-                    };
-                    match Box::pin(super::execute_sub_agent(
-                        &delegate_def,
-                        &nested_args,
-                        sub_context,
-                        model,
-                        nested_ctx,
-                        tool_provider,
-                        &nested_request_id,
-                    ))
-                    .await
-                    {
-                        Ok(result) => serde_json::json!({
-                            "success": result.success,
-                            "response": result.response,
-                        }),
-                        Err(e) => serde_json::json!({
+                    let preparation = match (
+                        nested_lifecycle.as_ref().expect("checked above").as_ref(),
+                        ctx.bound_worker_chain.as_ref(),
+                    ) {
+                        (Some(lifecycle), Some(parent)) => {
+                            match begin_bound_worker_nested_delegation(
+                                Arc::clone(lifecycle),
+                                parent,
+                                delegate_id,
+                                &nested_request_id,
+                                &nested_args,
+                            )
+                            .await
+                            {
+                                Ok(begun) => Ok((
+                                    Some(begun.child_bound.clone()),
+                                    Some((Arc::clone(lifecycle), begun)),
+                                )),
+                                Err(error) => Err(serde_json::json!({
+                                    "success": false,
+                                    "error": error.to_string(),
+                                    "code": "BOUND_WORKER_NESTED_DELEGATION_BEGIN_FAILED",
+                                })),
+                            }
+                        }
+                        (None, None) => Ok((None, None)),
+                        _ => Err(serde_json::json!({
                             "success": false,
-                            "error": e.to_string(),
-                        }),
+                            "error": "nested delegation lifecycle/binding invariant failed",
+                            "code": "BOUND_WORKER_NESTED_DELEGATION_BLOCKED",
+                        })),
+                    };
+
+                    match preparation {
+                        Err(error_result) => error_result,
+                        Ok((child_bound, begun_dispatch)) => {
+                            let nested_ctx = SubAgentExecutorContext {
+                                event_tx: ctx.event_tx,
+                                tool_registry: ctx.tool_registry,
+                                workspace: ctx.workspace,
+                                provider_name: ctx.provider_name,
+                                model_name: ctx.model_name,
+                                resume: None,
+                                sub_tool_router: None,
+                                active_org_id_source: ctx.active_org_id_source.clone(),
+                                active_org_id_override: ctx.active_org_id_override,
+                                operation_id: ctx.operation_id,
+                                session_id: ctx.session_id,
+                                persistence_session_id: ctx.persistence_session_id,
+                                transcript_base_dir: ctx.transcript_base_dir,
+                                api_request_stats: ctx.api_request_stats,
+                                briefing: None,
+                                temperature_override: delegate_def.temperature,
+                                max_tokens_override: delegate_def.max_tokens,
+                                top_p_override: delegate_def.top_p,
+                                chain_persistence: ctx.chain_persistence,
+                                bound_worker_chain: child_bound,
+                                sub_agent_registry: ctx.sub_agent_registry,
+                                post_shell_hook: ctx.post_shell_hook.clone(),
+                                post_tool_result_hook: ctx.post_tool_result_hook.clone(),
+                                tool_observer: ctx.tool_observer.clone(),
+                                initial_submit_repair_mode: effective_submit_repair_mode.clone(),
+                                cancelled: ctx.cancelled,
+                                // Propagate the stage boundary to nested sub-agents so a
+                                // deeper delegate can't bypass the stage's forbidden tools.
+                                stage_tool_guard: ctx.stage_tool_guard.clone(),
+                                // Same for the D1 tool-list filter (hide scan tools).
+                                hide_tool_in_stage: ctx.hide_tool_in_stage.clone(),
+                            };
+                            let raw_result = match Box::pin(super::execute_sub_agent(
+                                &delegate_def,
+                                &nested_args,
+                                sub_context,
+                                model,
+                                nested_ctx,
+                                tool_provider,
+                                &nested_request_id,
+                            ))
+                            .await
+                            {
+                                Ok(result) => serde_json::json!({
+                                    "success": result.success,
+                                    "response": result.response,
+                                }),
+                                Err(error) => serde_json::json!({
+                                    "success": false,
+                                    "error": error.to_string(),
+                                }),
+                            };
+
+                            if let Some((lifecycle, begun)) = begun_dispatch {
+                                let completion = nested_delegation_completion(raw_result);
+                                let parent = ctx
+                                    .bound_worker_chain
+                                    .as_ref()
+                                    .expect("begun dispatch requires a trusted parent binding");
+                                match finish_bound_worker_nested_delegation(
+                                    &lifecycle,
+                                    parent,
+                                    &begun,
+                                    &completion,
+                                )
+                                .await
+                                {
+                                    Ok(()) => completion.outcome,
+                                    Err(error) => serde_json::json!({
+                                        "success": false,
+                                        "error": error.to_string(),
+                                        "code": "BOUND_WORKER_NESTED_DELEGATION_FINISH_FAILED",
+                                    }),
+                                }
+                            } else {
+                                raw_result
+                            }
+                        }
                     }
                 } else {
                     serde_json::json!({
@@ -2841,6 +3547,7 @@ where
                 tool_name,
                 &tool_args,
             )
+            .instrument(tool_span.clone())
             .await
             {
                 Ok(record_id) => record_id,
@@ -2902,7 +3609,22 @@ where
                             false,
                         );
                     }
-                    if tool_name == "web_fetch" {
+                    if matches!(
+                        tool_name.as_str(),
+                        "intel_public_search" | "intel_public_fetch"
+                    ) {
+                        tool_provider
+                            .execute_intel_public_tool(tool_name, &tool_args)
+                            .await
+                            .unwrap_or_else(|| {
+                                (
+                                    serde_json::json!({
+                                        "error": "Intel public evidence adapter not configured"
+                                    }),
+                                    false,
+                                )
+                            })
+                    } else if tool_name == "web_fetch" {
                         tool_provider
                             .execute_web_fetch_tool(tool_name, &tool_args)
                             .await
@@ -3015,7 +3737,8 @@ where
                 } else {
                     Ok(tool_fut.await)
                 }
-            };
+            }
+            .instrument(tool_span.clone());
             tokio::pin!(tool_execution);
             tokio::select! {
                 _ = wait_for_cancelled(ctx.cancelled) => {
@@ -3066,45 +3789,82 @@ where
             }
         };
 
-        let lifecycle_landing_ok =
-            if ctx.bound_worker_chain.is_some() && lifecycle_record_id.is_none() {
-                false
-            } else if ctx.bound_worker_chain.is_some() {
-                match finish_bound_worker_tool(
-                    ctx.bound_worker_chain.as_ref(),
-                    lifecycle_record_id,
-                    success,
-                    &result_value,
-                )
-                .await
-                {
-                    Ok(()) => true,
-                    Err(error) => {
-                        result_value = serde_json::json!({
-                            "error": format!("worker tool result fence failed: {error}"),
-                            "code": "WORKER_TOOL_FENCE_FINISH_FAILED",
-                            "stale_result_rejected": true,
-                        });
-                        success = false;
-                        false
-                    }
-                }
-            } else {
-                ctx.bound_worker_chain.is_none()
-            };
-
-        if lifecycle_landing_ok {
+        // Result hooks that seal typed producer receipts must run while the
+        // exact worker ToolCall is still `received|running`. Rebind the same
+        // trusted context used for dispatch, let the hook transform the
+        // durable result, and only then finish the lifecycle with that result.
+        // A failed/missing begin fence remains fail-closed and never reaches
+        // the hook.
+        let hook_eligible = ctx.bound_worker_chain.is_none() || lifecycle_record_id.is_some();
+        if hook_eligible {
             if let Some(hook) = ctx.post_tool_result_hook.as_ref() {
                 let hook = Arc::clone(hook);
-                let (hooked_value, hooked_success) = hook(
-                    tool_name.to_string(),
-                    tool_args.clone(),
-                    result_value,
-                    success,
+                let hook_context = golish_core::AgentToolContext {
+                    request_id: request_id.clone(),
+                    tool_call_record_id: lifecycle_record_id,
+                    tool_name: tool_name.to_string(),
+                    source: ToolSource::SubAgent {
+                        agent_id: agent_id.to_string(),
+                        agent_name: agent_def.name.clone(),
+                    },
+                    operation_id: ctx
+                        .bound_worker_chain
+                        .as_ref()
+                        .map(|bound| bound.operation_id)
+                        .or(ctx.operation_id),
+                    stage_execution_id: ctx
+                        .bound_worker_chain
+                        .as_ref()
+                        .map(|bound| bound.stage_execution_id),
+                    stage_run_unit_id: ctx
+                        .bound_worker_chain
+                        .as_ref()
+                        .map(|bound| bound.worker_lease.stage_run_unit_id),
+                    organization_id: ctx
+                        .bound_worker_chain
+                        .as_ref()
+                        .map(|bound| bound.organization_id)
+                        .or(ctx.active_org_id_override),
+                    worker_lease: ctx
+                        .bound_worker_chain
+                        .as_ref()
+                        .map(|bound| bound.worker_lease.clone()),
+                    candidate_attempt: ctx
+                        .bound_worker_chain
+                        .as_ref()
+                        .and_then(|bound| bound.candidate_attempt.clone()),
+                };
+                let (hooked_value, hooked_success) = golish_core::with_agent_tool_context(
+                    Some(hook_context),
+                    hook(
+                        tool_name.to_string(),
+                        tool_args.clone(),
+                        result_value,
+                        success,
+                    ),
                 )
+                .instrument(tool_span.clone())
                 .await;
                 result_value = hooked_value;
                 success = hooked_success;
+            }
+        }
+
+        if ctx.bound_worker_chain.is_some() && lifecycle_record_id.is_some() {
+            if let Err(error) = finish_bound_worker_tool(
+                ctx.bound_worker_chain.as_ref(),
+                lifecycle_record_id,
+                success,
+                &result_value,
+            )
+            .await
+            {
+                result_value = serde_json::json!({
+                    "error": format!("worker tool result fence failed: {error}"),
+                    "code": "WORKER_TOOL_FENCE_FINISH_FAILED",
+                    "stale_result_rejected": true,
+                });
+                success = false;
             }
         }
 
@@ -3147,7 +3907,7 @@ where
                 result: result_value.clone(),
                 success,
             };
-            if let Some(note) = observer(observation).await {
+            if let Some(note) = observer(observation).instrument(tool_span.clone()).await {
                 model_visible_notes.push(note);
             }
         }
@@ -3194,6 +3954,20 @@ where
                     "trusted Company Controller control result returned to the outer scheduler"
                 );
             }
+        }
+        if let Some(response) = target_intel_reviewer_verdict_barrier_response(
+            agent_id,
+            tool_name,
+            &result_value,
+            success,
+        ) {
+            barrier_hit = true;
+            barrier_response = Some(response);
+            tracing::info!(
+                target: "harness::target_intel_review",
+                agent_id = %agent_id,
+                "durable Target Intel verdict ended the read-only reviewer loop"
+            );
         }
         if let Some(intent_id) = candidate_terminal_intent_persisted(tool_name, &result_value) {
             barrier_hit = true;
@@ -3419,17 +4193,20 @@ fn inject_harness_org_id_arg(
 mod tests {
     use super::{
         annotate_list_tools_with_guard, background_failure_runtime_correction,
-        begin_bound_worker_tool, bound_worker_lifecycle_request_id,
-        candidate_terminal_intent_persisted, execute_registry_tool_with_active_org,
+        begin_bound_worker_nested_delegation, begin_bound_worker_tool,
+        bound_worker_lifecycle_request_id, bound_worker_nested_delegation_blocked_result,
+        bound_worker_nested_delegation_lifecycle, candidate_terminal_intent_persisted,
+        execute_registry_tool_with_active_org, finish_bound_worker_nested_delegation,
         finish_bound_worker_tool, inject_harness_org_id_arg, model_visible_tool_result,
-        refine_eas_web_repair_mode_from_worklist, registry_tool_name, registry_tool_outcome,
-        stage_submission_barrier_response, stage_team_controller_submit_result_rejection,
-        stage_team_leader_router_barrier_response, structured_storage_hook_payload,
-        submit_coverage_gap_repair_mode_from_reasons, submit_needs_fix_runtime_correction,
-        submit_repair_mode_from_submit_result, submit_repair_update,
-        submit_repair_update_after_tool_result, submit_result_barrier_response,
+        nested_delegation_completion, refine_eas_web_repair_mode_from_worklist, registry_tool_name,
+        registry_tool_outcome, stage_submission_barrier_response,
+        stage_team_controller_submit_result_rejection, stage_team_leader_router_barrier_response,
+        structured_storage_hook_payload, submit_coverage_gap_repair_mode_from_reasons,
+        submit_needs_fix_runtime_correction, submit_repair_mode_from_submit_result,
+        submit_repair_update, submit_repair_update_after_tool_result,
+        submit_result_barrier_response, target_intel_reviewer_verdict_barrier_response,
         tool_result_for_history, update_submit_repair_mode_in_batch,
-        use_sub_agent_outer_tool_timeout, SubmitRepairModeUpdate,
+        use_sub_agent_outer_tool_timeout, SubmitRepairModeUpdate, BARRIER_TOOL_NAME,
         MAX_ROUTE_PROBE_MODEL_BATCH_BYTES, MAX_ROUTE_PROBE_MODEL_BATCH_TARGETS,
     };
 
@@ -3464,6 +4241,44 @@ mod tests {
     }
 
     #[test]
+    fn target_intel_durable_verdict_is_the_only_reviewer_barrier() {
+        let terminal = serde_json::json!({
+            "decision": "PASS",
+            "review_id": uuid::Uuid::new_v4(),
+            "terminal": true,
+            "verdict_sha256": format!("sha256:{}", "1".repeat(64)),
+        });
+        assert!(target_intel_reviewer_verdict_barrier_response(
+            "target_intel_reviewer",
+            crate::TARGET_INTEL_RECORD_REVIEW_VERDICT,
+            &terminal,
+            true,
+        )
+        .is_some());
+        assert!(target_intel_reviewer_verdict_barrier_response(
+            "target_intel_reviewer",
+            BARRIER_TOOL_NAME,
+            &terminal,
+            true,
+        )
+        .is_none());
+        assert!(target_intel_reviewer_verdict_barrier_response(
+            "target_intel_reviewer",
+            crate::TARGET_INTEL_RECORD_REVIEW_VERDICT,
+            &terminal,
+            false,
+        )
+        .is_none());
+        assert!(target_intel_reviewer_verdict_barrier_response(
+            "generic_intel_worker",
+            crate::TARGET_INTEL_RECORD_REVIEW_VERDICT,
+            &terminal,
+            true,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn bound_worker_lifecycle_uses_the_same_event_request_id_as_tool_context() {
         let provider_tool_id = "call_provider_submit_1";
         let event_request_id = "event-correlation-uuid";
@@ -3478,13 +4293,16 @@ mod tests {
         );
     }
     use crate::{
-        BoundWorkerChainContext, BoundWorkerToolLifecycle, StageTeamLeaderBinding, SubmitRepairKind,
+        BegunBoundWorkerNestedDelegation, BoundWorkerChainContext,
+        BoundWorkerNestedDelegationCompletion, BoundWorkerNestedDelegationLifecycle,
+        BoundWorkerNestedDispatchToken, BoundWorkerToolLifecycle, StageTeamLeaderBinding,
+        SubmitRepairKind,
     };
     use golish_core::Tool;
     use golish_tools::ToolRegistry;
     use rig::message::{ToolCall, ToolFunction, UserContent};
     use std::path::Path;
-    use std::sync::atomic::{AtomicBool, AtomicI64};
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
     use std::sync::{Arc, RwLock as StdRwLock};
     use tokio::sync::{mpsc, Mutex, RwLock};
     use uuid::Uuid;
@@ -3496,6 +4314,9 @@ mod tests {
             expected_dispatch_epoch: 3,
             expected_plan_row_version: 5,
             expected_work_item_row_version: 7,
+            controller_action_compiler: None,
+            compiled_actions: Vec::new(),
+            planning_only: false,
         }
     }
 
@@ -3592,6 +4413,88 @@ mod tests {
         }
     }
 
+    struct RecordingNestedLifecycle {
+        events: Arc<Mutex<Vec<String>>>,
+        finish_count: AtomicUsize,
+        completions: Arc<Mutex<Vec<BoundWorkerNestedDelegationCompletion>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BoundWorkerNestedDelegationLifecycle for RecordingNestedLifecycle {
+        async fn begin(
+            &self,
+            trusted_parent: &BoundWorkerChainContext,
+            delegate_id: &str,
+            nested_tool_request_id: &str,
+            args: &serde_json::Value,
+        ) -> anyhow::Result<BegunBoundWorkerNestedDelegation> {
+            self.events.lock().await.push(format!(
+                "begin:{delegate_id}:{nested_tool_request_id}:{}",
+                args["task"].as_str().unwrap_or_default()
+            ));
+            let mut child = trusted_parent.clone();
+            child.worker_lease.worker_run_id = Uuid::new_v4();
+            child.worker_lease.lease_token = Uuid::new_v4();
+            child.chain_id = Uuid::new_v4();
+            child.agent_type = delegate_id.to_string();
+            child.checkpoint_version = Arc::new(AtomicI64::new(0));
+            child.checkpoint_body = Arc::new(StdRwLock::new(serde_json::json!([])));
+            child.lease_lost = Arc::new(AtomicBool::new(false));
+            child.mutation_lock = Arc::new(tokio::sync::Mutex::new(()));
+            Ok(BegunBoundWorkerNestedDelegation {
+                child_bound: child,
+                dispatch_token: BoundWorkerNestedDispatchToken(format!(
+                    "dispatch:{nested_tool_request_id}"
+                )),
+            })
+        }
+
+        async fn finish(
+            &self,
+            dispatch_token: &BoundWorkerNestedDispatchToken,
+            completion: &BoundWorkerNestedDelegationCompletion,
+        ) -> anyhow::Result<()> {
+            self.finish_count.fetch_add(1, Ordering::SeqCst);
+            self.events
+                .lock()
+                .await
+                .push(format!("finish:{}", dispatch_token.0));
+            self.completions.lock().await.push(completion.clone());
+            Ok(())
+        }
+    }
+
+    struct NestedCapableWorkerLifecycle {
+        nested: Arc<RecordingNestedLifecycle>,
+    }
+
+    #[async_trait::async_trait]
+    impl BoundWorkerToolLifecycle for NestedCapableWorkerLifecycle {
+        async fn begin(
+            &self,
+            _request_id: &str,
+            _tool_name: &str,
+            _args: &serde_json::Value,
+        ) -> anyhow::Result<Uuid> {
+            Ok(Uuid::new_v4())
+        }
+
+        async fn finish(
+            &self,
+            _tool_call_record_id: Uuid,
+            _success: bool,
+            _result: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn nested_delegation_lifecycle(
+            &self,
+        ) -> Option<Arc<dyn BoundWorkerNestedDelegationLifecycle>> {
+            Some(self.nested.clone())
+        }
+    }
+
     fn bound_worker_with_lifecycle(
         lifecycle: Arc<dyn BoundWorkerToolLifecycle>,
     ) -> BoundWorkerChainContext {
@@ -3609,18 +4512,108 @@ mod tests {
             candidate_submit_only: false,
             return_on_first_durable_stage_submission: false,
             stage_team_leader: None,
+            target_intel_review: None,
+            stage_team_output_schema: None,
+            terminal_execution: None,
             chain_id: Uuid::new_v4(),
             session_id: Uuid::new_v4(),
             agent_type: "recon".to_string(),
             runtime_memory_source: None,
             initial_chain: serde_json::json!([]),
             initial_prompt_already_checkpointed: false,
+            reset_provider_history: false,
             checkpoint_version: Arc::new(AtomicI64::new(0)),
             checkpoint_body: Arc::new(StdRwLock::new(serde_json::json!([]))),
             lease_lost: Arc::new(AtomicBool::new(false)),
             mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
             tool_lifecycle: Some(lifecycle),
         }
+    }
+
+    #[test]
+    fn prebound_worker_without_explicit_nested_lifecycle_remains_blocked() {
+        let bound = bound_worker_with_lifecycle(Arc::new(FailingWorkerLifecycle {
+            fail_begin: false,
+            fail_finish: false,
+            record_id: Uuid::new_v4(),
+        }));
+
+        let error = match bound_worker_nested_delegation_lifecycle(Some(&bound)) {
+            Err(error) => error,
+            Ok(_) => panic!("ordinary prebound workers must not inherit their parent lease"),
+        };
+        assert!(error
+            .to_string()
+            .contains("no host-owned nested lifecycle capability"));
+        let blocked = bound_worker_nested_delegation_blocked_result(&error);
+        assert_eq!(blocked["code"], "BOUND_WORKER_NESTED_DELEGATION_BLOCKED");
+        assert_eq!(blocked["success"], false);
+    }
+
+    #[tokio::test]
+    async fn host_nested_lifecycle_binds_a_distinct_child_before_provider_and_finishes_once() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let completions = Arc::new(Mutex::new(Vec::new()));
+        let nested = Arc::new(RecordingNestedLifecycle {
+            events: Arc::clone(&events),
+            finish_count: AtomicUsize::new(0),
+            completions: Arc::clone(&completions),
+        });
+        let parent = bound_worker_with_lifecycle(Arc::new(NestedCapableWorkerLifecycle {
+            nested: Arc::clone(&nested),
+        }));
+        let lifecycle = bound_worker_nested_delegation_lifecycle(Some(&parent))
+            .expect("capability lookup succeeds")
+            .expect("host explicitly installed nested lifecycle");
+
+        let begun = begin_bound_worker_nested_delegation(
+            Arc::clone(&lifecycle),
+            &parent,
+            "researcher",
+            "tool-call-17",
+            &serde_json::json!({"task":"analyze exact candidate"}),
+        )
+        .await
+        .expect("durable child dispatch succeeds");
+        assert_ne!(
+            begun.child_bound.worker_lease.worker_run_id,
+            parent.worker_lease.worker_run_id
+        );
+        assert_ne!(
+            begun.child_bound.worker_lease.lease_token,
+            parent.worker_lease.lease_token
+        );
+        assert_ne!(begun.child_bound.chain_id, parent.chain_id);
+
+        // This marker stands in for the recursive provider boundary. Since the
+        // awaited begin helper returned first, the host dispatch is observably
+        // ordered before any nested model I/O.
+        events.lock().await.push("provider".to_string());
+        let completion = nested_delegation_completion(serde_json::json!({
+            "success": true,
+            "response": "bounded result"
+        }));
+        finish_bound_worker_nested_delegation(&lifecycle, &parent, &begun, &completion)
+            .await
+            .expect("terminal outcome lands");
+
+        assert_eq!(
+            events.lock().await.as_slice(),
+            [
+                "begin:researcher:tool-call-17:analyze exact candidate",
+                "provider",
+                "finish:dispatch:tool-call-17"
+            ]
+        );
+        assert_eq!(nested.finish_count.load(Ordering::SeqCst), 1);
+        let recorded = completions.lock().await;
+        assert_eq!(recorded.as_slice(), [completion]);
+        assert!(recorded[0].success);
+        assert_eq!(
+            recorded[0].result_sha256,
+            "sha256:b4c1e7daa9ff42cea6adf3eb7d4a8dffc8bb50922f559882c5584978ea5aa562"
+        );
+        assert_eq!(recorded[0].outcome["response"], "bounded result");
     }
 
     #[tokio::test]
@@ -6044,7 +7037,7 @@ mod tests {
 
     #[test]
     fn company_controller_submit_result_is_rejected_until_router_barrier() {
-        let rejected = stage_team_controller_submit_result_rejection(true)
+        let rejected = stage_team_controller_submit_result_rejection(true, false)
             .expect("an active Company Controller must not terminate through submit_result");
         assert_eq!(
             rejected.get("code").and_then(serde_json::Value::as_str),
@@ -6054,7 +7047,8 @@ mod tests {
             rejected.get("blocked_by_controller_router"),
             Some(&serde_json::Value::Bool(true))
         );
-        assert!(stage_team_controller_submit_result_rejection(false).is_none());
+        assert!(stage_team_controller_submit_result_rejection(false, false).is_none());
+        assert!(stage_team_controller_submit_result_rejection(true, true).is_none());
     }
 
     #[test]

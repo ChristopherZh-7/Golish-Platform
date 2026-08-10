@@ -38,14 +38,7 @@ pub fn classify_stage_asset(
 /// 这是回退基线，动态逻辑只在此之上"按资产类型裁剪"，绝不新增 stage 未声明的技术）。
 fn stage_baseline(stage: StageKind) -> Vec<&'static str> {
     match stage {
-        StageKind::TargetIntel => vec![
-            "GOLISH-INTEL-DNS",
-            "GOLISH-INTEL-WHOIS",
-            "GOLISH-INTEL-ASN",
-            "GOLISH-INTEL-CT",
-            "GOLISH-INTEL-SUBDOMAIN",
-            "GOLISH-INTEL-OSINT",
-        ],
+        StageKind::TargetIntel => vec![],
         StageKind::ExternalAttackSurface => vec![
             "GOLISH-EAS-LIVENESS",
             "GOLISH-EAS-PORT",
@@ -89,7 +82,8 @@ pub fn resolve_expected_techniques(stage: StageKind, assets: &[AssetClass]) -> V
 
 /// Host-aware coverage (design 2026-06-15 §3): whether `tech` (one of `stage`'s
 /// baseline techniques) applies to a single asset of `class`. Differentiates
-/// `TargetIntel` (2a), `ExternalAttackSurface` + `Enumeration` (2b); any other
+/// `ExternalAttackSurface` + `Enumeration`; Target Intel has no coverage
+/// technique matrix and therefore always returns false. Any other
 /// stage returns `true` (no-op). `Other` keeps every technique (fail-safe: an
 /// unclassified asset is never under-checked).
 pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> bool {
@@ -98,15 +92,7 @@ pub fn technique_applies(stage: StageKind, class: AssetClass, tech: &str) -> boo
         return true;
     }
     match stage {
-        StageKind::TargetIntel => match tech {
-            // Subdomain enumeration only makes sense for a domain.
-            "GOLISH-INTEL-SUBDOMAIN" => matches!(class, Domain),
-            // Forward DNS + cert transparency are domain/host concepts; a bare
-            // IP/CIDR has neither a self-keyed forward A record nor a CT log.
-            "GOLISH-INTEL-DNS" | "GOLISH-INTEL-CT" => matches!(class, Domain | Url),
-            // WHOIS / ASN / OSINT apply to every class (org/netblock-wide).
-            _ => true,
-        },
+        StageKind::TargetIntel => false,
         // Host-aware coverage 2b (design 2026-06-15 §3.2): EAS splits vhost
         // liveness from host/IP mapping. Domain/URL assets can prove LIVENESS,
         // but PORT / SERVICE-FINGERPRINT only apply to concrete IP/CIDR host
@@ -145,16 +131,6 @@ pub fn techniques_for(stage: StageKind, class: AssetClass) -> Vec<String> {
 
 /// Value-aware extension of [`technique_applies`]: whether `tech` applies to a
 /// specific in-scope `value` (not just its `class`).
-///
-/// TargetIntel SUBDOMAIN is a **registrable-apex** concern: you enumerate the
-/// subdomains of a root (`niuza.com`), not of a leaf subdomain (`s.niuza.com`).
-/// The passive-intel auto-landing registers every discovered subdomain as its own
-/// `scope='in'` target, and most of their roots are NOT in-scope, so
-/// `coverage_anchor_only` (which only collapses subdomains of an *in-scope* parent)
-/// cannot fold them — leaving one unsatisfiable SUBDOMAIN cell per leaf (the
-/// treadmill that pinned every engagement at its iteration cap → gate dead-loop).
-/// Exempting non-apex domains from SUBDOMAIN removes that per-leaf requirement;
-/// apex roots still require it. Only relaxes (never adds) a requirement.
 pub fn technique_applies_to_value(
     stage: StageKind,
     class: AssetClass,
@@ -162,13 +138,11 @@ pub fn technique_applies_to_value(
     tech: &str,
 ) -> bool {
     // A wildcard target is an authorization pattern, never an executable host.
-    // Target Intel nevertheless keeps one passive SUBDOMAIN responsibility so a
-    // failed/empty expansion remains distinguishable from "not applicable".
-    // Concrete children materialized as domain targets own every later stage.
     if wildcard_scope_pattern(value) {
         return match stage {
-            StageKind::TargetIntel => tech == "GOLISH-INTEL-SUBDOMAIN",
-            StageKind::ExternalAttackSurface | StageKind::Enumeration => false,
+            StageKind::TargetIntel | StageKind::ExternalAttackSurface | StageKind::Enumeration => {
+                false
+            }
             _ => technique_applies(stage, class, tech),
         };
     }
@@ -243,13 +217,12 @@ pub fn technique_applies_web_aware(
 ) -> bool {
     // The evidence-aware branches below intentionally bypass the static
     // technique matrix for WEB work, so repeat the value-level authorization
-    // guard before either special case. Target Intel keeps only its passive
-    // child-expansion responsibility; evidence can never turn a wildcard into a
-    // Web Origin or any Enumeration/EAS work item.
+    // guard before either special case.
     if wildcard_scope_pattern(value) {
         return match stage {
-            StageKind::TargetIntel => tech == "GOLISH-INTEL-SUBDOMAIN",
-            StageKind::ExternalAttackSurface | StageKind::Enumeration => false,
+            StageKind::TargetIntel | StageKind::ExternalAttackSurface | StageKind::Enumeration => {
+                false
+            }
             _ => technique_applies_to_value(stage, class, value, tech),
         };
     }
@@ -320,12 +293,9 @@ mod tests {
     use crate::harness::types::StageKind;
 
     #[test]
-    fn target_intel_returns_all_intel_techniques() {
-        // 任意资产类型，target_intel 都核全部 6 类被动情报技术。
+    fn target_intel_returns_no_legacy_coverage_techniques() {
         let t = resolve_expected_techniques(StageKind::TargetIntel, &[AssetClass::Domain]);
-        assert!(t.contains(&"GOLISH-INTEL-DNS".to_string()));
-        assert!(t.contains(&"GOLISH-INTEL-WHOIS".to_string()));
-        assert_eq!(t.len(), 6);
+        assert!(t.is_empty());
     }
 
     #[test]
@@ -383,7 +353,7 @@ mod tests {
             AssetClass::Ip
         );
         assert_eq!(AssetClass::from_value("https://a.com"), AssetClass::Url);
-        // host-aware: a url-wrapped IP drops the domain-only intel techniques.
+        // Target Intel uses IntelGoalV1 observations, not a coverage matrix.
         let t = techniques_for(
             StageKind::TargetIntel,
             AssetClass::from_value("http://124.196.77.48"),
@@ -443,126 +413,71 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_drops_domain_only_techniques_for_ip() {
-        let ip = techniques_for(StageKind::TargetIntel, AssetClass::Ip);
-        assert!(!ip.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
-        assert!(!ip.contains(&"GOLISH-INTEL-DNS".to_string()));
-        assert!(!ip.contains(&"GOLISH-INTEL-CT".to_string()));
-        assert!(ip.contains(&"GOLISH-INTEL-WHOIS".to_string()));
-        assert!(ip.contains(&"GOLISH-INTEL-ASN".to_string()));
-        assert!(ip.contains(&"GOLISH-INTEL-OSINT".to_string()));
-        // CIDR matches IP.
-        assert_eq!(
-            techniques_for(StageKind::TargetIntel, AssetClass::Cidr),
-            techniques_for(StageKind::TargetIntel, AssetClass::Ip)
-        );
-        // Domain keeps all 6.
-        assert_eq!(
-            techniques_for(StageKind::TargetIntel, AssetClass::Domain).len(),
-            6
-        );
-        // URL keeps host intel (DNS/CT) but not subdomain enumeration.
-        let url = techniques_for(StageKind::TargetIntel, AssetClass::Url);
-        assert!(!url.contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
-        assert!(url.contains(&"GOLISH-INTEL-DNS".to_string()));
-        assert!(url.contains(&"GOLISH-INTEL-CT".to_string()));
+    fn target_intel_has_no_coverage_matrix_for_any_asset_class() {
+        for class in [
+            AssetClass::Domain,
+            AssetClass::Ip,
+            AssetClass::Cidr,
+            AssetClass::Url,
+            AssetClass::Other,
+        ] {
+            assert!(techniques_for(StageKind::TargetIntel, class).is_empty());
+        }
     }
 
     #[test]
-    fn other_class_keeps_full_set_failsafe() {
-        assert_eq!(
-            techniques_for(StageKind::TargetIntel, AssetClass::Other).len(),
-            6
-        );
+    fn target_intel_technique_applicability_is_always_false() {
+        assert!(!technique_applies_to_value(
+            StageKind::TargetIntel,
+            AssetClass::Domain,
+            "moresec.cn",
+            "GOLISH-INTEL-DNS",
+        ));
     }
 
     #[test]
     fn is_registrable_apex_distinguishes_roots_from_leaves() {
-        assert!(is_registrable_apex("niuza.com"));
-        assert!(is_registrable_apex("pingan.com.cn"));
-        assert!(is_registrable_apex("www.niuza.com")); // shared domain helper still treats www as apex
-        assert!(!is_registrable_apex("s.niuza.com"));
-        assert!(!is_registrable_apex("icorepnbs.pingan-property.com.cn"));
-        assert!(!is_registrable_apex("a.b.pingan.com.cn"));
+        assert!(golish_pentest_domain::is_registrable_apex("niuza.com"));
+        assert!(golish_pentest_domain::is_registrable_apex("pingan.com.cn"));
+        assert!(golish_pentest_domain::is_registrable_apex("www.niuza.com"));
+        assert!(!golish_pentest_domain::is_registrable_apex("s.niuza.com"));
+        assert!(!golish_pentest_domain::is_registrable_apex(
+            "icorepnbs.pingan-property.com.cn"
+        ));
+        assert!(!golish_pentest_domain::is_registrable_apex(
+            "a.b.pingan.com.cn"
+        ));
     }
 
     #[test]
-    fn subdomain_required_only_on_registrable_apex() {
+    fn target_intel_never_creates_subdomain_coverage_cells() {
         use StageKind::TargetIntel as Ti;
-        // Apex roots still require subdomain enumeration …
-        assert!(technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
+        for value in [
             "niuza.com",
-            "GOLISH-INTEL-SUBDOMAIN"
-        ));
-        assert!(technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
             "pingan.com.cn",
-            "GOLISH-INTEL-SUBDOMAIN"
-        ));
-        // … leaf subdomains (passively discovered + landed in-scope) do NOT —
-        // killing the per-leaf SUBDOMAIN treadmill that dead-looped the gate.
-        assert!(!technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
             "s.niuza.com",
-            "GOLISH-INTEL-SUBDOMAIN"
-        ));
-        assert!(!technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
-            "icorepnbs.pingan-property.com.cn",
-            "GOLISH-INTEL-SUBDOMAIN"
-        ));
-        assert!(!technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
             "www.niuza.com",
-            "GOLISH-INTEL-SUBDOMAIN"
-        ));
-        assert!(!technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
-            "https://www.niuza.com/login",
-            "GOLISH-INTEL-SUBDOMAIN"
-        ));
-        // DNS/CT still apply to a leaf domain (only SUBDOMAIN is apex-scoped).
-        assert!(technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
-            "s.niuza.com",
-            "GOLISH-INTEL-DNS"
-        ));
-        assert!(technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
-            "s.niuza.com",
-            "GOLISH-INTEL-CT"
-        ));
-        // IP class never gets SUBDOMAIN regardless (delegates to technique_applies).
+            "*.moresec.cn",
+        ] {
+            assert!(!technique_applies_to_value(
+                Ti,
+                AssetClass::Domain,
+                value,
+                "GOLISH-INTEL-SUBDOMAIN"
+            ));
+        }
         assert!(!technique_applies_to_value(
             Ti,
             AssetClass::Ip,
             "1.2.3.4",
             "GOLISH-INTEL-SUBDOMAIN"
         ));
-        // WHOIS/ASN/OSINT apply to every asset including a leaf (org-level).
-        assert!(technique_applies_to_value(
-            Ti,
-            AssetClass::Domain,
-            "s.niuza.com",
-            "GOLISH-INTEL-WHOIS"
-        ));
     }
 
     #[test]
-    fn subdomain_required_on_cctld_second_level_apex() {
-        // ③ 修复回归：`.ne.jp`（日本组织类二级域）下的 apex 必须被要求做 SUBDOMAIN
-        // 枚举（旧表漏 "ne" 时它被误判成叶子 → 漏枚举该根域的子域）。其子域仍免。
+    fn cctld_apex_also_has_no_target_intel_coverage_cell() {
         use StageKind::TargetIntel as Ti;
-        assert!(technique_applies_to_value(
+        assert!(!technique_applies_to_value(
             Ti,
             AssetClass::Domain,
             "example.ne.jp",
@@ -693,7 +608,7 @@ mod tests {
                 "an exact IP Web Origin is intrinsically web-capable for {tech}"
             );
         }
-        assert!(technique_applies_web_aware(
+        assert!(!technique_applies_web_aware(
             StageKind::TargetIntel,
             AssetClass::Domain,
             "a.com",
@@ -703,20 +618,15 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_scope_pattern_only_owns_passive_intel_child_expansion() {
-        for technique in stage_baseline(StageKind::TargetIntel) {
-            assert_eq!(
-                technique_applies_web_aware(
-                    StageKind::TargetIntel,
-                    AssetClass::Other,
-                    "*.moresec.cn",
-                    technique,
-                    true,
-                ),
-                technique == "GOLISH-INTEL-SUBDOMAIN",
-                "wildcard Target Intel responsibility drifted for {technique}"
-            );
-        }
+    fn wildcard_scope_pattern_has_no_target_intel_coverage_work() {
+        assert!(stage_baseline(StageKind::TargetIntel).is_empty());
+        assert!(!technique_applies_web_aware(
+            StageKind::TargetIntel,
+            AssetClass::Other,
+            "*.moresec.cn",
+            "GOLISH-INTEL-SUBDOMAIN",
+            true,
+        ));
         for stage in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
             for technique in stage_baseline(stage) {
                 assert!(

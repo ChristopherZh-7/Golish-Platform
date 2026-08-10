@@ -8,7 +8,8 @@
 use crate::Result;
 use chrono::{DateTime, Utc};
 use golish_core::{
-    AttackExecutionContract, InvestigationContractVersion, InvestigationRolloutMode,
+    ApplicationModelContract, AttackExecutionContract, InvestigationContractVersion,
+    InvestigationRolloutMode, StageTopologyContract,
 };
 use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,11 @@ fn parse_attack_execution_contract(value: &str) -> Result<AttackExecutionContrac
             "unknown attack-execution contract: {other}"
         ))),
     }
+}
+
+fn parse_application_model_contract(value: &str) -> Result<ApplicationModelContract> {
+    ApplicationModelContract::try_from(value)
+        .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))
 }
 
 fn parse_tool_truth_contract(value: &str) -> Result<ToolTruthContract> {
@@ -365,11 +371,22 @@ pub struct OperationStateRow {
     /// Immutable Tool Truth execution/evidence contract selected at operation
     /// creation. Existing rows and the Plan A deployment default are legacy_v1.
     pub tool_truth_contract: String,
+    /// Immutable Application Understanding/Candidate topology. Historical
+    /// operations remain `legacy_no_model`.
+    pub application_model_contract: String,
     /// Immutable Candidate/Hypothesis Registry schema contract selected in the
     /// same transaction as the Tool Truth contract.
     pub investigation_contract_version: String,
     /// Immutable five-state rollout mode paired with the schema contract.
     pub investigation_rollout_mode: String,
+    /// Immutable operation graph selected from the server-owned Investigation
+    /// rollout pair. Existing rows are frozen to the historical graph.
+    pub stage_topology_contract: String,
+    /// Exact canonical material and domain-separated hash used by resume,
+    /// reporting, fork, and projection consumers.
+    pub stage_topology_canonical_json: String,
+    pub stage_topology_sha256: String,
+    pub stage_topology_freeze_source: String,
     /// Stable workspace identity for runtime-memory V2. Legacy rows remain
     /// nullable; every newly created runtime operation supplies this value.
     pub project_scope_id: Option<Uuid>,
@@ -402,25 +419,30 @@ pub struct OperationEpochRow {
 /// 创建一个新 operation_state 行 (新 operation 入口).
 const INSERT_OPERATION_SQL: &str = r#"INSERT INTO operation_state
         (operation_id, profile, current_stage, runtime_memory_contract,
-         attack_execution_contract, tool_truth_contract,
+         attack_execution_contract, application_model_contract, tool_truth_contract,
          investigation_contract_version, investigation_rollout_mode)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"#;
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#;
 
 #[cfg(test)]
 const OPERATION_STATE_ROW_COLUMNS: &str = r#"operation_id, profile, current_stage,
-    runtime_memory_contract, tool_truth_contract, investigation_contract_version,
-    investigation_rollout_mode, project_scope_id, stage_started_at,
+    runtime_memory_contract, tool_truth_contract, application_model_contract,
+    investigation_contract_version,
+    investigation_rollout_mode, stage_topology_contract,
+    stage_topology_canonical_json, stage_topology_sha256,
+    stage_topology_freeze_source, project_scope_id, stage_started_at,
     last_evidence_audit_id, last_classification_id, last_scope_version,
     state_blob, superseded_by, engagement_org_id"#;
 
 const INSERT_OPERATION_WITH_EXECUTOR_SQL: &str = r#"INSERT INTO operation_state
         (operation_id, profile, current_stage, runtime_memory_contract, project_scope_id,
-         attack_execution_contract, tool_truth_contract,
+         attack_execution_contract, application_model_contract, tool_truth_contract,
          investigation_contract_version, investigation_rollout_mode)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     RETURNING operation_id, profile, current_stage, runtime_memory_contract,
-              tool_truth_contract, investigation_contract_version,
-              investigation_rollout_mode, project_scope_id, stage_started_at, last_evidence_audit_id,
+              tool_truth_contract, application_model_contract, investigation_contract_version,
+              investigation_rollout_mode, stage_topology_contract,
+              stage_topology_canonical_json, stage_topology_sha256,
+              stage_topology_freeze_source, project_scope_id, stage_started_at, last_evidence_audit_id,
               last_classification_id, last_scope_version, state_blob,
               superseded_by, engagement_org_id"#;
 
@@ -430,6 +452,7 @@ pub async fn insert(
     profile: &str,
     current_stage: &str,
     runtime_memory_contract: &str,
+    application_model_contract: ApplicationModelContract,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
     let attack_rollout = attack_execution_rollout::get_for_share(&mut tx).await?;
@@ -444,9 +467,10 @@ pub async fn insert(
         .bind(current_stage)
         .bind(runtime_memory_contract)
         .bind(attack_contract.as_str())
-        .bind(joint_contract.tool_truth_contract.as_str())
-        .bind(joint_contract.investigation_contract_version.as_str())
-        .bind(joint_contract.investigation_rollout_mode.as_str())
+        .bind(application_model_contract.as_str())
+        .bind(joint_contract.tool_truth_contract().as_str())
+        .bind(joint_contract.investigation_contract_version().as_str())
+        .bind(joint_contract.investigation_rollout_mode().as_str())
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -465,6 +489,7 @@ pub async fn insert_with_executor<'e, E>(
     runtime_memory_contract: &str,
     project_scope_id: Uuid,
     attack_execution_contract: AttackExecutionContract,
+    application_model_contract: ApplicationModelContract,
     tool_truth_contract: ToolTruthContract,
     investigation_contract_version: InvestigationContractVersion,
     investigation_rollout_mode: InvestigationRolloutMode,
@@ -486,6 +511,7 @@ where
         .bind(runtime_memory_contract)
         .bind(project_scope_id)
         .bind(attack_execution_contract.as_str())
+        .bind(application_model_contract.as_str())
         .bind(tool_truth_contract.as_str())
         .bind(investigation_contract_version.as_str())
         .bind(investigation_rollout_mode.as_str())
@@ -498,8 +524,10 @@ where
 pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationStateRow>> {
     let row = sqlx::query_as::<_, OperationStateRow>(
         r#"SELECT operation_id, profile, current_stage, runtime_memory_contract,
-                  tool_truth_contract, investigation_contract_version,
-                  investigation_rollout_mode, project_scope_id, stage_started_at,
+                  tool_truth_contract, application_model_contract, investigation_contract_version,
+                  investigation_rollout_mode, stage_topology_contract,
+                  stage_topology_canonical_json, stage_topology_sha256,
+                  stage_topology_freeze_source, project_scope_id, stage_started_at,
                   last_evidence_audit_id, last_classification_id,
                   last_scope_version, state_blob, superseded_by, engagement_org_id
            FROM operation_state
@@ -508,6 +536,68 @@ pub async fn get(pool: &PgPool, operation_id: Uuid) -> Result<Option<OperationSt
     .bind(operation_id)
     .fetch_optional(pool)
     .await?;
+    Ok(row)
+}
+
+/// Read and strictly decode the immutable Application Model contract. Unknown
+/// persisted values fail closed rather than selecting a fallback topology.
+pub async fn get_application_model_contract(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> Result<Option<ApplicationModelContract>> {
+    let value: Option<String> = sqlx::query_scalar(
+        "SELECT application_model_contract FROM operation_state WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await?;
+    value
+        .map(|value| parse_application_model_contract(&value))
+        .transpose()
+}
+
+/// Strictly decoded operation-frozen graph material. Unknown values never
+/// fall back to legacy or the current deployment pair.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FrozenStageTopologyRow {
+    pub stage_topology_contract: String,
+    pub stage_topology_canonical_json: String,
+    pub stage_topology_sha256: String,
+    pub stage_topology_freeze_source: String,
+}
+
+impl FrozenStageTopologyRow {
+    pub fn topology(&self) -> Result<StageTopologyContract> {
+        let topology = StageTopologyContract::try_parse(&self.stage_topology_contract)
+            .map_err(|error| crate::DbError::Other(anyhow::Error::new(error)))?;
+        let material = topology.freeze_material();
+        if self.stage_topology_canonical_json != material.canonical_json
+            || self.stage_topology_sha256 != material.sha256
+        {
+            return Err(crate::DbError::Other(anyhow::anyhow!(
+                "stage topology canonical material mismatch"
+            )));
+        }
+        Ok(topology)
+    }
+}
+
+pub async fn get_stage_topology(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> Result<Option<FrozenStageTopologyRow>> {
+    let row = sqlx::query_as::<_, FrozenStageTopologyRow>(
+        r#"SELECT stage_topology_contract,stage_topology_canonical_json,
+                  stage_topology_sha256,stage_topology_freeze_source
+             FROM operation_state
+            WHERE operation_id=$1"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await?;
+    if let Some(row) = &row {
+        row.topology()?;
+    }
     Ok(row)
 }
 
@@ -525,6 +615,28 @@ pub async fn get_tool_truth_contract(
     value
         .map(|value| parse_tool_truth_contract(&value))
         .transpose()
+}
+
+/// Read the server-frozen Enumeration analyzer contract. Unknown values fail
+/// closed instead of silently selecting legacy or production behavior.
+pub async fn get_enumeration_analysis_contract(
+    pool: &PgPool,
+    operation_id: Uuid,
+) -> Result<Option<String>> {
+    let value: Option<String> = sqlx::query_scalar(
+        "SELECT enumeration_analysis_contract FROM operation_state WHERE operation_id=$1",
+    )
+    .bind(operation_id)
+    .fetch_optional(pool)
+    .await?;
+    match value.as_deref() {
+        None | Some("legacy_v1") | Some("agent_team_v2_shadow") | Some("agent_team_v2") => {
+            Ok(value)
+        }
+        Some(other) => Err(crate::DbError::Other(anyhow::anyhow!(
+            "unknown enumeration analysis contract: {other}"
+        ))),
+    }
 }
 
 /// Read and strictly decode the immutable Candidate execution contract without
@@ -795,8 +907,14 @@ mod tests {
             current_stage: "external_attack_surface".to_string(),
             runtime_memory_contract: "dual_write_legacy_read".to_string(),
             tool_truth_contract: "legacy_v1".to_string(),
+            application_model_contract: "legacy_no_model".to_string(),
             investigation_contract_version: "legacy_candidate_v1".to_string(),
             investigation_rollout_mode: "legacy_only".to_string(),
+            stage_topology_contract: "legacy_candidate_verification_v1".to_string(),
+            stage_topology_canonical_json: "{\"contract_version\":\"stage_topology.v1\"}"
+                .to_string(),
+            stage_topology_sha256: format!("sha256:{}", "0".repeat(64)),
+            stage_topology_freeze_source: "legacy_backfill_v1".to_string(),
             project_scope_id: Some(Uuid::new_v4()),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: Some(42),
@@ -812,6 +930,7 @@ mod tests {
         assert_eq!(row.current_stage, back.current_stage);
         assert_eq!(row.runtime_memory_contract, back.runtime_memory_contract);
         assert_eq!(row.tool_truth_contract, back.tool_truth_contract);
+        assert_eq!(row.stage_topology_contract, back.stage_topology_contract);
         assert_eq!(
             row.investigation_contract_version,
             back.investigation_contract_version

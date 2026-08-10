@@ -61,3 +61,8 @@
 ```bash
 cd backend && cargo nextest run -p golish-intel-providers
 ```
+
+## Target Intel semantic literal compilers（2026-08-02）
+
+- FOFA/Hunter/Shodan/Quake 暴露 `compile_semantic_query`，只把已 canonicalize 的单值放入 provider-owned fixed field/operator；它不接受完整 DSL，也不复用 legacy `render_query` 的 pass-through。
+- `escape_provider_literal` 统一转义引号、反斜杠和控制字符；production legacy query path 保持不变。

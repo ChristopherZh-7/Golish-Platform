@@ -42,24 +42,37 @@ impl PgChainPersistence {
 fn persistence_agent_type(agent_id: &str) -> anyhow::Result<AgentType> {
     match agent_id.trim() {
         "primary" => Ok(AgentType::Primary),
-        "coder" => Ok(AgentType::Coder),
         "searcher" => Ok(AgentType::Searcher),
-        "memorist" => Ok(AgentType::Memorist),
         "reporter" => Ok(AgentType::Reporter),
-        "adviser" => Ok(AgentType::Adviser),
         "reflector" => Ok(AgentType::Reflector),
-        "enricher" => Ok(AgentType::Enricher),
-        "installer" => Ok(AgentType::Installer),
         // Stage specialists are server-owned pentest workers even when their
-        // prompt-level ids are more specific than the persisted DB enum.
+        // prompt-level ids are more specific than the persisted DB enum. The
+        // dynamic Investigation roles stay in this same closed persistence
+        // family: their role-specific prompt/tool surface does not grant them
+        // a different durable WorkerRun authority.
         "pentester"
+        | "investigation"
+        | "researcher"
+        | "browser"
+        | "coder"
+        | "installer"
+        | "enricher"
+        | "memorist"
+        | "adviser"
         | "company_stage_controller"
         | "recon"
         | "prober"
         | "enumerator"
         | "vuln_scanner"
+        | "application_understanding"
+        | "application_understanding_shard_modeler"
+        | "application_understanding_company_synthesizer"
         | "attack_analyst"
-        | "candidate_verifier" => Ok(AgentType::Pentester),
+        | "candidate_verifier"
+        | "resolution_analyst"
+        | "target_intel_company_controller"
+        | "target_intel_generic_worker"
+        | "target_intel_reviewer" => Ok(AgentType::Pentester),
         other => anyhow::bail!("unsupported bound-worker persistence agent '{other}'"),
     }
 }
@@ -283,9 +296,24 @@ mod tests {
             "prober",
             "enumerator",
             "vuln_scanner",
+            "application_understanding",
+            "application_understanding_shard_modeler",
+            "application_understanding_company_synthesizer",
             "attack_analyst",
             "candidate_verifier",
+            "resolution_analyst",
+            "target_intel_company_controller",
+            "target_intel_generic_worker",
+            "target_intel_reviewer",
             "pentester",
+            "investigation",
+            "researcher",
+            "browser",
+            "coder",
+            "installer",
+            "enricher",
+            "memorist",
+            "adviser",
         ] {
             assert_eq!(
                 persistence_agent_type(specialist).expect("known specialist"),

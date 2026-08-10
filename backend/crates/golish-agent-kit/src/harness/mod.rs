@@ -34,6 +34,7 @@
 //! Phase 1c.3 + 1c.4 + 1c.5 在此基础上填实 IntentClassifier 词库 / SprintContract /
 //! gate check.
 
+pub mod application_model_gate;
 pub mod attack_execution;
 pub mod chain_wave;
 pub mod eval;
@@ -44,7 +45,11 @@ pub mod graph_engine;
 pub mod guardrail;
 pub mod handoff_catalog;
 pub mod hypothesis_registry;
+pub mod intel_goal_contract;
+pub mod intel_goal_finalizer;
+pub mod intel_goal_review;
 pub mod intent_classifier;
+pub mod investigation_tool_catalog;
 pub mod knowledge_context;
 pub mod nl_slice;
 pub mod operation_continuity;
@@ -66,6 +71,7 @@ pub mod stage_fanout;
 pub mod stage_harness;
 pub mod stage_runtime_contract;
 pub mod stage_spec;
+pub mod stage_topology_contract;
 pub mod stage_transition;
 pub mod surface_mapping;
 pub mod technique_resolver;
@@ -73,11 +79,18 @@ pub mod technique_taxonomy;
 pub mod tool_taxonomy;
 pub mod tool_truth;
 pub mod types;
+pub mod verification_campaign;
 pub mod wstg_mapping;
 
 #[cfg(test)]
 mod e2e_tests;
 
+pub use application_model_gate::{
+    validate_application_model_gate_truth, ApplicationModelAuthorityKind,
+    ApplicationModelGateBlock, ApplicationModelGateCode, ApplicationModelGateDisposition,
+    ApplicationModelGateSnapshot, ApplicationModelInputDecisionTruth,
+    ApplicationModelInputDisposition, ApplicationModelItemTruth, ApplicationModelTruthState,
+};
 pub use gate::context_builder::{GateContextBuilder, GateContextWithCanonicalSources};
 pub use gate::freshness_check::freshness_age_reasons;
 pub use gate::rule_engine::{EvidenceFact, EvidenceOutcome, GateContext, SourceQueryFact};
@@ -90,7 +103,31 @@ pub use handoff_catalog::{
     build_server_final_seal, CanonicalFactKey, CanonicalFactRef, HandoffCatalogError,
     ServerFinalSealInput, StageHandoffPayload, TypedHandoffClaim,
 };
+pub use intel_goal_contract::{
+    canonical_sha256 as intel_goal_canonical_sha256, IntelGoalCompletionAuthority,
+    IntelGoalContractError, IntelGoalOperationContract, IntelGoalRuntimeMode,
+    StageAgentExecutionProfile, StageAgentTerminalContract,
+};
+pub use intel_goal_finalizer::{
+    evaluate_intel_goal_finalizer, IntelGoalFinalizerDecision, IntelGoalFinalizerMaterial,
+};
+pub use intel_goal_review::{
+    IntelInheritedFindingDisposition, IntelInheritedFindingDispositionKind, IntelReviewBundle,
+    IntelReviewBundleIdentity, IntelReviewDecision, IntelReviewError, IntelReviewFinding,
+    IntelReviewFindingMateriality, IntelReviewReadCursor, IntelReviewSection,
+    IntelReviewSectionKind, IntelReviewVerdict,
+};
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
+pub use investigation_tool_catalog::{
+    admit_investigation_operator_tool, AdmittedInvestigationOperatorToolV1,
+    InvestigationOperatorToolCatalogV1, InvestigationOperatorToolProfileV1,
+    InvestigationToolAdmissionRejectionV1, InvestigationToolAdmissionRequestV1,
+    InvestigationToolAvailabilityV1, InvestigationToolCatalogError,
+    InvestigationToolContractStatusV1, InvestigationToolExecutionClassV1,
+    InvestigationToolTerminalTruthV1, InvestigationTypedAdapterRefV1,
+    INVESTIGATION_OPERATOR_TOOL_CATALOG_RESOURCE_V1, INVESTIGATION_OPERATOR_TOOL_CONTRACT_V1,
+    INVESTIGATION_TOOL_CONFIG_IDS,
+};
 pub use knowledge_context::{render_context_pack, ContextRenderError, RenderedContextData};
 pub use nl_slice::NlSlice;
 pub use operation_continuity::{
@@ -98,8 +135,8 @@ pub use operation_continuity::{
     StageReuseStatus, StageReuseSummary,
 };
 pub use operation_graph::{
-    base_operation_graph, load_operation_graph_from_json, AllowedDag, OperationGraph,
-    OperationGraphError, StageEdge,
+    base_operation_graph, load_operation_graph_from_json, operation_graph_for_topology, AllowedDag,
+    OperationGraph, OperationGraphError, StageEdge,
 };
 pub use org_gate::{evaluate_org_stage_gate, OrgVerdict};
 pub use phase::{load_phase_map_from_json, Phase, PhaseMap, PhaseMapError};
@@ -109,14 +146,16 @@ pub use phase_flow::{
 pub use pre_action_authorizer::{AuthorizationError, HarnessAuthz, PreActionAuthorizer};
 pub use profile::{
     load_profile_from_json, ApprovalPolicy, AuthorizationLevel, Profile, ProfileLoadError,
+    ProfileTopologyError,
 };
 pub use reporting_gate::{validate_reporting_gate_truth, ReportingGateBlock, ReportingGateTruth};
 pub use resources::{
+    investigation_tool_catalog_json, load_embedded_investigation_tool_catalog,
     load_embedded_phase_map, load_embedded_profile, load_embedded_sprint_skeleton,
     load_embedded_stage_spec, profile_json, sprint_skeleton_json, stage_methodology_md,
     stage_spec_json, EMBEDDED_PROFILE_IDS,
 };
-pub use slice::resolve_slice;
+pub use slice::{resolve_slice, resolve_slice_for_any_topology, resolve_slice_for_topology};
 pub use sprint_contract::{
     expected_techniques_for_target_types, DefaultSprintContractGenerator, ExpectedFinding,
     SprintContract, SprintContractGenerator, SprintSkeleton, StageSkeleton,
@@ -130,8 +169,12 @@ pub use stage_capability::{
 pub use stage_harness::StageHarness;
 pub use stage_runtime_contract::{RuntimeScopeSource, RuntimeUnitIdentity, StageRuntimeContract};
 pub use stage_spec::{
-    load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom, StageSpec,
-    StageSpecLoadError, StageTeamSchedulerPolicy,
+    load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom,
+    InvestigationOperatorToolCatalogRefV1, StageSpec, StageSpecLoadError, StageTeamSchedulerPolicy,
+};
+pub use stage_topology_contract::{
+    FrozenStageTopologyContractMaterial, StageTopologyContract, StageTopologyContractError,
+    StageTopologyFreezeSource,
 };
 pub use stage_transition::{
     decide_from_gate, decide_transition, stage_entry_requires_approval, TransitionDecision,
@@ -152,7 +195,7 @@ pub use types::{
     AgentContinuity, AttackCandidate, CandidateDisposition, CandidatePriority, CoverageCell,
     CoverageGapAction, CoverageStatus, ExternalAttackSurfaceDeliverable, FindingSeverity,
     HarnessFinding, HarnessRecoveryActions, HarnessStageHint, IntentAxis, RiskLevel,
-    SkippedCheckRecord, StageClaim, StageDeliverable, StageKind,
+    SkippedCheckRecord, StageClaim, StageDeliverable, StageKind, StageKindParseError,
 };
 
 /// Operation profile selection for stage_mode (Phase C).

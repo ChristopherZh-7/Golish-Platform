@@ -57,6 +57,7 @@ pub struct FreezeCandidateAnalysisSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateAnalysisSnapshotDispositionV1 {
     SealedReady,
+    SealedAnalysisReadyWithResiduals,
     BlockedAuthorityBundle,
 }
 
@@ -746,6 +747,7 @@ pub struct CandidateGenerationSealView {
     pub projection_outbox_batch_id: Uuid,
     pub projection_source_batch_seq: i64,
     pub projection_outbox_member_set_hash: String,
+    pub post_seal_route: String,
     pub replayed: bool,
 }
 

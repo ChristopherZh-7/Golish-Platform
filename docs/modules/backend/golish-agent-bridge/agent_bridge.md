@@ -75,3 +75,7 @@
 ```bash
 cd backend && cargo nextest run -p golish-agent-bridge agent_bridge
 ```
+
+## Target Intel fixture context boundary（2026-08-02）
+
+- production `prepare.rs` 显式把 `target_intel_goal_shadow` 与 `intel_public_adapter` 设为 `None`；只有 eval/fixture constructor可以注入，历史或当前 production operation不会被重新解释。

@@ -903,14 +903,14 @@ fn validate_authority(material: &FrozenCandidateGateMaterialV1) -> Result<(), Ca
         CandidateGateBlockKind::AuthorityBundle,
     )?;
     let roots = authority_roots_by_family(&authority.roots);
-    if roots.len() != ToolTruthRootFamilyV1::ALL.len()
-        || !ToolTruthRootFamilyV1::ALL
+    if roots.len() != ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len()
+        || !ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
             .iter()
             .all(|family| roots.contains_key(family))
     {
         return Err(CandidateGateBlock::new(
             CandidateGateBlockKind::AuthorityBundle,
-            "TI/EAS/Enum/Vuln exact root census is incomplete",
+            "EAS/Enum/Vuln execution-receipt root census is incomplete",
         ));
     }
     if canonical_members(

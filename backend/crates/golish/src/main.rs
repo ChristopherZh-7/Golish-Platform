@@ -83,6 +83,11 @@ fn main() {
         return;
     }
 
+    if args.plan_d_maintenance_target_rank.is_some() {
+        run_plan_d_maintenance(args);
+        return;
+    }
+
     // Determine if we should run in headless mode:
     // - Explicit --headless flag
     // - Or -e (execute) or -f (file) flags imply headless
@@ -132,6 +137,14 @@ fn run_stage_run(args: Args) {
             std::process::exit(1);
         }
         Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run_plan_d_maintenance(args: Args) {
+    let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    if let Err(error) = runtime.block_on(golish_lib::cli::run_plan_d_maintenance(args)) {
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
     }
 }
 

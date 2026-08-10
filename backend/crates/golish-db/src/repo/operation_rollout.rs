@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use golish_core::{InvestigationContractVersion, InvestigationRolloutMode};
+use golish_core::{InvestigationContractVersion, InvestigationRolloutMode, StageTopologyContract};
 use golish_pentest_domain::tool_truth::ToolTruthContract;
 use serde_json::{json, Value};
 use sqlx::{PgConnection, Postgres, Transaction};
@@ -34,16 +34,79 @@ impl OperationRolloutError {
 
 pub type OperationRolloutResult<T> = Result<T, OperationRolloutError>;
 
+/// The one server-owned evidence contract for each adjacent joint rollout edge.
+///
+/// This is intentionally not another authority policy.  Investigation writer,
+/// gate, comparison and legacy-projection behavior remains owned exclusively by
+/// [`InvestigationRolloutMode::policy`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperationPromotionCriteriaV1 {
+    ToolTruthShadowWriterReady,
+    ShadowEvaluatorReady,
+    ClosedShadowCohortExact,
+    ToolTruthReceiptReconciliationExact,
+    DualAndAuthoritativeCanaryExact,
+    LegacyConsumersRetired,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperationPromotionEvidenceShapeV1 {
+    pub criteria: OperationPromotionCriteriaV1,
+    pub requires_positive_comparison_cohort: bool,
+    pub requires_all_fresh_tool_truth_authority: bool,
+    pub requires_authoritative_canary: bool,
+    pub requires_adversarial_acceptance_corpus: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum OperationPromotionTransitionError {
+    #[error("operation promotion source rank is outside the closed joint contract")]
+    SourceRankInvalid,
+    #[error("operation promotion target rank is outside the closed joint contract")]
+    TargetRankInvalid,
+    #[error("operation promotion cannot skip a joint-contract rank")]
+    RankSkipped,
+    #[error("operation promotion cannot retain or downgrade a joint-contract rank")]
+    RankNotForward,
+}
+
 fn tagged_sha256_json(value: &Value) -> String {
     format!("sha256:{}", sha256_json(value))
 }
 
+/// Server-derived operation contract snapshot.
+///
+/// The fields are deliberately private: campaign routing must consume the
+/// pair decoded from `operation_state`, never a caller-assembled policy tuple.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrozenOperationJointContract {
-    pub tool_truth_contract: ToolTruthContract,
-    pub investigation_contract_version: InvestigationContractVersion,
-    pub investigation_rollout_mode: InvestigationRolloutMode,
-    pub joint_rank: i16,
+    tool_truth_contract: ToolTruthContract,
+    investigation_contract_version: InvestigationContractVersion,
+    investigation_rollout_mode: InvestigationRolloutMode,
+    stage_topology_contract: StageTopologyContract,
+    joint_rank: i16,
+}
+
+impl FrozenOperationJointContract {
+    pub const fn tool_truth_contract(&self) -> ToolTruthContract {
+        self.tool_truth_contract
+    }
+
+    pub const fn investigation_contract_version(&self) -> InvestigationContractVersion {
+        self.investigation_contract_version
+    }
+
+    pub const fn investigation_rollout_mode(&self) -> InvestigationRolloutMode {
+        self.investigation_rollout_mode
+    }
+
+    pub const fn stage_topology_contract(&self) -> StageTopologyContract {
+        self.stage_topology_contract
+    }
+
+    pub const fn joint_rank(&self) -> i16 {
+        self.joint_rank
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,10 +133,12 @@ pub struct OperationContractAdoptionReceiptRow {
     pub source_tool_truth_contract: String,
     pub source_investigation_contract_version: String,
     pub source_investigation_rollout_mode: String,
+    pub source_stage_topology_contract: String,
     pub source_joint_rank: i16,
     pub target_tool_truth_contract: String,
     pub target_investigation_contract_version: String,
     pub target_investigation_rollout_mode: String,
+    pub target_stage_topology_contract: String,
     pub target_joint_rank: i16,
     pub source_final_seal_hash: String,
     pub adoption_set_hash: String,
@@ -86,6 +151,8 @@ struct FrozenOperationJointContractRow {
     tool_truth_contract: String,
     investigation_contract_version: String,
     investigation_rollout_mode: String,
+    stage_topology_contract: String,
+    stage_topology_freeze_source: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -140,6 +207,50 @@ pub const fn joint_contract_rank(
     }
 }
 
+/// Resolve the exact evidence shape for one legal adjacent promotion.
+///
+/// Only 2->3 and 4->5 require a positive whole-record comparison cohort.  The
+/// latter additionally requires independently-authored correctness evidence;
+/// compatibility alone can never promote the canonical writer.
+pub const fn promotion_evidence_shape(
+    from_joint_rank: i16,
+    to_joint_rank: i16,
+) -> Result<OperationPromotionEvidenceShapeV1, OperationPromotionTransitionError> {
+    if from_joint_rank < 0 || from_joint_rank > 6 {
+        return Err(OperationPromotionTransitionError::SourceRankInvalid);
+    }
+    if to_joint_rank < 0 || to_joint_rank > 6 {
+        return Err(OperationPromotionTransitionError::TargetRankInvalid);
+    }
+    if to_joint_rank <= from_joint_rank {
+        return Err(OperationPromotionTransitionError::RankNotForward);
+    }
+    if to_joint_rank != from_joint_rank + 1 {
+        return Err(OperationPromotionTransitionError::RankSkipped);
+    }
+
+    use OperationPromotionCriteriaV1::{
+        ClosedShadowCohortExact, DualAndAuthoritativeCanaryExact, LegacyConsumersRetired,
+        ShadowEvaluatorReady, ToolTruthReceiptReconciliationExact, ToolTruthShadowWriterReady,
+    };
+    let criteria = match from_joint_rank {
+        0 => ToolTruthShadowWriterReady,
+        1 => ShadowEvaluatorReady,
+        2 => ClosedShadowCohortExact,
+        3 => ToolTruthReceiptReconciliationExact,
+        4 => DualAndAuthoritativeCanaryExact,
+        5 => LegacyConsumersRetired,
+        _ => return Err(OperationPromotionTransitionError::TargetRankInvalid),
+    };
+    Ok(OperationPromotionEvidenceShapeV1 {
+        criteria,
+        requires_positive_comparison_cohort: matches!(from_joint_rank, 2 | 4),
+        requires_all_fresh_tool_truth_authority: matches!(from_joint_rank, 3 | 4),
+        requires_authoritative_canary: from_joint_rank == 4,
+        requires_adversarial_acceptance_corpus: from_joint_rank == 4,
+    })
+}
+
 pub fn validate_joint_pair(
     tool_truth_contract: ToolTruthContract,
     investigation_contract_version: InvestigationContractVersion,
@@ -175,10 +286,29 @@ fn decode_joint_contract(
         investigation_contract_version,
         investigation_rollout_mode,
     )?;
+    let stage_topology_contract = StageTopologyContract::try_parse(&row.stage_topology_contract)
+        .map_err(|_| OperationRolloutError::Conflict {
+            code: "OPERATION_STAGE_TOPOLOGY_CONTRACT_UNKNOWN",
+        })?;
+    let topology_is_legal = match row.stage_topology_freeze_source.as_str() {
+        "legacy_backfill_v1" => {
+            stage_topology_contract == StageTopologyContract::LegacyCandidateVerificationV1
+        }
+        "deployment_pair_v1" => {
+            stage_topology_contract.allows_investigation_rollout(investigation_rollout_mode)
+        }
+        _ => false,
+    };
+    if !topology_is_legal {
+        return Err(OperationRolloutError::Conflict {
+            code: "OPERATION_STAGE_TOPOLOGY_PAIR_INVALID",
+        });
+    }
     Ok(FrozenOperationJointContract {
         tool_truth_contract,
         investigation_contract_version,
         investigation_rollout_mode,
+        stage_topology_contract,
         joint_rank,
     })
 }
@@ -220,6 +350,9 @@ pub async fn deployment_pair_for_share(
         tool_truth_contract,
         investigation_contract_version,
         investigation_rollout_mode,
+        stage_topology_contract: StageTopologyContract::for_investigation_rollout(
+            investigation_rollout_mode,
+        ),
         joint_rank,
     })
 }
@@ -230,7 +363,8 @@ pub async fn source_pair_for_share(
 ) -> OperationRolloutResult<FrozenOperationJointContract> {
     let row = sqlx::query_as::<_, FrozenOperationJointContractRow>(
         r#"SELECT tool_truth_contract,investigation_contract_version,
-                  investigation_rollout_mode
+                  investigation_rollout_mode,stage_topology_contract,
+                  stage_topology_freeze_source
              FROM operation_state
             WHERE operation_id=$1
             FOR SHARE"#,
@@ -244,19 +378,25 @@ pub async fn source_pair_for_share(
     decode_joint_contract(row)
 }
 
-fn stage_rank(stage: &str) -> Option<i16> {
-    match stage {
-        "scoping" => Some(1),
-        "target_intel" => Some(2),
-        "external_attack_surface" => Some(3),
-        "enumeration" => Some(4),
-        "vuln_triage" => Some(5),
-        "attack_candidate" => Some(6),
+fn stage_rank(topology: StageTopologyContract, stage: &str) -> Option<i16> {
+    match (topology, stage) {
+        (_, "scoping") => Some(1),
+        (_, "target_intel") => Some(2),
+        (_, "external_attack_surface") => Some(3),
+        (_, "enumeration") => Some(4),
+        (_, "vuln_triage") => Some(5),
+        (StageTopologyContract::LegacyCandidateVerificationV1, "attack_candidate") => Some(6),
+        (StageTopologyContract::UnifiedInvestigationV1, "application_understanding") => Some(6),
+        (StageTopologyContract::LegacyCandidateVerificationV1, "verification") => Some(7),
+        (StageTopologyContract::UnifiedInvestigationV1, "investigation") => Some(7),
         _ => None,
     }
 }
 
-fn validate_adopted_stages(adopted_stage_kinds: &[String]) -> OperationRolloutResult<()> {
+fn validate_adopted_stages(
+    topology: StageTopologyContract,
+    adopted_stage_kinds: &[String],
+) -> OperationRolloutResult<()> {
     if adopted_stage_kinds.first().map(String::as_str) != Some("scoping") {
         return Err(OperationRolloutError::Conflict {
             code: "STAGE_FORK_ADOPTION_PREFIX_INVALID",
@@ -264,7 +404,7 @@ fn validate_adopted_stages(adopted_stage_kinds: &[String]) -> OperationRolloutRe
     }
     let mut previous = 0;
     for stage in adopted_stage_kinds {
-        let rank = stage_rank(stage).ok_or(OperationRolloutError::Conflict {
+        let rank = stage_rank(topology, stage).ok_or(OperationRolloutError::Conflict {
             code: "STAGE_FORK_ADOPTION_STAGE_UNKNOWN",
         })?;
         if rank != previous + 1 {
@@ -286,7 +426,8 @@ pub async fn source_final_seal_hash_for_share(
     source_scope_snapshot_id: Uuid,
     adopted_stage_kinds: &[String],
 ) -> OperationRolloutResult<String> {
-    validate_adopted_stages(adopted_stage_kinds)?;
+    let source_contract = source_pair_for_share(connection, source_operation_id).await?;
+    validate_adopted_stages(source_contract.stage_topology_contract, adopted_stage_kinds)?;
     let scope: Option<Value> = sqlx::query_scalar(
         r#"SELECT jsonb_build_object(
                    'scope_snapshot_id',snapshot.id,
@@ -376,13 +517,14 @@ pub async fn source_final_seal_hash_for_share(
                   AND handoff.scope_snapshot_id=$2
                   AND handoff.from_stage_kind=ANY($3)
                   AND handoff.invalidated_at IS NULL
-                ORDER BY operation_stage_fork_stage_rank(handoff.from_stage_kind),
+                ORDER BY operation_stage_rank_for_topology($4,handoff.from_stage_kind),
                          handoff.organization_id,handoff.id
                 FOR SHARE OF handoff,run,unit,submission"#,
         )
         .bind(source_operation_id)
         .bind(source_scope_snapshot_id)
         .bind(&non_scoping)
+        .bind(source_contract.stage_topology_contract.as_str())
         .fetch_all(&mut *connection)
         .await?
     };
@@ -415,7 +557,8 @@ pub async fn source_final_seal_hash_for_share(
     let mut seal_rows = actual.into_values().collect::<Vec<_>>();
     seal_rows.sort_by_key(|row| {
         (
-            stage_rank(&row.stage_kind).unwrap_or(i16::MAX),
+            stage_rank(source_contract.stage_topology_contract, &row.stage_kind)
+                .unwrap_or(i16::MAX),
             unit_ordinals
                 .get(&row.organization_id)
                 .copied()
@@ -455,9 +598,10 @@ pub async fn source_final_seal_hash_for_share(
         })
         .collect::<Vec<_>>();
     Ok(tagged_sha256_json(&json!({
-        "schema": "operation-contract-source-final-seals.v1",
+        "schema": "operation-contract-source-final-seals.v2",
         "source_operation_id": source_operation_id,
         "source_scope_snapshot_id": source_scope_snapshot_id,
+        "source_stage_topology_contract": source_contract.stage_topology_contract.as_str(),
         "adopted_stage_kinds": adopted_stage_kinds,
         "scoping_seal": scope,
         "scope_units": scope_units,
@@ -474,17 +618,19 @@ fn adoption_set_hash(
     source_final_seal_hash: &str,
 ) -> String {
     tagged_sha256_json(&json!({
-        "schema": "operation-contract-adoption-set.v1",
+        "schema": "operation-contract-adoption-set.v2",
         "source_operation_id": source_operation_id,
         "source_scope_snapshot_id": source_scope_snapshot_id,
         "adopted_stage_kinds": adopted_stage_kinds,
         "source_tool_truth_contract": source.tool_truth_contract.as_str(),
         "source_investigation_contract_version": source.investigation_contract_version.as_str(),
         "source_investigation_rollout_mode": source.investigation_rollout_mode.as_str(),
+        "source_stage_topology_contract": source.stage_topology_contract.as_str(),
         "source_joint_rank": source.joint_rank,
         "target_tool_truth_contract": target.tool_truth_contract.as_str(),
         "target_investigation_contract_version": target.investigation_contract_version.as_str(),
         "target_investigation_rollout_mode": target.investigation_rollout_mode.as_str(),
+        "target_stage_topology_contract": target.stage_topology_contract.as_str(),
         "target_joint_rank": target.joint_rank,
         "source_final_seal_hash": source_final_seal_hash,
     }))
@@ -514,6 +660,9 @@ pub async fn prepare_stage_fork_adoption_witness(
         tool_truth_contract: target_tool_truth_contract,
         investigation_contract_version: target_investigation_contract_version,
         investigation_rollout_mode: target_investigation_rollout_mode,
+        stage_topology_contract: StageTopologyContract::for_investigation_rollout(
+            target_investigation_rollout_mode,
+        ),
         joint_rank: target_rank,
     };
     let source_final_seal_hash = source_final_seal_hash_for_share(
@@ -544,7 +693,7 @@ fn adoption_receipt_hash(
     adoption_set_hash: &str,
 ) -> String {
     tagged_sha256_json(&json!({
-        "schema": "operation-contract-adoption-receipt.v1",
+        "schema": "operation-contract-adoption-receipt.v2",
         "stable_request_id": stable_request_id,
         "source_operation_id": source_operation_id,
         "target_operation_id": target_operation_id,
@@ -588,6 +737,9 @@ pub async fn choose_stage_fork_pair_and_write_adoption(
         tool_truth_contract: adoption.target_tool_truth_contract,
         investigation_contract_version: adoption.target_investigation_contract_version,
         investigation_rollout_mode: adoption.target_investigation_rollout_mode,
+        stage_topology_contract: StageTopologyContract::for_investigation_rollout(
+            adoption.target_investigation_rollout_mode,
+        ),
         joint_rank: target_rank,
     };
     let source_final_seal_hash = source_final_seal_hash_for_share(
@@ -623,23 +775,27 @@ pub async fn choose_stage_fork_pair_and_write_adoption(
     );
     let adoption_id = Uuid::new_v5(
         &target_operation_id,
-        format!("operation-contract-adoption:v1:{request_id}").as_bytes(),
+        format!("operation-contract-adoption:v2:{request_id}").as_bytes(),
     );
     let inserted = sqlx::query_as::<_, OperationContractAdoptionReceiptRow>(
         r#"INSERT INTO operation_contract_adoptions(
                adoption_id,source_operation_id,target_operation_id,
                source_tool_truth_contract,source_investigation_contract_version,
-               source_investigation_rollout_mode,source_joint_rank,
+               source_investigation_rollout_mode,source_stage_topology_contract,
+               source_joint_rank,
                target_tool_truth_contract,target_investigation_contract_version,
-               target_investigation_rollout_mode,target_joint_rank,
+               target_investigation_rollout_mode,target_stage_topology_contract,
+               target_joint_rank,
                source_final_seal_hash,adoption_set_hash,stable_request_id,receipt_hash
-           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
            ON CONFLICT(stable_request_id) DO NOTHING
            RETURNING adoption_id,source_operation_id,target_operation_id,
                      source_tool_truth_contract,source_investigation_contract_version,
-                     source_investigation_rollout_mode,source_joint_rank,
+                     source_investigation_rollout_mode,source_stage_topology_contract,
+                     source_joint_rank,
                      target_tool_truth_contract,target_investigation_contract_version,
-                     target_investigation_rollout_mode,target_joint_rank,
+                     target_investigation_rollout_mode,target_stage_topology_contract,
+                     target_joint_rank,
                      source_final_seal_hash,adoption_set_hash,stable_request_id,receipt_hash"#,
     )
     .bind(adoption_id)
@@ -648,10 +804,12 @@ pub async fn choose_stage_fork_pair_and_write_adoption(
     .bind(source.tool_truth_contract.as_str())
     .bind(source.investigation_contract_version.as_str())
     .bind(source.investigation_rollout_mode.as_str())
+    .bind(source.stage_topology_contract.as_str())
     .bind(source.joint_rank)
     .bind(target.tool_truth_contract.as_str())
     .bind(target.investigation_contract_version.as_str())
     .bind(target.investigation_rollout_mode.as_str())
+    .bind(target.stage_topology_contract.as_str())
     .bind(target.joint_rank)
     .bind(&source_final_seal_hash)
     .bind(&expected_adoption_set_hash)
@@ -663,9 +821,11 @@ pub async fn choose_stage_fork_pair_and_write_adoption(
         let existing = sqlx::query_as::<_, OperationContractAdoptionReceiptRow>(
             r#"SELECT adoption_id,source_operation_id,target_operation_id,
                       source_tool_truth_contract,source_investigation_contract_version,
-                      source_investigation_rollout_mode,source_joint_rank,
+                      source_investigation_rollout_mode,source_stage_topology_contract,
+                      source_joint_rank,
                       target_tool_truth_contract,target_investigation_contract_version,
-                      target_investigation_rollout_mode,target_joint_rank,
+                      target_investigation_rollout_mode,target_stage_topology_contract,
+                      target_joint_rank,
                       source_final_seal_hash,adoption_set_hash,stable_request_id,receipt_hash
                  FROM operation_contract_adoptions
                 WHERE stable_request_id=$1
@@ -682,12 +842,14 @@ pub async fn choose_stage_fork_pair_and_write_adoption(
                 == source.investigation_contract_version.as_str()
             && existing.source_investigation_rollout_mode
                 == source.investigation_rollout_mode.as_str()
+            && existing.source_stage_topology_contract == source.stage_topology_contract.as_str()
             && existing.source_joint_rank == source.joint_rank
             && existing.target_tool_truth_contract == target.tool_truth_contract.as_str()
             && existing.target_investigation_contract_version
                 == target.investigation_contract_version.as_str()
             && existing.target_investigation_rollout_mode
                 == target.investigation_rollout_mode.as_str()
+            && existing.target_stage_topology_contract == target.stage_topology_contract.as_str()
             && existing.target_joint_rank == target.joint_rank
             && existing.source_final_seal_hash == source_final_seal_hash
             && existing.adoption_set_hash == expected_adoption_set_hash

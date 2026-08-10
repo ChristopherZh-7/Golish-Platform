@@ -1,0 +1,43 @@
+{
+  "$schema": "../../../docs/design/2026-07-22-application-understanding-stage-cutover.md#operation-graph",
+  "$comment": "Application Model v1 Operation DAG. This is selected only from the operation-frozen application_model_v1 contract; legacy operations continue loading operation_graph.json.",
+  "$comment_edge_order": "Edge order is semantic for branch stages: first edge = progress/main path, last edge = no-progress bail path.",
+
+  "nodes": [
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "application_understanding",
+    "attack_candidate",
+    "verification",
+    "access_validation",
+    "internal_discovery",
+    "objective_pathing",
+    "objective_simulation",
+    "reporting",
+    "cleanup"
+  ],
+
+  "edges": [
+    { "from": "scoping", "to": "target_intel" },
+    { "from": "target_intel", "to": "external_attack_surface" },
+    { "from": "external_attack_surface", "to": "enumeration" },
+    { "from": "external_attack_surface", "to": "reporting" },
+    { "from": "enumeration", "to": "vuln_triage" },
+    { "from": "enumeration", "to": "reporting" },
+    { "from": "vuln_triage", "to": "application_understanding" },
+    { "from": "vuln_triage", "to": "reporting" },
+    { "from": "application_understanding", "to": "attack_candidate" },
+    { "from": "attack_candidate", "to": "verification" },
+    { "from": "attack_candidate", "to": "reporting" },
+    { "from": "verification", "to": "access_validation" },
+    { "from": "verification", "to": "reporting" },
+    { "from": "access_validation", "to": "internal_discovery" },
+    { "from": "internal_discovery", "to": "objective_pathing" },
+    { "from": "objective_pathing", "to": "objective_simulation" },
+    { "from": "objective_simulation", "to": "cleanup" },
+    { "from": "cleanup", "to": "reporting" }
+  ]
+}

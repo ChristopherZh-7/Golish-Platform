@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::stage_topology_contract::StageTopologyContract;
 use super::types::StageKind;
 
 /// Doc 3 §2.2 Authorization Level 六档 (L0-L5).
@@ -180,6 +181,66 @@ impl Profile {
     pub fn allowed_stage_set(&self) -> HashSet<StageKind> {
         self.allowed_stage_kinds.iter().copied().collect()
     }
+
+    /// Project the profile's historical attack-analysis slot through one
+    /// operation-frozen topology.
+    ///
+    /// Profile JSON remains the stable capability/policy catalog. Legacy
+    /// operations consume its Candidate+Verification pair byte-for-byte;
+    /// unified operations replace that *complete pair* with AU+Investigation.
+    /// A partial or mixed pair is configuration corruption and fails closed
+    /// instead of silently producing a graph with a missing authority stage.
+    pub fn allowed_stage_set_for_topology(
+        &self,
+        topology: StageTopologyContract,
+    ) -> Result<HashSet<StageKind>, ProfileTopologyError> {
+        let mut allowed = self.allowed_stage_set();
+        let legacy_count = [StageKind::AttackCandidate, StageKind::Verification]
+            .into_iter()
+            .filter(|stage| allowed.contains(stage))
+            .count();
+        let unified_count = [
+            StageKind::ApplicationUnderstanding,
+            StageKind::Investigation,
+        ]
+        .into_iter()
+        .filter(|stage| allowed.contains(stage))
+        .count();
+
+        if !matches!(legacy_count, 0 | 2) || !matches!(unified_count, 0 | 2) {
+            return Err(ProfileTopologyError::PartialAttackAnalysisPair);
+        }
+        if legacy_count > 0 && unified_count > 0 {
+            return Err(ProfileTopologyError::MixedAttackAnalysisTopology);
+        }
+
+        match topology {
+            StageTopologyContract::LegacyCandidateVerificationV1 => {
+                if unified_count > 0 {
+                    return Err(ProfileTopologyError::UnifiedPairInLegacyTopology);
+                }
+            }
+            StageTopologyContract::UnifiedInvestigationV1 => {
+                if legacy_count == 2 {
+                    allowed.remove(&StageKind::AttackCandidate);
+                    allowed.remove(&StageKind::Verification);
+                    allowed.insert(StageKind::ApplicationUnderstanding);
+                    allowed.insert(StageKind::Investigation);
+                }
+            }
+        }
+        Ok(allowed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ProfileTopologyError {
+    #[error("profile contains only one member of an attack-analysis stage pair")]
+    PartialAttackAnalysisPair,
+    #[error("profile mixes legacy and unified attack-analysis stage pairs")]
+    MixedAttackAnalysisTopology,
+    #[error("profile selects unified attack-analysis stages for a legacy topology")]
+    UnifiedPairInLegacyTopology,
 }
 
 /// Profile JSON 加载错误.

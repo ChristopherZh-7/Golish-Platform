@@ -19,12 +19,15 @@ use golish_memory_domain::source_ref::CanonicalRowId;
 use golish_reporting_app::{
     FinalizePublication, ReportPublicationPort, ReportReadModelBuilder, ReportTruthPort,
 };
-use golish_reporting_domain::ReportSourceKind;
+use golish_reporting_domain::{ReportClaimValue, ReportSourceKind};
 use serde_json::{json, Value};
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+#[path = "../../golish-db/tests/support/tool_truth_authority_fixture.rs"]
+mod tool_truth_authority_fixture;
 
 fn reserve_local_port() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0))
@@ -48,6 +51,63 @@ async fn fixture() -> (GolishDb, tempfile::TempDir) {
     (db, data_dir)
 }
 
+/// Construct the future unified deployment pair only inside this test's
+/// brand-new embedded PostgreSQL instance. Production promotion remains gated
+/// by its evidence-backed coordinator; these guards are restored before any
+/// operation is created.
+async fn select_unified_deployment_fixture(db: &GolishDb) {
+    let mut tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin unified rollout fixture");
+    sqlx::query(
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("disable Tool Truth rollout fixture guard");
+    sqlx::query(
+        r#"UPDATE tool_truth_rollout
+              SET new_operation_contract='receipt_v1',row_version=row_version+1,
+                  updated_at=statement_timestamp()
+            WHERE singleton=TRUE"#,
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("select receipt Tool Truth fixture contract");
+    sqlx::query(
+        "ALTER TABLE tool_truth_rollout ENABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("restore Tool Truth rollout fixture guard");
+
+    sqlx::query(
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("disable Investigation rollout fixture guard");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',rollout_mode='new_only',
+                  mode_rank=4,row_version=row_version+1,
+                  updated_at=statement_timestamp()
+            WHERE singleton=TRUE"#,
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("select unified Investigation fixture contract");
+    sqlx::query(
+        "ALTER TABLE investigation_rollout ENABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("restore Investigation rollout fixture guard");
+    tx.commit().await.expect("commit unified rollout fixture");
+}
+
 #[derive(Clone, Copy)]
 struct FrozenScope {
     operation_id: Uuid,
@@ -55,6 +115,23 @@ struct FrozenScope {
     scope_snapshot_id: Uuid,
     stage_execution_id: Uuid,
     organization_id: Uuid,
+}
+
+async fn seed_report_tool_truth(db: &GolishDb, scope: FrozenScope) {
+    let project_path: String = sqlx::query_scalar(
+        "SELECT project_path_at_freeze FROM operation_org_scope_snapshots WHERE id=$1",
+    )
+    .bind(scope.scope_snapshot_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load frozen project path for report Tool Truth roots");
+    tool_truth_authority_fixture::seed_all_fresh_tool_truth_roots(
+        db.pool(),
+        scope.operation_id,
+        scope.organization_id,
+        &project_path,
+    )
+    .await;
 }
 
 async fn frozen_scope(db: &GolishDb, project_path: &str) -> FrozenScope {
@@ -88,6 +165,7 @@ async fn frozen_scope(db: &GolishDb, project_path: &str) -> FrozenScope {
             profile: "assessment".to_string(),
             entry_stage: "target_intel".to_string(),
             project_scope_id: project_scope.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: None,
         },
     )
@@ -211,6 +289,35 @@ async fn insert_episode(db: &GolishDb, scope: FrozenScope, label: &str) -> (Uuid
     (episode_id, evidence_id)
 }
 
+async fn insert_episode_for_stage(
+    db: &GolishDb,
+    scope: FrozenScope,
+    stage_kind: &str,
+) -> (Uuid, i64) {
+    let evidence_id = insert_evidence(db, scope, stage_kind).await;
+    let episode_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO stage_episodes(
+               episode_id,project_scope_id,source_operation_id,
+               organization_id_at_time,source_scope_snapshot_hash,
+               stage_execution_id,stage_kind,verdict,reason_codes,fact_refs,
+               evidence_refs,started_at,ended_at
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,'passed','[]','[]',$8,NOW(),NOW())"#,
+    )
+    .bind(episode_id)
+    .bind(scope.project_scope_id)
+    .bind(scope.operation_id)
+    .bind(scope.organization_id)
+    .bind("3".repeat(64))
+    .bind(scope.stage_execution_id)
+    .bind(stage_kind)
+    .bind(vec![evidence_id])
+    .execute(db.pool())
+    .await
+    .expect("insert topology characterization stage episode");
+    (episode_id, evidence_id)
+}
+
 async fn insert_evidence(db: &GolishDb, scope: FrozenScope, label: &str) -> i64 {
     let project_path: String = sqlx::query_scalar(
         "SELECT project_path_at_freeze FROM operation_org_scope_snapshots WHERE id=$1",
@@ -233,6 +340,56 @@ async fn insert_evidence(db: &GolishDb, scope: FrozenScope, label: &str) -> i64 
     .fetch_one(db.pool())
     .await
     .expect("insert exact evidence")
+}
+
+#[tokio::test]
+#[serial]
+async fn frozen_topology_selects_one_report_source_line_without_shadow_mixing() {
+    let (db, _data_dir) = fixture().await;
+
+    let legacy_scope = frozen_scope(&db, "/tmp/report-topology-legacy").await;
+    let (legacy_episode, legacy_evidence) =
+        insert_episode_for_stage(&db, legacy_scope, "attack_candidate").await;
+    let (legacy_shadow_episode, legacy_shadow_evidence) =
+        insert_episode_for_stage(&db, legacy_scope, "investigation").await;
+    let legacy_snapshot = current_reportable_source_snapshot(db.pool(), legacy_scope.operation_id)
+        .await
+        .expect("freeze legacy report sources");
+    assert!(legacy_snapshot.ordered_sources.iter().any(|source| {
+        source.kind == ReportSourceKind::StageEpisode
+            && source.id == CanonicalRowId::Uuid(legacy_episode)
+    }));
+    assert!(!legacy_snapshot.ordered_sources.iter().any(|source| {
+        source.kind == ReportSourceKind::StageEpisode
+            && source.id == CanonicalRowId::Uuid(legacy_shadow_episode)
+    }));
+    assert!(legacy_snapshot.ordered_sources.iter().any(|source| {
+        source.kind == ReportSourceKind::EvidenceAudit
+            && source.id == CanonicalRowId::Int64(legacy_evidence)
+    }));
+    assert!(!legacy_snapshot.ordered_sources.iter().any(|source| {
+        source.kind == ReportSourceKind::EvidenceAudit
+            && source.id == CanonicalRowId::Int64(legacy_shadow_evidence)
+    }));
+
+    select_unified_deployment_fixture(&db).await;
+    let unified_scope = frozen_scope(&db, "/tmp/report-topology-unified").await;
+    let (unified_shadow_episode, unified_shadow_evidence) =
+        insert_episode_for_stage(&db, unified_scope, "attack_candidate").await;
+    let (unified_episode, unified_evidence) =
+        insert_episode_for_stage(&db, unified_scope, "investigation").await;
+    let missing_closure = current_reportable_source_snapshot(db.pool(), unified_scope.operation_id)
+        .await
+        .expect_err("unified Reporting must not infer completeness from stage episodes");
+    assert!(missing_closure
+        .to_string()
+        .contains("report_investigation_closure_publication_missing"));
+    let _ = (
+        unified_shadow_episode,
+        unified_shadow_evidence,
+        unified_episode,
+        unified_evidence,
+    );
 }
 
 async fn insert_isolated_terminal_candidate_attempt(
@@ -739,6 +896,7 @@ async fn pg_truth_builds_cited_revision_and_new_source_rejects_finalize() {
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/reporting-authority").await;
     let (episode_id, evidence_id) = insert_episode(&db, scope, "first episode").await;
+    seed_report_tool_truth(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
     let authority = reporting_project_authority(&db, scope).await;
     let builder = ReportReadModelBuilder::new(PgReportTruthPort::with_project_authority(
@@ -750,17 +908,31 @@ async fn pg_truth_builds_cited_revision_and_new_source_rejects_finalize() {
         .await
         .expect("build validated canonical report");
 
-    assert_eq!(built.model.source_snapshot.ordered_sources.len(), 2);
+    for expected_kind in [
+        ReportSourceKind::EvidenceAudit,
+        ReportSourceKind::LegacyAttemptAuthorityReceipt,
+        ReportSourceKind::LegacyReportAuthoritySeal,
+    ] {
+        assert!(built
+            .model
+            .source_snapshot
+            .ordered_sources
+            .iter()
+            .any(|source| source.kind == expected_kind));
+    }
+    assert_eq!(built.model.scope_snapshot_id, scope.scope_snapshot_id);
     assert!(built
         .model
-        .source_snapshot
-        .ordered_sources
+        .organization_sections
         .iter()
-        .any(|source| source.kind == golish_reporting_domain::ReportSourceKind::EvidenceAudit));
-    assert_eq!(built.model.scope_snapshot_id, scope.scope_snapshot_id);
-    assert_eq!(built.model.organization_sections.len(), 1);
-    let claim = &built.model.organization_sections[0].section.claims[0];
-    assert_eq!(claim.subject_ref, format!("stage_episode:{episode_id}"));
+        .all(|section| section.organization_id_at_time == scope.organization_id));
+    let claim = built
+        .model
+        .organization_sections
+        .iter()
+        .flat_map(|section| section.section.claims.iter())
+        .find(|claim| claim.subject_ref == format!("stage_episode:{episode_id}"))
+        .expect("report retains the stage episode claim alongside authority claims");
     let citation = built
         .model
         .citations
@@ -923,6 +1095,7 @@ async fn authorized_build_rejects_project_path_rebind_before_persistence() {
     insert_episode(&db, scope, "authorized build episode").await;
     let authority = reporting_project_authority(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
+    seed_report_tool_truth(&db, scope).await;
     let truth = PgReportTruthPort::with_project_authority(pool, authority);
     let built = truth
         .build_repeatable_read_snapshot(scope.operation_id)
@@ -1011,10 +1184,71 @@ async fn production_stage_entry_rejects_retired_and_prebound_project_authority()
 
 #[tokio::test]
 #[serial]
+async fn production_stage_entry_builds_an_evidence_summary_without_live_tool_truth() {
+    let (mut db, _data_dir) = fixture().await;
+    let scope = frozen_scope(&db, "/fixture/reporting-summary-only").await;
+    let (_, evidence_id) = insert_episode(&db, scope, "summary-only evidence").await;
+    let technique_evidence_id = insert_evidence(&db, scope, "summary technique evidence").await;
+    let (_, content_hash) = insert_technique_outcome(&db, scope, &[technique_evidence_id]).await;
+    insert_final_handoff(
+        &db,
+        scope,
+        vec![technique_ref(
+            scope,
+            content_hash,
+            vec![technique_evidence_id],
+        )],
+        vec![technique_evidence_id],
+    )
+    .await;
+    sqlx::query("UPDATE audit_log SET detail='{}'::JSONB WHERE id=$1")
+        .bind(evidence_id)
+        .execute(db.pool())
+        .await
+        .expect("model a legacy producer whose canonical ref owns the org identity");
+    let provider = GolishDbRepoProvider::new(Arc::new(db.pool().clone()));
+
+    let truth = provider
+        .reporting_build_validated_revision(scope.operation_id)
+        .await
+        .expect("build the canonical evidence summary without refreshing historical tools");
+    validate_reporting_gate_truth(&truth).expect("evidence summary passes the Reporting gate");
+    assert_eq!(truth.validation_status, "validated");
+    assert_eq!(truth.publication_status, "unpublished");
+
+    let (input_seal_count, artifact_count): (i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM report_input_seals WHERE revision_id=$1),
+               (SELECT COUNT(*) FROM report_revision_artifacts WHERE revision_id=$1)"#,
+    )
+    .bind(truth.revision_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("inspect summary-only persistence boundary");
+    assert_eq!(
+        input_seal_count, 0,
+        "summary is not a live publication seal"
+    );
+    assert_eq!(
+        artifact_count, 0,
+        "summary does not render or publish artifacts"
+    );
+
+    load_report_bundle(db.pool(), scope.operation_id)
+        .await
+        .expect("load the persisted evidence summary")
+        .expect("summary report exists");
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn authorized_finalize_rejects_project_retirement_before_publish() {
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/reporting-authorized-finalize").await;
     insert_episode(&db, scope, "authorized finalize episode").await;
+    seed_report_tool_truth(&db, scope).await;
     let authority = reporting_project_authority(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
     let built = ReportReadModelBuilder::new(PgReportTruthPort::new(pool.clone()))
@@ -1132,6 +1366,7 @@ async fn evidence_body_or_organization_drift_rejects_finalize_as_a_stale_source(
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/reporting-evidence-drift").await;
     let (_, evidence_id) = insert_episode(&db, scope, "drifting evidence").await;
+    seed_report_tool_truth(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
     let built = ReportReadModelBuilder::new(PgReportTruthPort::new(pool.clone()))
         .build_and_validate(scope.operation_id)
@@ -1179,6 +1414,7 @@ async fn finalize_revalidates_stored_citations_and_validation_attestation() {
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/reporting-finalize-integrity").await;
     insert_episode(&db, scope, "finalize integrity").await;
+    seed_report_tool_truth(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
     let builder = ReportReadModelBuilder::new(PgReportTruthPort::new(pool.clone()));
     let built = builder
@@ -1269,11 +1505,16 @@ async fn blocked_residual_is_projected_only_from_the_retained_operator_decision(
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/reporting-blocked-decision").await;
     let blocked = insert_blocked_cleanup_truth(&db, scope).await;
+    seed_report_tool_truth(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
     let built = ReportReadModelBuilder::new(PgReportTruthPort::new(pool.clone()))
         .build_and_validate(scope.operation_id)
         .await
         .expect("build report from exact blocked-decision authority");
+    assert_eq!(
+        blocked.residual_risk,
+        json!({"summary": "fixture remains", "severity": "medium"})
+    );
 
     assert!(built
         .model
@@ -1294,12 +1535,13 @@ async fn blocked_residual_is_projected_only_from_the_retained_operator_decision(
         .expect("blocked residual claim");
     assert_eq!(
         claim.value,
-        json!({
-            "status": "blocked",
-            "decidedByPrincipalId": blocked.principal_id,
-            "reason": blocked.reason,
-            "residualRisk": blocked.residual_risk,
-        })
+        ReportClaimValue::Limitation {
+            reason_code: blocked.reason.clone(),
+            affected_input_ids: vec![blocked.obligation_id.to_string()],
+            residual_ids: Vec::new(),
+            owner_code: "cleanup_authority".to_owned(),
+            next_action_code: "resolve_cleanup_blocked".to_owned(),
+        }
     );
     let citations = built
         .model
@@ -1516,6 +1758,7 @@ async fn exact_technique_ref_is_frozen_and_cannot_be_invalidated_after_validatio
         vec![evidence_id],
     )
     .await;
+    seed_report_tool_truth(&db, scope).await;
     let built = ReportReadModelBuilder::new(PgReportTruthPort::new(Arc::new(db.pool().clone())))
         .build_and_validate(scope.operation_id)
         .await
@@ -1642,6 +1885,7 @@ async fn gate_repeatable_read_snapshot_cannot_synthesize_a_pass_that_never_exist
     let (mut db, _data_dir) = fixture().await;
     let scope = frozen_scope(&db, "/fixture/reporting-gate-rr").await;
     let (_, evidence_id) = insert_episode(&db, scope, "gate rr evidence").await;
+    seed_report_tool_truth(&db, scope).await;
     let pool = Arc::new(db.pool().clone());
     let builder = ReportReadModelBuilder::new(PgReportTruthPort::new(pool.clone()));
     let built = builder

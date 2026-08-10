@@ -73,7 +73,14 @@ fn validate_parameter(parameter: &EndpointParameterWrite) -> Result<()> {
     }
     if !matches!(
         parameter.location.as_str(),
-        "query" | "body_or_form" | "path" | "header" | "unknown"
+        "query"
+            | "body_or_form"
+            | "body"
+            | "form"
+            | "path"
+            | "header"
+            | "graphql_variable"
+            | "unknown"
     ) {
         return Err(DbError::Other(anyhow::anyhow!(
             "unsupported enumeration parameter location {}",
@@ -168,7 +175,11 @@ pub async fn publish_endpoint_observation_guarded(
                 project_path, source)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (operation_id, web_origin_id, endpoint_id) DO UPDATE SET
-               source = EXCLUDED.source,
+               source = CASE
+                   WHEN enumeration_endpoint_observations.source = 'occurrence_v2_aggregate'
+                       THEN enumeration_endpoint_observations.source
+                   ELSE EXCLUDED.source
+               END,
                observed_at = NOW(),
                updated_at = NOW()
            WHERE enumeration_endpoint_observations.organization_id = EXCLUDED.organization_id
@@ -198,7 +209,11 @@ pub async fn publish_endpoint_observation_guarded(
                        ELSE enumeration_endpoint_parameters.value_type
                    END,
                    required = enumeration_endpoint_parameters.required OR EXCLUDED.required,
-                   source = EXCLUDED.source,
+                   source = CASE
+                       WHEN enumeration_endpoint_parameters.source = 'occurrence_v2_aggregate'
+                           THEN enumeration_endpoint_parameters.source
+                       ELSE EXCLUDED.source
+                   END,
                    observed_at = NOW(),
                    updated_at = NOW()"#,
         )
@@ -261,22 +276,159 @@ pub async fn list_endpoints_for_operation_origin(
     web_origin_id: Uuid,
 ) -> Result<Vec<ApiEndpoint>> {
     let rows = sqlx::query_as::<_, ApiEndpoint>(
-        r#"SELECT ae.*
-           FROM enumeration_endpoint_observations eeo
+        r#"WITH direct_authority AS (
+               SELECT operation.operation_id,FALSE AS inherited
+                 FROM operation_state operation
+                WHERE operation.operation_id=$1
+                  AND operation.superseded_by IS NULL
+                  AND EXISTS(
+                      SELECT 1 FROM enumeration_endpoint_observations direct
+                       WHERE direct.operation_id=operation.operation_id
+                         AND direct.organization_id=$2
+                         AND direct.web_origin_id=$3
+                  )
+           ), effective_authority AS (
+               SELECT operation_id,inherited FROM direct_authority
+               UNION ALL
+               SELECT input.source_operation_id,TRUE
+                 FROM operation_stage_forks fork
+                 JOIN operation_stage_fork_inputs input
+                   ON input.operation_id=fork.operation_id
+                  AND input.source_operation_id=fork.source_operation_id
+                  AND input.source_scope_snapshot_id=fork.source_scope_snapshot_id
+                  AND input.organization_id=$2
+                  AND input.source_stage_kind='enumeration'
+                 JOIN operation_state source_operation
+                   ON source_operation.operation_id=input.source_operation_id
+                  AND source_operation.superseded_by IS NULL
+                 JOIN stage_handoffs source_handoff
+                   ON source_handoff.id=input.source_handoff_id
+                  AND source_handoff.operation_id=input.source_operation_id
+                  AND source_handoff.scope_snapshot_id=input.source_scope_snapshot_id
+                  AND source_handoff.organization_id=input.organization_id
+                  AND source_handoff.stage_execution_id=input.source_stage_execution_id
+                  AND source_handoff.source_stage_run_unit_id=input.source_stage_run_unit_id
+                  AND source_handoff.deliverable_submission_id=input.source_deliverable_submission_id
+                  AND source_handoff.from_stage_kind='enumeration'
+                  AND source_handoff.invalidated_at IS NULL
+                WHERE fork.operation_id=$1
+                  AND NOT EXISTS(SELECT 1 FROM direct_authority)
+           )
+           SELECT ae.*
+           FROM effective_authority authority
+           JOIN enumeration_endpoint_observations eeo
+             ON eeo.operation_id=authority.operation_id
            JOIN api_endpoints ae ON ae.id = eeo.endpoint_id
            JOIN targets t ON t.id = eeo.target_id
-           WHERE eeo.operation_id = $1
-             AND eeo.organization_id = $2
+           WHERE eeo.organization_id = $2
              AND eeo.web_origin_id = $3
              AND t.scope::text = 'in'
              AND t.organization_id = eeo.organization_id
              AND t.project_path IS NOT DISTINCT FROM eeo.project_path
              AND ae.project_path IS NOT DISTINCT FROM eeo.project_path
+             AND (
+                 NOT authority.inherited OR EXISTS(
+                     SELECT 1 FROM operation_stage_fork_targets frozen
+                      WHERE frozen.operation_id=$1
+                        AND frozen.live_target_id=eeo.target_id
+                        AND frozen.organization_id=eeo.organization_id
+                 )
+             )
            ORDER BY ae.url, ae.method, ae.id"#,
     )
     .bind(operation_id)
     .bind(organization_id)
     .bind(web_origin_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Read the effective endpoint manifest for one current in-scope target and
+/// exact Web Origin. Direct Enumeration output wins. A formal stage fork may
+/// consume only its sealed Enumeration source input and frozen Target; no
+/// other historical/global endpoint rows are visible.
+pub async fn list_endpoints_for_operation_target_origin(
+    pool: &PgPool,
+    operation_id: Uuid,
+    target_id: Uuid,
+    exact_origin: &str,
+) -> Result<Vec<ApiEndpoint>> {
+    let identity =
+        crate::repo::surface_identity::normalize_web_origin(exact_origin).ok_or_else(|| {
+            DbError::Other(anyhow::anyhow!(
+                "enumeration manifest URL is not an exact HTTP origin"
+            ))
+        })?;
+    let rows = sqlx::query_as::<_, ApiEndpoint>(
+        r#"WITH direct_authority AS (
+               SELECT operation.operation_id,FALSE AS inherited
+                 FROM operation_state operation
+                WHERE operation.operation_id=$1
+                  AND operation.superseded_by IS NULL
+                  AND EXISTS(
+                      SELECT 1
+                        FROM enumeration_endpoint_observations direct
+                        JOIN web_origins direct_origin ON direct_origin.id=direct.web_origin_id
+                       WHERE direct.operation_id=operation.operation_id
+                         AND direct.target_id=$2
+                         AND direct_origin.scheme=$3
+                         AND direct_origin.host=$4
+                         AND direct_origin.port=$5
+                  )
+           ), effective_authority AS (
+               SELECT operation_id,inherited FROM direct_authority
+               UNION ALL
+               SELECT input.source_operation_id,TRUE
+                 FROM operation_stage_forks fork
+                 JOIN operation_stage_fork_inputs input
+                   ON input.operation_id=fork.operation_id
+                  AND input.source_operation_id=fork.source_operation_id
+                  AND input.source_scope_snapshot_id=fork.source_scope_snapshot_id
+                  AND input.source_stage_kind='enumeration'
+                 JOIN operation_stage_fork_targets frozen
+                   ON frozen.operation_id=fork.operation_id
+                  AND frozen.live_target_id=$2
+                  AND frozen.organization_id=input.organization_id
+                 JOIN operation_state source_operation
+                   ON source_operation.operation_id=input.source_operation_id
+                  AND source_operation.superseded_by IS NULL
+                 JOIN stage_handoffs source_handoff
+                   ON source_handoff.id=input.source_handoff_id
+                  AND source_handoff.operation_id=input.source_operation_id
+                  AND source_handoff.scope_snapshot_id=input.source_scope_snapshot_id
+                  AND source_handoff.organization_id=input.organization_id
+                  AND source_handoff.stage_execution_id=input.source_stage_execution_id
+                  AND source_handoff.source_stage_run_unit_id=input.source_stage_run_unit_id
+                  AND source_handoff.deliverable_submission_id=input.source_deliverable_submission_id
+                  AND source_handoff.from_stage_kind='enumeration'
+                  AND source_handoff.invalidated_at IS NULL
+                WHERE fork.operation_id=$1
+                  AND NOT EXISTS(SELECT 1 FROM direct_authority)
+           )
+           SELECT endpoint.*
+             FROM effective_authority authority
+             JOIN enumeration_endpoint_observations observation
+               ON observation.operation_id=authority.operation_id
+             JOIN web_origins origin ON origin.id=observation.web_origin_id
+             JOIN api_endpoints endpoint ON endpoint.id=observation.endpoint_id
+             JOIN targets target ON target.id=observation.target_id
+            WHERE observation.target_id=$2
+              AND origin.scheme=$3 AND origin.host=$4 AND origin.port=$5
+              AND origin.organization_id=observation.organization_id
+              AND origin.project_path IS NOT DISTINCT FROM observation.project_path
+              AND target.scope::TEXT='in'
+              AND target.organization_id=observation.organization_id
+              AND target.project_path IS NOT DISTINCT FROM observation.project_path
+              AND endpoint.target_id=observation.target_id
+              AND endpoint.project_path IS NOT DISTINCT FROM observation.project_path
+            ORDER BY endpoint.url,endpoint.method,endpoint.id"#,
+    )
+    .bind(operation_id)
+    .bind(target_id)
+    .bind(identity.scheme)
+    .bind(identity.host)
+    .bind(identity.port)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -289,25 +441,72 @@ pub async fn list_executable_query_endpoints(
     web_origin_id: Uuid,
 ) -> Result<Vec<ExecutableQueryEndpoint>> {
     let rows = sqlx::query_as::<_, ExecutableQueryEndpoint>(
-        r#"SELECT eeo.id AS endpoint_observation_id,
+        r#"WITH direct_authority AS (
+               SELECT operation.operation_id,FALSE AS inherited
+                 FROM operation_state operation
+                WHERE operation.operation_id=$1
+                  AND operation.superseded_by IS NULL
+                  AND EXISTS(
+                      SELECT 1 FROM enumeration_endpoint_observations direct
+                       WHERE direct.operation_id=operation.operation_id
+                         AND direct.organization_id=$2
+                         AND direct.web_origin_id=$3
+                  )
+           ), effective_authority AS (
+               SELECT operation_id,inherited FROM direct_authority
+               UNION ALL
+               SELECT input.source_operation_id,TRUE
+                 FROM operation_stage_forks fork
+                 JOIN operation_stage_fork_inputs input
+                   ON input.operation_id=fork.operation_id
+                  AND input.source_operation_id=fork.source_operation_id
+                  AND input.source_scope_snapshot_id=fork.source_scope_snapshot_id
+                  AND input.organization_id=$2
+                  AND input.source_stage_kind='enumeration'
+                 JOIN operation_state source_operation
+                   ON source_operation.operation_id=input.source_operation_id
+                  AND source_operation.superseded_by IS NULL
+                 JOIN stage_handoffs source_handoff
+                   ON source_handoff.id=input.source_handoff_id
+                  AND source_handoff.operation_id=input.source_operation_id
+                  AND source_handoff.scope_snapshot_id=input.source_scope_snapshot_id
+                  AND source_handoff.organization_id=input.organization_id
+                  AND source_handoff.stage_execution_id=input.source_stage_execution_id
+                  AND source_handoff.source_stage_run_unit_id=input.source_stage_run_unit_id
+                  AND source_handoff.deliverable_submission_id=input.source_deliverable_submission_id
+                  AND source_handoff.from_stage_kind='enumeration'
+                  AND source_handoff.invalidated_at IS NULL
+                WHERE fork.operation_id=$1
+                  AND NOT EXISTS(SELECT 1 FROM direct_authority)
+           )
+           SELECT eeo.id AS endpoint_observation_id,
                   ae.id AS endpoint_id,
                   eeo.target_id,
                   eeo.web_origin_id,
                   ae.url,
                   ae.method,
                   array_agg(DISTINCT eep.name ORDER BY eep.name) AS parameter_names
-           FROM enumeration_endpoint_observations eeo
+           FROM effective_authority authority
+           JOIN enumeration_endpoint_observations eeo
+             ON eeo.operation_id=authority.operation_id
            JOIN api_endpoints ae ON ae.id = eeo.endpoint_id
            JOIN targets t ON t.id = eeo.target_id
            JOIN enumeration_endpoint_parameters eep
              ON eep.endpoint_observation_id = eeo.id AND eep.location = 'query'
-           WHERE eeo.operation_id = $1
-             AND eeo.organization_id = $2
+           WHERE eeo.organization_id = $2
              AND eeo.web_origin_id = $3
              AND upper(ae.method) = 'GET'
              AND t.scope::text = 'in'
              AND t.organization_id = eeo.organization_id
              AND t.project_path IS NOT DISTINCT FROM eeo.project_path
+             AND (
+                 NOT authority.inherited OR EXISTS(
+                     SELECT 1 FROM operation_stage_fork_targets frozen
+                      WHERE frozen.operation_id=$1
+                        AND frozen.live_target_id=eeo.target_id
+                        AND frozen.organization_id=eeo.organization_id
+                 )
+             )
            GROUP BY eeo.id, ae.id, eeo.target_id, eeo.web_origin_id, ae.url, ae.method
            ORDER BY ae.url, ae.id"#,
     )

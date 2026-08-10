@@ -35,6 +35,8 @@
 
 `Session.reportingReadModelHint` 只保存当前 Reporting operation 与单调 `refreshVersion`，供 `AIChatPanel` 触发 authoritative report IPC reload；同 operation 递增 refresh，operation 改变时 replace 并从 version 1 开始，clear/session switch 必须移除旧视图。hint 不保存 report rows、Gate verdict 或 publish authority。
 
+Unified Investigation不拥有独立的`DetailViewMode`、Pane selector或全局 Workspace selection；它复用当前`stage_run`的`tool-detail` request identity，`agent | hypothesis | campaign`焦点只保存在`InvestigationWorkspaceView`组件本地。`Session.investigationRefreshHint`只保存event的exact operation/execution/request/change-seq四字段：setter必须先绑定当前selected tool-detail，并用同request的exact Investigation rows或timeline execution验证identity；同identity duplicate/out-of-order忽略，foreign identity拒绝。hint只触发no-seq DB bootstrap，不能复活独立route、缓存canonical Registry/Campaign rows或直接推进UI authority。
+
 `conversation.updateMessageToolResult` 优先按 `requestId` 精确回填工具结果，工具名只作旧路径兜底；后台工具完成事件通过 `updateMessageToolResultByJobId` 按原 backgrounded result 里的 `job_id` 回填聊天气泡，避免同名 `pentest_run` 串结果或 backgrounded 长期显示成功态。
 
 `BackgroundRunMeta`只保留诊断用`initialYieldMs`与`automaticKill?: false`，不再持有`inlineWaitMs/softTimeoutMs/hardTimeoutMs`。恢复legacy result时可把`inline_wait_ms`/`soft_timeout_ms`兼容映射到initial yield，但必须丢弃`hard_timeout_ms`，不能由前端重建自动kill倒计时。

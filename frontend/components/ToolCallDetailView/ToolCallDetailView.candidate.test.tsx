@@ -18,9 +18,9 @@ vi.mock("@/components/Engagement/CandidateAttemptRows", () => ({
   ),
 }));
 
-vi.mock("@/components/Engagement/HypothesisRegistryAudit", () => ({
-  HypothesisRegistryAudit: (props: Record<string, unknown>) => (
-    <div data-testid="hypothesis-registry-audit-production-entry">{JSON.stringify(props)}</div>
+vi.mock("@/components/Engagement/PendingPreparedActionPanel", () => ({
+  PendingPreparedActionPanel: (props: Record<string, unknown>) => (
+    <div data-testid="prepared-action-production-entry">{JSON.stringify(props)}</div>
   ),
 }));
 
@@ -242,17 +242,14 @@ describe("ToolCallDetailView Candidate production entry", () => {
     ]);
   });
 
-  it("mounts Registry Audit only from one exact operation on every Candidate row", () => {
+  it("does not mount the retired operation-only Registry Audit on Candidate rows", () => {
     setSelectedCandidateStageRunWithOperationIds(["operation-registry-1", "operation-registry-1"]);
 
     render(<ToolCallDetailView sessionId={SESSION_ID} />);
 
-    expect(screen.getByTestId("hypothesis-registry-audit-production-entry")).toHaveTextContent(
-      JSON.stringify({ sessionId: SESSION_ID, operationId: "operation-registry-1" })
-    );
-    expect(screen.getByTestId("hypothesis-registry-audit-production-entry")).not.toHaveTextContent(
-      "session-global-hint-must-not-own-audit"
-    );
+    expect(
+      screen.queryByTestId("hypothesis-registry-audit-production-entry")
+    ).not.toBeInTheDocument();
   });
 
   it.each([

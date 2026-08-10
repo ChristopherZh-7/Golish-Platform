@@ -166,6 +166,16 @@ impl AgentBridge {
         self.services.runtime_memory = Some(repository);
     }
 
+    /// Install the product-owned AU controller used by the Primary Agent's
+    /// visible `stage_run` call. The controller retains all frozen-scope and
+    /// deterministic Gate authority.
+    pub fn set_application_understanding_runtime(
+        &mut self,
+        runtime: Arc<dyn golish_agent_kit::task_orchestrator::ApplicationUnderstandingStageRuntime>,
+    ) {
+        self.services.application_understanding_runtime = Some(runtime);
+    }
+
     /// Install the host-owned Plan B Candidate analysis runtime.
     ///
     /// The bridge deliberately accepts only the closed runtime port; it never

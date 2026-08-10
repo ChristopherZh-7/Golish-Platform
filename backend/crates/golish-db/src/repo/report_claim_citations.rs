@@ -17,7 +17,7 @@ pub struct ReportClaimCitationRow {
     pub source_id_value: String,
     pub source_row_version: i64,
     pub source_hash: Vec<u8>,
-    pub evidence_audit_id: i64,
+    pub evidence_audit_id: Option<i64>,
     pub organization_id_at_time: Uuid,
     pub display_label: String,
 }
@@ -25,9 +25,6 @@ pub struct ReportClaimCitationRow {
 pub async fn insert(tx: &mut Transaction<'_, Postgres>, citation: &ReportCitation) -> Result<()> {
     let source_id = StoredCanonicalRowId::from_domain(&citation.source.id)
         .map_err(|error| anyhow::anyhow!(error.code()))?;
-    let evidence_id = citation
-        .evidence_audit_id
-        .ok_or_else(|| anyhow::anyhow!("report_evidence_citation_required"))?;
     let source_type = match citation.source_type {
         golish_reporting_domain::CitationSourceType::CanonicalFact => "canonical_fact",
         golish_reporting_domain::CitationSourceType::EvidenceAudit => "evidence_audit",
@@ -49,7 +46,7 @@ pub async fn insert(tx: &mut Transaction<'_, Postgres>, citation: &ReportCitatio
     .bind(source_id.value)
     .bind(citation.source.row_version)
     .bind(citation.source.content_hash.as_slice())
-    .bind(evidence_id)
+    .bind(citation.evidence_audit_id)
     .bind(citation.organization_id_at_time)
     .bind(&citation.display_label)
     .execute(&mut **tx)

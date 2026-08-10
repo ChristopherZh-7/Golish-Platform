@@ -47,6 +47,7 @@ pub(crate) mod executor_helpers;
 pub(crate) mod executor_types;
 pub(crate) mod executor_udiff;
 pub mod file_loader;
+pub mod intel_goal;
 pub mod prompt_contributor;
 pub mod prompt_registry;
 pub mod schemas;
@@ -74,14 +75,33 @@ pub use executor::{
     submit_repair_mode_from_submit_result, SubAgentExecutorContext, ToolProvider,
 };
 pub use executor_types::{
-    BoundWorkerChainContext, BoundWorkerRuntimeMemorySource, BoundWorkerToolLifecycle,
-    CoverageGapAction, EasWebRepairTarget, PostShellHook, StageCapabilitySuggestion,
+    BegunBoundWorkerNestedDelegation, BoundTerminalExecutionContract, BoundTerminalResultValidator,
+    BoundTerminalValidationError, BoundWorkerChainContext, BoundWorkerNestedDelegationCompletion,
+    BoundWorkerNestedDelegationLifecycle, BoundWorkerNestedDispatchToken,
+    BoundWorkerRuntimeMemorySource, BoundWorkerToolLifecycle, CoverageGapAction,
+    EasWebRepairTarget, PostShellHook, StageCapabilitySuggestion, StageTeamCompiledActionBinding,
     StageTeamLeaderBinding, StageToolGuard, StageToolHider, SubAgentChainError,
     SubAgentChainPersistence, SubAgentToolObservation, SubAgentToolObserver,
     SubAgentToolResultHook, SubAgentToolRouter, SubmitRepairKind, SubmitRepairMode,
+    TargetIntelReviewBinding, ENUMERATION_REDUCE_PARAMETERS_TOOL_NAME,
+    ENUMERATION_REVIEW_COVERAGE_TOOL_NAME, INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA,
+    INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA, INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
     STAGE_TEAM_DISPATCH_ACCEPTED_STATUS, STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME,
     STAGE_TEAM_PREPARE_FINAL_STATUS, STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
     STAGE_TEAM_UPDATE_PLAN_TOOL_NAME,
+};
+pub use intel_goal::{
+    adapt_target_intel_batch, adapt_target_intel_task, advisory_rework_runtime_enabled,
+    evaluate_advisory_rework, neutral_target_intel_worker_system_prompt,
+    render_neutral_controller_prompt, render_neutral_reviewer_prompt, render_neutral_worker_prompt,
+    target_intel_read_review_section_schema, target_intel_record_review_verdict_schema,
+    target_intel_request_review_schema, target_intel_spawn_subagents_schema,
+    AdvisoryReworkDecision, IntelDynamicSpawnRequest, IntelDynamicTaskRequest,
+    IntelFindingMateriality, IntelGoalLeaderBinding, IntelGoalPrimitiveError, IntelReviewDecision,
+    IntelReviewFindingV1, IntelReviewV1, IntelStampedWorkItem, INTEL_REVIEW_KIND,
+    INTEL_REVIEW_SCHEMA, INTEL_WORKER_KIND, INTEL_WORKER_ROLE, STAGE_TEAM_REQUEST_INTEL_REVIEW,
+    STAGE_TEAM_SPAWN_INTEL_SUBAGENTS, TARGET_INTEL_READ_REVIEW_SECTION,
+    TARGET_INTEL_RECORD_REVIEW_VERDICT,
 };
 
 // Re-export prompt registry

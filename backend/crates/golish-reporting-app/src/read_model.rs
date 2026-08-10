@@ -33,7 +33,10 @@ where
             .build_repeatable_read_snapshot(operation_id)
             .await?;
         let validation_result = validate_report(&revision.model, &revision.validation_truth)
-            .map_err(|error| ReportingAppError::Validation(error.to_string()))?;
+            .map_err(|error| {
+                let detail = serde_json::to_string(&error.0).unwrap_or_else(|_| error.to_string());
+                ReportingAppError::Validation(detail)
+            })?;
         let current = self.truth.current_source_snapshot(operation_id).await?;
         if current.ordered_sources != revision.model.source_snapshot.ordered_sources
             || current.source_set_hash != revision.model.source_snapshot.source_set_hash

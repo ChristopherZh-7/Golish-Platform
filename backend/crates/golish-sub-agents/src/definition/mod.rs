@@ -255,6 +255,12 @@ impl SubAgentDefinition {
         self
     }
 
+    /// Set the maximum provider output tokens for this sub-agent.
+    pub fn with_max_tokens(mut self, max: u32) -> Self {
+        self.max_tokens = Some(max);
+        self
+    }
+
     /// Set model override for this sub-agent (builder pattern)
     pub fn with_model_override(
         mut self,

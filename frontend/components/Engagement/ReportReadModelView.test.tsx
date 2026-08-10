@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import type { ReportClaimValue } from "@/lib/api/reporting";
+import type { ReportReadModelView as ReportReadModel } from "@/lib/generated/ReportReadModelView";
 import { type ReportingViewApi, ReportReadModelView } from "./ReportReadModelView";
 
-function validatedModel() {
+function validatedModel(): ReportReadModel {
   return {
     reportId: "report-1",
     operationId: "operation-1",
@@ -35,7 +37,26 @@ function validatedModel() {
             claimKind: "candidate_disposition",
             subjectRef: "candidate-1",
             predicate: "verified",
-            value: { severity: "high" },
+            value: {
+              kind: "security_verdict",
+              verdict: "verified",
+              hypothesisRevisionId: "hypothesis-revision-1",
+              authority: {
+                contract: "revision_adjudication_v1",
+                verificationPlanSealId: "plan-seal-1",
+                verificationPlanSealHash: "plan-hash",
+                proofPathSetHash: "proof-paths",
+                claimComponentSetHash: "claim-components",
+                revisionAdjudicationId: "adjudication-1",
+                revisionAdjudicationHash: "adjudication-hash",
+                revisionTerminalDecisionId: "terminal-1",
+                revisionTerminalDecisionHash: "terminal-hash",
+                latestObjectiveOutcomeMemberCount: 1n,
+                latestObjectiveOutcomeSetHash: "outcomes",
+                findingId: "finding-1",
+                refutationReceiptId: null,
+              },
+            },
             ordinal: 0,
             citations: [
               {
@@ -98,7 +119,7 @@ describe("ReportReadModelView", () => {
     } as never;
     render(<ReportReadModelView operationId="operation-1" api={api} />);
     expect(await screen.findByText("Acme")).toBeInTheDocument();
-    expect(screen.getByText(/Evidence 41/)).toHaveTextContent("finding_lineage:lineage-1@v4");
+    expect(screen.getByText("Evidence audit 41")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Finalize report" }));
     expect(api.finalizeRevision).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("revision-2");
@@ -260,5 +281,64 @@ describe("ReportReadModelView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Build cited report" }));
     await waitFor(() => expect(emptyApi.buildReadModel).toHaveBeenCalledTimes(1));
     expect(await screen.findByText("Acme")).toBeInTheDocument();
+  });
+
+  it("renders typed coverage without claiming global sufficiency", async () => {
+    const model = validatedModel();
+    if (model.sections[0]?.claims[0]) {
+      model.sections[0].claims[0].value = {
+        kind: "coverage",
+        finalWaveCoverageReceiptId: "coverage-1",
+        finalWaveCoverageReceiptHash: "coverage-hash",
+        denominatorId: "denominator-1",
+        denominatorHash: "denominator-hash",
+        planned: 10n,
+        testedComplete: 6n,
+        testedDegraded: 1n,
+        untested: 2n,
+        blocked: 1n,
+        residualIds: ["residual-1"],
+        coverageSufficiency: "not_assessed",
+      };
+    }
+    const api: ReportingViewApi = {
+      getReadModel: vi.fn().mockResolvedValue(model),
+      buildReadModel: vi.fn(),
+      finalizeRevision: vi.fn(),
+    };
+    render(<ReportReadModelView operationId="operation-1" api={api} />);
+    expect(await screen.findByText("Declared coverage with gaps")).toBeInTheDocument();
+    expect(screen.getByText("Global sufficiency not assessed")).toBeInTheDocument();
+    expect(screen.getByText("Tested degraded")).toBeInTheDocument();
+  });
+
+  it("never renders raw-data fields outside the typed report projection", async () => {
+    const sentinels = [
+      "TOKEN_SENTINEL_7f4a",
+      "session-cookie=secret",
+      "person@example.test",
+      "RAW_HTTP_RESPONSE_SENTINEL",
+      "EXPLOIT_PAYLOAD_SENTINEL",
+    ];
+    const model = validatedModel();
+    model.sections[0].renderedContent = sentinels.join(" ");
+    if (model.sections[0]?.claims[0]) {
+      model.sections[0].claims[0].value = {
+        kind: "method_audit",
+        methodCode: "oracle_consult",
+        dispositionCode: "recorded",
+        rawResponse: sentinels.join(" "),
+        stdout: "TOKEN_SENTINEL_7f4a",
+      } as ReportClaimValue;
+    }
+    const api: ReportingViewApi = {
+      getReadModel: vi.fn().mockResolvedValue(model),
+      buildReadModel: vi.fn(),
+      finalizeRevision: vi.fn(),
+    };
+    const { container } = render(<ReportReadModelView operationId="operation-1" api={api} />);
+    await screen.findByText(/Method audit/);
+    const text = container.textContent ?? "";
+    for (const sentinel of sentinels) expect(text).not.toContain(sentinel);
   });
 });

@@ -175,6 +175,38 @@ pub struct ResumeBoundChainRow {
     pub chain: Option<serde_json::Value>,
 }
 
+const LIST_EXACT_RESUME_BOUND_CHAINS_SQL: &str = r#"SELECT worker.id AS worker_run_id,
+              worker.status AS worker_status,
+              worker.message_chain_id,
+              chain.id AS exact_chain_id,
+              chain.chain
+         FROM operation_state operation
+         JOIN stage_runs execution
+           ON execution.operation_id=operation.operation_id
+          AND execution.stage_kind=operation.current_stage
+          AND execution.status='started'
+         JOIN stage_worker_runs worker
+           ON worker.operation_id=operation.operation_id
+          AND worker.stage_execution_id=execution.id
+    LEFT JOIN message_chains chain
+           ON chain.id=worker.message_chain_id
+          AND chain.session_id=$2
+          AND chain.task_id=operation.operation_id
+          AND chain.agent=(CASE
+                WHEN worker.specialist='reporter' THEN 'reporter'::agent_type
+                WHEN worker.specialist IN (
+                    'company_stage_controller','generic_intel_worker','intel_goal_reviewer',
+                    'content_mapper','browser_runtime','js_api_analyzer','parameter_analyzer',
+                    'resolution_analyst','coverage_reviewer','recon','prober','enumerator',
+                    'vuln_scanner','application_understanding','attack_analyst',
+                    'candidate_verifier','pentester','investigation','researcher','browser',
+                    'coder','installer','enricher','memorist','adviser'
+                ) THEN 'pentester'::agent_type
+                ELSE NULL
+              END)
+        WHERE operation.operation_id=$1
+     ORDER BY worker.id"#;
+
 /// Load every current-stage worker's exact session/task/coarse-agent chain
 /// binding. The left join intentionally retains missing/cross-owned chains so
 /// the caller can fail closed instead of silently dropping an invalid worker.
@@ -183,40 +215,34 @@ pub async fn list_exact_resume_bound_chains(
     operation_id: Uuid,
     session_id: Uuid,
 ) -> Result<Vec<ResumeBoundChainRow>> {
-    let rows = sqlx::query_as::<_, ResumeBoundChainRow>(
-        r#"SELECT worker.id AS worker_run_id,
-                  worker.status AS worker_status,
-                  worker.message_chain_id,
-                  chain.id AS exact_chain_id,
-                  chain.chain
-             FROM operation_state operation
-             JOIN stage_runs execution
-               ON execution.operation_id=operation.operation_id
-              AND execution.stage_kind=operation.current_stage
-              AND execution.status='started'
-             JOIN stage_worker_runs worker
-               ON worker.operation_id=operation.operation_id
-              AND worker.stage_execution_id=execution.id
-        LEFT JOIN message_chains chain
-               ON chain.id=worker.message_chain_id
-              AND chain.session_id=$2
-              AND chain.task_id=operation.operation_id
-              AND chain.agent=(CASE
-                    WHEN worker.specialist='reporter' THEN 'reporter'::agent_type
-                    WHEN worker.specialist IN (
-                        'company_stage_controller','recon','prober','enumerator','vuln_scanner',
-                        'attack_analyst','candidate_verifier','pentester'
-                    ) THEN 'pentester'::agent_type
-                    ELSE NULL
-                  END)
-            WHERE operation.operation_id=$1
-         ORDER BY worker.id"#,
-    )
-    .bind(operation_id)
-    .bind(session_id)
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query_as::<_, ResumeBoundChainRow>(LIST_EXACT_RESUME_BOUND_CHAINS_SQL)
+        .bind(operation_id)
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod exact_resume_tests {
+    use super::LIST_EXACT_RESUME_BOUND_CHAINS_SQL;
+
+    #[test]
+    fn exact_resume_chain_query_admits_every_server_enumeration_role() {
+        for role in [
+            "content_mapper",
+            "browser_runtime",
+            "js_api_analyzer",
+            "parameter_analyzer",
+            "resolution_analyst",
+            "coverage_reviewer",
+        ] {
+            assert!(
+                LIST_EXACT_RESUME_BOUND_CHAINS_SQL.contains(&format!("'{role}'")),
+                "missing coarse-agent mapping for {role}"
+            );
+        }
+    }
 }
 
 /// Aggregate usage stats across all sessions

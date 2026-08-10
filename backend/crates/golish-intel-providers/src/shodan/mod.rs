@@ -97,6 +97,27 @@ impl ShodanProvider {
     }
 }
 
+/// Compile a host-selected semantic literal into a single quoted Shodan
+/// filter. Colons, equals signs and boolean-looking text remain data.
+pub fn compile_semantic_query(qtype: QueryType, value: &str) -> IntelResult<String> {
+    let value = crate::types::escape_provider_literal(value)?;
+    let field = match qtype {
+        QueryType::Site => "ip",
+        QueryType::Domain => "hostname",
+        QueryType::Cert => "ssl.cert.subject.cn",
+        QueryType::Asn => "asn",
+        QueryType::Cidr => "net",
+        QueryType::Org => "org",
+        other => {
+            return Err(IntelError::UnsupportedQueryType {
+                provider: PROVIDER_ID.into(),
+                query_type: other.as_str().into(),
+            });
+        }
+    };
+    Ok(format!("{field}:\"{value}\""))
+}
+
 #[async_trait]
 impl IntelProvider for ShodanProvider {
     fn id(&self) -> &str {

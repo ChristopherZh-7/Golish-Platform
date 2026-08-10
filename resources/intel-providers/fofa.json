@@ -22,9 +22,9 @@
         "kind": "native_provider",
         "provider_id": "fofa",
         "queries": [
-          { "query_type": "site", "template": "org=\"{{company_name}}\"" },
-          { "query_type": "cert", "template": "cert=\"{{company_name}}\"" },
-          { "query_type": "domain", "template": "{{domain}}" }
+          { "query_type": "site", "template": "org=\"{{company_name}}\"", "applicable_pivot_kinds": ["company_name", "brand"], "wire_query_type": "org", "adapter_version": "semantic_literal.v1", "literal_encoder": "fofa_quoted_literal.v1" },
+          { "query_type": "cert", "template": "cert=\"{{company_name}}\"", "applicable_pivot_kinds": ["certificate"], "wire_query_type": "cert", "adapter_version": "semantic_literal.v1", "literal_encoder": "fofa_quoted_literal.v1" },
+          { "query_type": "domain", "template": "{{domain}}", "applicable_pivot_kinds": ["domain", "hostname"], "wire_query_type": "domain", "adapter_version": "semantic_literal.v1", "literal_encoder": "fofa_quoted_literal.v1" }
         ]
       }
     }

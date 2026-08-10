@@ -10,7 +10,18 @@ use thiserror::Error;
 use golish_pentest_domain::tool_truth::ToolTruthRootFamilyV1;
 
 use super::types::{AgentContinuity, FindingSeverity, RiskLevel, StageKind};
-use super::StageRuntimeContract;
+use super::{
+    StageRuntimeContract, INVESTIGATION_OPERATOR_TOOL_CATALOG_RESOURCE_V1,
+    INVESTIGATION_OPERATOR_TOOL_CONTRACT_V1,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationOperatorToolCatalogRefV1 {
+    pub contract_version: String,
+    pub resource: String,
+    pub canonical_sha256: String,
+}
 
 /// P2 · per-stage "trustworthy conclusion" rule (verification gate).
 ///
@@ -218,9 +229,11 @@ impl CandidateAnalysisTeamPolicy {
         {
             return Err("Candidate analysis must require checked temporal Tool Truth, signed feeds, and read-only tool-free children".to_string());
         }
-        if self.required_tool_truth_root_families.as_slice() != ToolTruthRootFamilyV1::ALL {
+        if self.required_tool_truth_root_families.as_slice()
+            != ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
+        {
             return Err(
-                "Candidate analysis must require the exact Plan A TI/EAS/Enum/Vuln root set"
+                "Candidate analysis must require the exact EAS/Enum/Vuln execution-receipt root set; Target Intel is authorized by its Goal finalizer"
                     .to_string(),
             );
         }
@@ -334,6 +347,12 @@ pub struct StageSpec {
     /// `attack_candidate` and deliberately owns no Tool Truth TTL/skew fields.
     #[serde(default)]
     pub candidate_analysis_team: Option<CandidateAnalysisTeamPolicy>,
+
+    /// Content-addressed host-only operator inventory for unified
+    /// Investigation. This reference grants no tool, scope or execution
+    /// authority and is legal only on the Investigation stage.
+    #[serde(default)]
+    pub operator_tool_catalog: Option<InvestigationOperatorToolCatalogRefV1>,
 
     /// Display-only coverage technique columns the `stage_run` view renders per
     /// org (intel → `["DNS","WHOIS","ASN","CT","SUBDOMAIN","OSINT"]`). Distinct
@@ -462,6 +481,27 @@ pub fn load_stage_spec_from_json(raw: &str) -> Result<StageSpec, StageSpecLoadEr
             .validate()
             .map_err(StageSpecLoadError::InvalidContract)?;
     }
+    if let Some(reference) = spec.operator_tool_catalog.as_ref() {
+        if spec.kind != StageKind::Investigation
+            || reference.contract_version != INVESTIGATION_OPERATOR_TOOL_CONTRACT_V1
+            || reference.resource != INVESTIGATION_OPERATOR_TOOL_CATALOG_RESOURCE_V1
+            || reference.canonical_sha256.len() != 64
+            || !reference
+                .canonical_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(StageSpecLoadError::InvalidContract(
+                "operator_tool_catalog must be the exact Investigation v1 content-addressed resource"
+                    .to_string(),
+            ));
+        }
+    } else if spec.kind == StageKind::Investigation {
+        return Err(StageSpecLoadError::InvalidContract(
+            "Investigation stage is missing its host-owned operator tool catalog reference"
+                .to_string(),
+        ));
+    }
     Ok(spec)
 }
 
@@ -511,12 +551,21 @@ mod tests {
 
         assert!(team.enabled_in_v2_only);
         assert_eq!(team.aggregator_role, "company_stage_controller");
-        assert!(team.allowed_roles.contains(&"intel_provider".to_string()));
+        assert_eq!(
+            team.allowed_roles,
+            vec![
+                "company_stage_controller".to_string(),
+                "generic_intel_worker".to_string()
+            ]
+        );
         assert!(team.max_company_units_active > 0);
         assert!(team.global_provider_cap > 0);
         assert!(team.max_workers > 0);
-        assert_eq!(team.max_dynamic_requests, 12);
-        assert!(!team.allowed_dynamic_request_kinds.is_empty());
+        assert_eq!(team.max_dynamic_requests, 32);
+        assert_eq!(
+            team.allowed_dynamic_request_kinds,
+            vec!["semantic_frontier_task".to_string()]
+        );
         assert!(team.max_dynamic_subject_refs > 0);
     }
 
@@ -667,7 +716,7 @@ mod tests {
         assert!(team.require_tool_free_children);
         assert_eq!(
             team.required_tool_truth_root_families,
-            ToolTruthRootFamilyV1::ALL
+            ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
         );
 
         let raw: serde_json::Value = serde_json::from_str(ATTACK_CANDIDATE_JSON).expect("json");
@@ -957,67 +1006,22 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_keeps_subdomain_coverage_but_blocks_cli_subdomain_tools() {
+    fn target_intel_has_no_legacy_coverage_or_cli_contract() {
         let s = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
-        // SUBDOMAIN 仍由 target_intel 覆盖，但 2026-06-23 provider-source
-        // boundary 后，target_intel 不再暴露任何 scan-tool selector。阶段只走
-        // recon_map_assets / recon_lookup_whois 等 registry 工具；缺 provider/source
-        // 时提交 terminal coverage cell，而不是切 CLI fallback。
         assert!(s.allowed_tool_types.is_empty());
-        assert!(s
-            .expected_techniques
-            .contains(&"GOLISH-INTEL-SUBDOMAIN".to_string()));
-        assert!(s.coverage_axis.contains(&"SUBDOMAIN".to_string()));
+        assert!(s.expected_techniques.is_empty());
+        assert!(s.coverage_axis.is_empty());
+        assert!(s.gate_rules.is_empty());
         assert!(s.min_invocations.is_empty());
     }
 
-    // P5（2026-06-11）：target_intel 的 coverage 必须既能从 technique 标注的 claims
-    // 派生（derive_from_items），又对 found cell 做反向佐证（coverage_corroborated）。
-    // 只断言存在性，不锁 gate_rules 总数（避免与 in-flight 规则增删撞车）。
     #[test]
-    fn target_intel_coverage_derives_and_corroborates() {
+    fn target_intel_completion_is_goal_review_owned() {
         let s = crate::harness::resources::load_embedded_stage_spec(StageKind::TargetIntel)
             .expect("load target_intel spec");
-        assert!(
-            s.gate_rules.iter().any(|r| matches!(
-                r,
-                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
-                    derive_from_items: true,
-                    ..
-                }
-            )),
-            "target_intel coverage_complete must enable derive_from_items"
-        );
-        // PR3 (D-scope 灰度): target_intel 是 evidence 投影的首个灰度阶段。
-        assert!(
-            s.gate_rules.iter().any(|r| matches!(
-                r,
-                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
-                    derive_from_evidence: true,
-                    ..
-                }
-            )),
-            "target_intel coverage_complete must enable derive_from_evidence (PR3 gray rollout)"
-        );
-        // Phase 0 (2026-06-12-redteam-phase0): target_intel 是 authoritative_found
-        // 的首个灰度阶段——found 对已落点的 4 类技术只认 DB/账本真值。
-        assert!(
-            s.gate_rules.iter().any(|r| matches!(
-                r,
-                crate::harness::gate::rule_engine::GateRule::CoverageComplete {
-                    authoritative_found: true,
-                    ..
-                }
-            )),
-            "target_intel coverage_complete must enable authoritative_found (Phase 0 gray rollout)"
-        );
-        assert!(
-            s.gate_rules.iter().any(|r| matches!(
-                r,
-                crate::harness::gate::rule_engine::GateRule::CoverageCorroborated { .. }
-            )),
-            "target_intel must declare a coverage_corroborated rule"
-        );
+        assert_eq!(s.gate_validator, "validate_target_intel_goal");
+        assert!(s.gate_rules.is_empty());
+        assert!(s.expected_techniques.is_empty());
     }
 
     // Phase 1 (2026-06-12-redteam-phase1 §5): active stages coverage 必须开
@@ -1184,17 +1188,11 @@ mod tests {
         assert_eq!(s.id, "target_intel");
     }
 
-    // stage_run fan-out (2026-06-13-stage-run-fanout §3.2): target_intel declares
-    // its per-org specialist (recon) + the display coverage axis; specs that omit
-    // these stay None / empty (back-compat — stage_run simply does not apply).
     #[test]
-    fn target_intel_declares_stage_run_specialist_and_axis() {
+    fn target_intel_declares_stage_run_specialist_without_coverage_axis() {
         let s = load_stage_spec_from_json(TARGET_INTEL_JSON).expect("parse");
         assert_eq!(s.specialist.as_deref(), Some("recon"));
-        assert_eq!(
-            s.coverage_axis,
-            vec!["DNS", "WHOIS", "ASN", "CT", "SUBDOMAIN", "OSINT"]
-        );
+        assert!(s.coverage_axis.is_empty());
     }
 
     // stage_run fan-out (2026-06-13-stage-run-fanout §3.2 · EAS rollout): EAS

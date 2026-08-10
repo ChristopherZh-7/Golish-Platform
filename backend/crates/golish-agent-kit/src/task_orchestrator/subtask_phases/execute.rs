@@ -413,7 +413,8 @@ impl TaskOrchestrator {
                             .await;
                         // P0 · reject deliverables citing fabricated evidence ids
                         // (may flip PASS→BLOCK) before the retry decision below.
-                        self.enforce_evidence_existence(&mut outcome).await;
+                        self.enforce_evidence_existence(&mut outcome, exec_ctx)
+                            .await;
                         self.enforce_evidence_kinds(&mut outcome).await;
                         self.enforce_evidence_freshness(&mut outcome).await;
                         // red_team scoping: verify the unit-candidate / org-creation
@@ -421,7 +422,8 @@ impl TaskOrchestrator {
                         self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
                             .await;
                         // missing-deliverable 时补查账本真实 ids（A/B 类路由事实）。
-                        self.gather_missing_deliverable_ids(&mut outcome).await;
+                        self.gather_missing_deliverable_ids(&mut outcome, exec_ctx)
+                            .await;
                         // 设计 2026-06-12-unified-refiner · BLOCK 的全部事实汇入
                         // 唯一 Refiner：确定性分类 → 单模板纠正 → submit-only 锁。
                         if !outcome.gate_allowed {
@@ -632,7 +634,8 @@ impl TaskOrchestrator {
             }
             self.enforce_cleanup_closeout_gate(task_id, &mut outcome)
                 .await;
-            self.enforce_evidence_existence(&mut outcome).await;
+            self.enforce_evidence_existence(&mut outcome, exec_ctx)
+                .await;
             self.enforce_evidence_kinds(&mut outcome).await;
             self.enforce_evidence_freshness(&mut outcome).await;
             self.enforce_scoping_red_team_flow(&mut outcome, exec_ctx)
@@ -640,7 +643,8 @@ impl TaskOrchestrator {
             // No retry left here; gather the ledger facts + render the refiner
             // correction anyway so the HarnessTrace GateDecision carries the real
             // available ids and the final blocking reason.
-            self.gather_missing_deliverable_ids(&mut outcome).await;
+            self.gather_missing_deliverable_ids(&mut outcome, exec_ctx)
+                .await;
             if !outcome.gate_allowed {
                 let correction = if specialist_gated {
                     outcome.gate_reasons.join("\n")
@@ -1134,10 +1138,6 @@ impl TaskOrchestrator {
                     .to_string(),
             );
         }
-        let root_organization_id = outcome.engagement_org_id.ok_or_else(|| {
-            "V2-writing Scoping finalization requires the gate-approved root organization id."
-                .to_string()
-        })?;
         let operation = crate::db_shim::operation_state::get(&*self.repo, task_id)
             .await
             .map_err(|error| {
@@ -1149,15 +1149,22 @@ impl TaskOrchestrator {
                 "Scoping finalization loaded operation state with mismatched identity.".to_string(),
             );
         }
-        if operation
-            .engagement_org_id
-            .is_some_and(|trusted_org| trusted_org != root_organization_id)
-        {
-            return Err(
-                "V2-writing Scoping finalization root organization does not match the operation's trusted organization binding."
-                    .to_string(),
-            );
-        }
+        let root_organization_id = match (operation.engagement_org_id, outcome.engagement_org_id) {
+            (Some(trusted_org), Some(claimed_org)) if trusted_org != claimed_org => {
+                return Err(
+                    "V2-writing Scoping finalization root organization does not match the operation's trusted organization binding."
+                        .to_string(),
+                );
+            }
+            (Some(trusted_org), _) => trusted_org,
+            (None, Some(claimed_org)) => claimed_org,
+            (None, None) => {
+                return Err(
+                    "V2-writing Scoping finalization requires the gate-approved root organization id."
+                        .to_string(),
+                );
+            }
+        };
         let project_scope_id = operation.project_scope_id.ok_or_else(|| {
             "V2-writing Scoping finalization requires a durable project scope id.".to_string()
         })?;
@@ -1349,11 +1356,21 @@ impl TaskOrchestrator {
                 "atomic create returned an initial stage execution that is not active"
             );
         }
-        let (op_max_authz, op_profile_id) =
-            match crate::harness::load_embedded_profile(&operation.profile) {
-                Ok(Some(p)) => (Some(p.max_authorization), Some(operation.profile.clone())),
-                _ => (None, None),
-            };
+        operation
+            .stage_topology_contract
+            .validate()
+            .context("validate operation-frozen stage topology material")?;
+        let frozen_topology = operation.stage_topology_contract.topology;
+        let op_profile = crate::harness::load_embedded_profile(&operation.profile)
+            .context("load persisted operation harness profile")?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "persisted operation references unknown harness profile {}",
+                    operation.profile
+                )
+            })?;
+        let op_max_authz = Some(op_profile.max_authorization);
+        let op_profile_id = Some(operation.profile.clone());
 
         let durable_task_input = crate::db_shim::tasks::get(&*self.repo, task_id)
             .await
@@ -1392,6 +1409,7 @@ impl TaskOrchestrator {
             stage_execution_id: Some(active_stage_execution.id),
             stage_run_unit_id: None,
             worker_lease: None,
+            server_authored_stage_control: None,
             completed_results: Vec::new(),
             task_input,
             current_subtask: None,
@@ -1399,6 +1417,7 @@ impl TaskOrchestrator {
             harness_stage: None,
             harness_authz: None,
             harness_profile_id: op_profile_id.clone(),
+            target_intel_provider_hard_skip: false,
             harness_submit_only: false,
             harness_forced_tool: None,
             harness_org_id: self.harness_org_id,
@@ -1409,12 +1428,9 @@ impl TaskOrchestrator {
                 .into_iter()
                 .collect();
 
-        let profile_id = op_profile_id.as_deref().unwrap_or("assessment");
-        let dag = match (
-            crate::harness::load_embedded_profile(profile_id),
-            crate::harness::base_operation_graph(),
-        ) {
-            (Ok(Some(p)), Ok(g)) => {
+        let profile_id = operation.profile.as_str();
+        let dag = match crate::harness::operation_graph_for_topology(frozen_topology) {
+            Ok(g) => {
                 // S0 · observability: which profile drove this run + which stages
                 // the DAG was projected to + per-stage planner subtask counts.
                 // Previously nothing logged the profile/projection, so a run that
@@ -1424,18 +1440,28 @@ impl TaskOrchestrator {
                 // 方案 2 · if a stage allowlist is set (headless single/range run),
                 // intersect it so the executable DAG is just that slice; the
                 // slice's terminal has no successors → run finishes it then stops.
-                let mut allowed = p.allowed_stage_set();
+                let mut allowed = op_profile
+                    .allowed_stage_set_for_topology(frozen_topology)
+                    .context("project persisted profile through operation-frozen topology")?;
                 if let Some(ref allowlist) = self.stage_allowlist {
                     allowed = allowed.intersection(allowlist).copied().collect();
                     tracing::info!(
                         target: "harness::hook",
                         ?allowlist,
+                        topology = %frozen_topology,
                         "graph-flow: stage allowlist active (headless slice run)"
                     );
                 }
+                anyhow::ensure!(
+                    allowed.contains(&active_stage_execution.stage),
+                    "operation cursor stage {} is outside frozen topology {} and its profile projection",
+                    active_stage_execution.stage,
+                    frozen_topology
+                );
                 tracing::info!(
                     target: "harness::hook",
                     profile = %profile_id,
+                    topology = %frozen_topology,
                     ?allowed,
                     "graph-flow: profile/DAG projected (DAG-driven execution)"
                 );
@@ -1450,10 +1476,10 @@ impl TaskOrchestrator {
                 }
                 g.project(&allowed)
             }
-            _ => {
-                tracing::error!(target: "harness::hook", "graph-flow: profile/DAG load failed");
+            Err(error) => {
+                tracing::error!(target: "harness::hook", %error, topology = %frozen_topology, "graph-flow: frozen DAG load failed");
                 return Err(anyhow::anyhow!(
-                    "harness graph-flow: profile/DAG load failed for task {task_id}"
+                    "harness graph-flow: frozen DAG load failed for task {task_id}: {error}"
                 ));
             }
         };
@@ -1461,9 +1487,7 @@ impl TaskOrchestrator {
         // Profile approval metadata is loaded once for the narrow Scoping-origin
         // compatibility crossing. Post-Scoping routine transitions auto-advance
         // after their typed barriers and do not consult generic phase approval.
-        let op_profile = crate::harness::load_embedded_profile(profile_id)
-            .ok()
-            .flatten();
+        let op_profile = Some(op_profile);
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<StageRunRequest>(8);
         let runner = std::sync::Arc::new(ChannelStageRunner::new(tx));
@@ -1681,16 +1705,23 @@ impl TaskOrchestrator {
             Err(error) => anyhow::bail!("graph-flow executor failed: {error}"),
         }
 
-        let report = match executor.generate_report(&exec_ctx).await {
-            Ok(r) => r.content,
-            Err(e) => {
-                tracing::warn!("graph-flow reporter failed, using summary: {}", e);
-                exec_ctx.summary()
-            }
-        };
         let terminal_stage = exec_ctx
             .harness_stage
             .context("completed graph-flow has no terminal stage identity")?;
+        let report = if terminal_stage == crate::harness::StageKind::Reporting {
+            // Reporting already persisted and revalidated its concise canonical
+            // evidence summary. Do not send that summary through a second LLM
+            // reporter or revive the retired template/rendering path.
+            exec_ctx.summary()
+        } else {
+            match executor.generate_report(&exec_ctx).await {
+                Ok(r) => r.content,
+                Err(e) => {
+                    tracing::warn!("graph-flow reporter failed, using summary: {}", e);
+                    exec_ctx.summary()
+                }
+            }
+        };
         let terminal_stage_execution_id = exec_ctx
             .stage_execution_id
             .context("completed graph-flow has no terminal stage execution identity")?;
@@ -1846,23 +1877,39 @@ impl TaskOrchestrator {
     ) -> crate::harness::operation_flow::StageFlowOutcome {
         self.stage_outcome_acc = None;
 
-        // Reporting is prepared entirely from canonical DB truth before any
-        // agent turn. This seam can build/validate a revision, but exposes no
-        // artifact or finalization operation; publication remains an explicit
-        // local-operator command after stage completion.
+        // Reporting is a concise evidence summary prepared entirely from
+        // canonical DB truth before any agent turn. The stage stores a validated
+        // unpublished read model with exact citations; it does not refresh
+        // historical tools, render templates, create artifacts, or publish.
         if stage == crate::harness::StageKind::Reporting {
-            let preparation = self
-                .repo
-                .reporting_build_validated_revision(task_id)
-                .await
-                .and_then(|truth| {
-                    if truth.operation_id != task_id {
-                        anyhow::bail!("REPORT_OPERATION_MISMATCH");
-                    }
-                    crate::harness::validate_reporting_gate_truth(&truth)
-                        .map_err(anyhow::Error::new)?;
-                    Ok(truth)
-                });
+            let preparation = async {
+                let prepared = self
+                    .repo
+                    .reporting_build_validated_revision(task_id)
+                    .await?;
+                anyhow::ensure!(
+                    prepared.operation_id == task_id,
+                    "REPORT_OPERATION_MISMATCH"
+                );
+                crate::harness::validate_reporting_gate_truth(&prepared)
+                    .map_err(anyhow::Error::new)?;
+
+                let current = self
+                    .repo
+                    .reporting_gate_truth(task_id)
+                    .await?
+                    .context("REPORT_TRUTH_NOT_FOUND_AFTER_BUILD")?;
+                anyhow::ensure!(
+                    current.operation_id == task_id
+                        && current.report_id == prepared.report_id
+                        && current.revision_id == prepared.revision_id,
+                    "REPORT_TRUTH_CHANGED_AFTER_BUILD"
+                );
+                crate::harness::validate_reporting_gate_truth(&current)
+                    .map_err(anyhow::Error::new)?;
+                Ok::<_, anyhow::Error>(current)
+            }
+            .await;
             match preparation {
                 Ok(truth) => {
                     tracing::info!(
@@ -1873,6 +1920,21 @@ impl TaskOrchestrator {
                         publication_status = %truth.publication_status,
                         "reporting canonical revision prepared and validated"
                     );
+                    exec_ctx.harness_stage = Some(stage);
+                    self.sync_engagement_org_into(exec_ctx);
+                    exec_ctx
+                        .completed_results
+                        .push(super::super::types::SubtaskResult {
+                            title: "Evidence-backed summary".to_string(),
+                            result: format!(
+                            "Validated evidence summary is ready in canonical report revision {} \
+                                 (report {}). Its frozen source manifest and citations passed the \
+                                 Reporting Gate; publication remains {}.",
+                            truth.revision_id, truth.report_id, truth.publication_status,
+                        ),
+                            token_usage: None,
+                        });
+                    return crate::harness::operation_flow::StageFlowOutcome::pass_with_progress();
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -2772,39 +2834,108 @@ impl TaskOrchestrator {
         task_id: Uuid,
     ) -> (String, Option<HarnessGateOutcome>) {
         use crate::harness::org_gate::{
-            completion_is_fresh_for_stage, extract_pass_token, fanout_completion_scope_ids,
+            completion_is_fresh_for_stage, extract_pass_token, specialist_completion_scope_ids,
             stage_pass_token, STAGE_COMPLETION_TTL_SECS,
         };
-        let engagement_subtree_ids = if let Some(root) = self.harness_org_id {
-            match self.repo.org_subtree_ids(root).await {
-                Ok(ids) if !ids.is_empty() => Some(ids),
-                Ok(_) => {
-                    tracing::warn!(
-                        target: "harness::hook",
-                        root_org = %root,
-                        "fan-out closeout could not resolve engagement org subtree"
-                    );
-                    Some(vec![])
-                }
+        let investigation_completion_authority = if stage
+            == crate::harness::StageKind::Investigation
+        {
+            let publication = match self.repo.unified_investigation_repository() {
+                Ok(repository) => match repository
+                    .load_closure_publication_for_operation(task_id)
+                    .await
+                {
+                    Ok(Some(publication)) => publication,
+                    Ok(None) => {
+                        return render_specialist_gate(
+                                content,
+                                stage,
+                                false,
+                                vec![
+                                    "Investigation closure exists only as a completion projection; the immutable closure publication is missing"
+                                        .to_string(),
+                                ],
+                                deliverable,
+                            );
+                    }
+                    Err(error) => {
+                        return render_specialist_gate(
+                            content,
+                            stage,
+                            false,
+                            vec![format!(
+                                "Investigation closure publication authority is invalid: {error}"
+                            )],
+                            deliverable,
+                        );
+                    }
+                },
                 Err(error) => {
-                    tracing::warn!(
-                        target: "harness::hook",
-                        root_org = %root,
-                        error = %error,
-                        "fan-out closeout org-subtree lookup failed"
+                    return render_specialist_gate(
+                        content,
+                        stage,
+                        false,
+                        vec![format!(
+                            "Investigation closure publication repository is unavailable: {error}"
+                        )],
+                        deliverable,
                     );
-                    Some(vec![])
+                }
+            };
+            match publication.exact_completion_authority(task_id) {
+                Ok(authority) => Some(authority),
+                Err(error) => {
+                    return render_specialist_gate(
+                        content,
+                        stage,
+                        false,
+                        vec![format!(
+                            "Investigation closure publication authority is invalid: {error}"
+                        )],
+                        deliverable,
+                    );
                 }
             }
         } else {
             None
         };
-        let legacy_org_ids = if self.harness_org_id.is_none() {
-            self.repo.in_scope_org_ids(None).await.unwrap_or_default()
+        let engagement_subtree_ids = if stage != crate::harness::StageKind::Investigation {
+            if let Some(root) = self.harness_org_id {
+                match self.repo.org_subtree_ids(root).await {
+                    Ok(ids) if !ids.is_empty() => Some(ids),
+                    Ok(_) => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            root_org = %root,
+                            "fan-out closeout could not resolve engagement org subtree"
+                        );
+                        Some(vec![])
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            root_org = %root,
+                            error = %error,
+                            "fan-out closeout org-subtree lookup failed"
+                        );
+                        Some(vec![])
+                    }
+                }
+            } else {
+                None
+            }
         } else {
-            vec![]
+            None
         };
-        let org_ids = fanout_completion_scope_ids(
+        let legacy_org_ids =
+            if stage != crate::harness::StageKind::Investigation && self.harness_org_id.is_none() {
+                self.repo.in_scope_org_ids(None).await.unwrap_or_default()
+            } else {
+                vec![]
+            };
+        let org_ids = specialist_completion_scope_ids(
+            stage,
+            investigation_completion_authority.as_deref(),
             self.harness_org_id,
             engagement_subtree_ids,
             legacy_org_ids,
@@ -2881,6 +3012,28 @@ impl TaskOrchestrator {
                 )],
                 deliverable,
             );
+        }
+        if let Some(publication_completion_authority) = investigation_completion_authority {
+            let completion_times = fresh
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let publication_times = publication_completion_authority
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if completion_times != publication_times {
+                return render_specialist_gate(
+                    content,
+                    stage,
+                    false,
+                    vec![
+                        "Investigation pass-token completion timestamps do not exactly match the immutable operation-scope closure publication"
+                            .to_string(),
+                    ],
+                    deliverable,
+                );
+            }
         }
         let expected = stage_pass_token(stage, &fresh);
         let reasons = match extract_pass_token(deliverable) {
@@ -3197,7 +3350,11 @@ impl TaskOrchestrator {
     /// P0 · gate evidence 回查: 把交付物里引用、但 ledger 中**不存在**的 evidence
     /// id 当作伪造 → 翻 BLOCK + 追加纠正喂回 reflector. infra 查询失败只 warn,
     /// 不误伤合法 stage (放行), 避免 DB 抖动卡死流程.
-    async fn enforce_evidence_existence(&self, outcome: &mut HarnessGateOutcome) {
+    async fn enforce_evidence_existence(
+        &self,
+        outcome: &mut HarnessGateOutcome,
+        exec_ctx: &ExecutionContext,
+    ) {
         if outcome.evidence_refs.is_empty() {
             return;
         }
@@ -3238,24 +3395,24 @@ impl TaskOrchestrator {
         // placeholders 1/2/3 because it never learned the REAL ledger ids that
         // its (often backgrounded) scans produced. Look up this operation's real
         // evidence ids and name them in the correction so the retry can cite real
-        // ones instead of guessing. Scoped by the chat-session string both
-        // evidence write paths stamp on the ledger; infra failure / no session
-        // just yields an empty hint (still BLOCKs, mirroring fail-open elsewhere).
-        let available_real_ids = match self.chat_session_id.as_deref() {
-            Some(sid) => self
-                .repo
-                .recent_evidence_ids(sid, 25)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        target: "harness::hook",
-                        error = %e,
-                        "real evidence-id lookup failed; correcting without an id hint"
-                    );
-                    Vec::new()
-                }),
-            None => Vec::new(),
-        };
+        // ones instead of guessing. Scope the hint to this exact stage attempt:
+        // predecessor evidence is real, but is not proof that this stage ran.
+        let available_real_ids =
+            match (self.chat_session_id.as_deref(), exec_ctx.stage_execution_id) {
+                (Some(sid), Some(stage_execution_id)) => self
+                    .repo
+                    .recent_evidence_ids_for_stage_attempt(sid, stage_execution_id, 25)
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            target: "harness::hook",
+                            error = %e,
+                            "real evidence-id lookup failed; correcting without an id hint"
+                        );
+                        Vec::new()
+                    }),
+                _ => Vec::new(),
+            };
         tracing::warn!(
             target: "harness::hook",
             stage = %outcome.gated_stage.as_str(),
@@ -3267,17 +3424,28 @@ impl TaskOrchestrator {
     }
 
     /// 设计 2026-06-12-unified-refiner · missing-deliverable BLOCK 时查账本真实
-    /// ids + kind 标签，作为「事实」填进 outcome——Refiner 据此分类（账本非空 →
-    /// A 类 submit-only 锁；空 → B 类重做）并渲染。查询失败 / 无 session / 账本
-    /// 空 = 不填（B 类自然兜住，never imply work was done when it wasn't）。
-    async fn gather_missing_deliverable_ids(&self, outcome: &mut HarnessGateOutcome) {
+    /// ids + kind 标签，作为「事实」填进 outcome——Refiner 据此分类（本阶段账本非空
+    /// → A 类 submit-only 锁；空 → B 类重做）并渲染。查询失败 / 无可信阶段身份 /
+    /// 本阶段账本空 = 不填（B 类自然兜住，never imply work was done when it wasn't）。
+    async fn gather_missing_deliverable_ids(
+        &self,
+        outcome: &mut HarnessGateOutcome,
+        exec_ctx: &ExecutionContext,
+    ) {
         if outcome.gate_allowed || !outcome.missing_deliverable {
             return;
         }
         let Some(sid) = self.chat_session_id.as_deref() else {
             return;
         };
-        let ids = match self.repo.recent_evidence_ids(sid, 25).await {
+        let Some(stage_execution_id) = exec_ctx.stage_execution_id else {
+            return;
+        };
+        let ids = match self
+            .repo
+            .recent_evidence_ids_for_stage_attempt(sid, stage_execution_id, 25)
+            .await
+        {
             Ok(ids) => ids,
             Err(e) => {
                 tracing::warn!(
@@ -3304,10 +3472,9 @@ impl TaskOrchestrator {
     }
 
     /// Red_team scoping anti-shortcut gate (设计 2026-06-06-scoping-per-mode-gate-hitl
-    /// §3.4 P1 强化). The deterministic gate only checks that a `scope_human_approved`
-    /// claim EXISTS — which a weak model can fabricate without doing the work. For
-    /// red_team profiles (`scoping_policy.require_unit_candidates`) cross-verify
-    /// against this session's REAL `tool_calls` that the human either explicitly
+    /// §3.4 P1 强化). Model claims are not approval authority. For red_team profiles
+    /// (`scoping_policy.require_unit_candidates`) verify against this session's
+    /// REAL `tool_calls` that the human either explicitly
     /// chose root-only scope, or completed a same-root candidate proposal followed
     /// by `ask_human(input_type="unit_review")`. Earlier versions also forced a
     /// `manage_organizations(action="create")`, but that made REUSE mode unsafe:
@@ -3944,7 +4111,7 @@ fn apply_harness_gate_hook(
     // also checks expected finding-count ranges + min tool invocations
     // (per-target, not just structural). No-op when the profile ships no skeleton
     // or the stage has no skeleton entry.
-    let mut harness = match crate::harness::load_embedded_sprint_skeleton(profile_id) {
+    let harness = match crate::harness::load_embedded_sprint_skeleton(profile_id) {
         Ok(Some(skeleton)) => match skeleton.for_stage(stage_hint.stage_kind) {
             Some(stage_skel) => {
                 tracing::info!(
@@ -3960,24 +4127,11 @@ fn apply_harness_gate_hook(
         _ => harness,
     };
 
-    // scoping 人工确认硬门禁（设计 2026-06-06-scoping-per-mode-gate-hitl §3.4）：除 smoke 外
-    // （profile.scoping_policy.require_human_scope_approval=true），scoping 通过前 deliverable
-    // 必须带一条 kind="scope_human_approved" 的 claim，否则 gate Block、不许进 target_intel。
-    // 灰度由 GOLISH_SCOPING_HUMAN_GATE 控制（默认开）；规则用现有 count_at_least 积木，不改引擎。
-    if matches!(stage_hint.stage_kind, crate::harness::StageKind::Scoping)
-        && crate::harness::feature_flags::scoping_human_gate_enabled()
-        && harness.profile.scoping_policy.require_human_scope_approval
-    {
-        harness
-            .stage_spec
-            .gate_rules
-            .push(crate::harness::gate::scoping_human_gate_rule());
-        tracing::info!(
-            target: "harness::hook",
-            profile_id = %profile_id,
-            "scoping human-approval hard gate injected (deliverable must carry a scope_human_approved claim)"
-        );
-    }
+    // Scoping approval is not a model-authored magic claim. After the structural
+    // gate passes, `enforce_scoping_red_team_flow` verifies the operation-scoped
+    // persisted subsidiary decision and exact target-review lifecycle against
+    // the trusted DB snapshot. A claim can summarize that fact, but cannot create
+    // or replace it.
 
     // Confirm-only 是阶段语义，不再由 `allowed_tool_types.is_empty()` 推断：
     // target_intel / cleanup 可以禁止模型直接调外部工具，但仍有 substantive gate。
@@ -4437,8 +4591,8 @@ fn evaluate_red_team_scoping_flow(
         );
     }
     Some(format!(
-        "RED-TEAM SCOPING INCOMPLETE — a `scope_human_approved` claim is present but this run never \
-         completed the required subsidiary-scope branch. Missing: {}. If the human explicitly chooses \
+        "RED-TEAM SCOPING INCOMPLETE — this run never completed the required subsidiary-scope branch. \
+         A model claim cannot replace the persisted decision. Missing: {}. If the human explicitly chooses \
          parent/root-only scope in ask_human(input_type=\"choice\", context containing \
          decision=\"subsidiary_scope\"), do not manufacture a candidate or unit-review table. Otherwise, \
          before submit you MUST call manage_organizations(action=\"propose_candidates\"), then \
@@ -4557,39 +4711,33 @@ fn synthesize_stage_subtask(
     stage: crate::harness::StageKind,
     task_input: &str,
     scoping_policy: &crate::harness::profile::ScopingPolicy,
-    intel_policy: &crate::harness::profile::IntelPolicy,
+    _intel_policy: &crate::harness::profile::IntelPolicy,
 ) -> PlannedSubtask {
-    use crate::harness::profile::{AssetConfirmation, PassiveIntelMode, SubjectKind};
+    use crate::harness::profile::{AssetConfirmation, SubjectKind};
     use crate::harness::StageKind as K;
     let target = task_input.trim();
     let (title, description, agent): (&str, String, &str) = match stage {
         K::Scoping => {
-            // scoping prompt 按 profile 的 scoping_policy 分流 (设计 2026-06-06 §3.3):
-            // 确认主体 → (红队) 列单位候选交人 → 列资产交人增删改 → 人确认后记
-            // scope_human_approved claim. 每步由 policy 字段开关, smoke 全关 = 直接确认.
+            // Company Identity is host-owned authority. The model owns the
+            // ordered resolution plan, but a label/name/organization row never
+            // becomes confirmed merely because the model says so.
             let mut steps = String::new();
             if scoping_policy.require_subject {
                 steps.push_str(match scoping_policy.subject_kind {
                     SubjectKind::Organization | SubjectKind::OrganizationOrFreetext => {
-                        if scoping_policy.write_organizations
-                            && !scoping_policy.require_unit_candidates
-                        {
-                            "1) Identify the engagement subject organization; create or select it via manage_organizations(action=\"create\"/\"list\") and CONFIRM it with the user (org-first: every target must link to this organization_id). "
-                        } else {
-                            "1) Identify and CONFIRM the engagement subject (the target organization). "
-                        }
+                        "1) Treat the supplied company text only as an unresolved subject label. Resolve it in this exact order: inspect manage_organizations(action=\"list\") and reuse only an exact root that already has a confirmed immutable Company Identity receipt; otherwise call recon_lookup_company so the host runs enterprise-registration adapters first and advances to the 0.zone `org` adapter only when those sources are unavailable, checked-empty, failed, or conflicting; only after structured sources are exhausted may you use an exposed host-controlled artifact-first public search/browser fallback. Preserve found, checked_empty, unavailable, failed, and conflicting separately. If material ambiguity remains, call ask_human(input_type=\"choice\", context containing decision=\"company_identity\") exactly once with evidence-backed candidate ids, legal names, identifiers, and disambiguation summaries. Never pick the first/highest-confidence match merely because it is first. 2) Create or reuse the root organization only through the host-confirmed candidate/receipt binding. A free-form name, near match, search snippet, organization row, or model confidence is not confirmation. Do not continue until the host returns an operation/org/stage-bound immutable Company Identity receipt with resolution_status=confirmed, canonical legal name, available identifiers, source Evidence/raw-artifact references, confirmation method, and frozen scope policy. needs_human and unresolved are holds. "
                     }
                     SubjectKind::CloudTenant => {
-                        "1) Identify and CONFIRM the cloud tenant/account that is the engagement subject. "
+                        "1) Treat the tenant/account text as unresolved input. Do not manufacture a Company Identity or reuse a similarly named organization; require the host's typed tenant resolution authority or stop with a needs_human hold. "
                     }
                     SubjectKind::None | SubjectKind::Freetext => {
-                        "1) State and CONFIRM the engagement subject. "
+                        "1) Classify the free-text subject without treating it as authority. If it denotes an enterprise, run the complete Company Identity resolution ladder; otherwise require the matching host-owned typed identity receipt or stop unresolved. "
                     }
                 });
             }
             if scoping_policy.require_unit_candidates {
                 steps.push_str(
-                    "2) Ask the human whether subsidiaries/branches are in scope using ask_human(input_type=\"choice\", context=\"{\\\"decision\\\":\\\"subsidiary_scope\\\",\\\"organization_id\\\":\\\"<root-id>\\\"}\"). If they explicitly choose parent/root-only scope, persist that decision and skip discovery, propose_candidates, and unit_review. Only when subsidiaries may be included, call manage_organizations(action=\"propose_candidates\") and then ask_human(input_type=\"unit_review\") so the user can judge/edit candidates. If the engagement root/tree already exists, reuse it and do not create more orgs; only call manage_organizations(action=\"create\"/\"create_batch\") for a missing root or units the user explicitly added/confirmed. ",
+                    "3) Only after the root Company Identity receipt is confirmed, you MUST call ask_human(input_type=\"choice\") exactly once with canonical context=\"{\\\"decision\\\":\\\"subsidiary_scope\\\",\\\"organization_id\\\":\\\"<confirmed-root-uuid>\\\"}\" and canonical options root_only, include_51, include_100. A desired/default value in the task prose is not persisted scope authority: never infer it, freeze it, or skip this tool call because the prose already names an outcome. Only the persisted typed response closes this branch. root_only closes it without empty discovery/review. Only an included choice may trigger evidence-backed subsidiary discovery, manage_organizations(action=\"propose_candidates\"), one unit_review, and creation of the human-selected legal entities. ",
                 );
             }
             if matches!(
@@ -4597,38 +4745,31 @@ fn synthesize_stage_subtask(
                 AssetConfirmation::Interactive
             ) {
                 steps.push_str(
-                    "3) Inspect the concrete domain/IP/CIDR/URL seeds already ingested by the trusted UI/CLI before this stage. Only when that trusted snapshot is NON-EMPTY, call ask_human(input_type=\"scope_review\") EXACTLY ONCE so the user can confirm or reject the exact list; after an edit/rejection, stop instead of opening a second review. For company/organization-only input with an EMPTY snapshot, do not ask for an empty target review; the applicable organization/unit confirmation is sufficient. Do NOT call manage_targets or create assets from organization OSINT; if a proposed approved seed is absent from the scoped target store, stop with a concrete ingestion blocker instead of inventing it. ",
+                    "4) Inspect the concrete domain/IP/CIDR/URL seeds already ingested by the trusted UI/CLI before this stage. Only when that trusted snapshot is NON-EMPTY, call ask_human(input_type=\"scope_review\") EXACTLY ONCE so the user can confirm or reject the exact list; after an edit/rejection, stop instead of opening a second review. For company/organization-only input with an EMPTY snapshot, do not ask for an empty target review. Do NOT call manage_targets or derive assets from Company Identity/provider/public observations. ",
                 );
             }
             if scoping_policy.require_human_scope_approval {
                 steps.push_str(
-                    "4) After the applicable human approval, record a claim {kind:\"scope_human_approved\", subject:<engagement subject>} citing the applicable ask_human request_id (the `subsidiary_scope` choice for parent-only scope, `unit_review` when subsidiaries were reviewed, or `scope_review` for a non-empty concrete snapshot), then submit_stage_deliverable. ",
+                    "5) After the applicable human scope approval and only while the immutable Company Identity receipt remains current, submit a scope_confirmed summary against the confirmed organization UUID and real receipt evidence. The host independently verifies the persisted human-review lifecycle; do not invent a magic approval claim or request evidence id. Then call submit_stage_deliverable. ",
                 );
             }
-            steps.push_str("Do NOT perform any active scanning in this stage.");
+            steps.push_str(
+                "A scope claim cannot replace the immutable Company Identity receipt. Do NOT perform target discovery, DNS/HTTP/port probing, Target mutation, or active scanning in this stage.",
+            );
             (
-                "Scope & Authorization Confirmation",
-                format!("Confirm and document the engagement scope for `{target}`. {steps}"),
+                "Company Identity & Scope Confirmation",
+                format!(
+                    "Resolve and freeze the exact authorized enterprise for `{target}`, then freeze its scope policy. {steps}"
+                ),
                 "pentester",
             )
         }
         K::TargetIntel => {
-            // target_intel prompt 按 intel_policy 分流
-            // (设计 2026-06-06-intel-stage-ai-driven-per-mode §3.5):
-            // 渗透 skip 直接空跑; 红队/评估跑被动 (子公司发现 → 字段富化 → 引证 evidence).
-            let mut steps = String::new();
-            if matches!(intel_policy.passive_intel, PassiveIntelMode::Skip) {
-                steps.push_str(
-                    "Assets were already confirmed during scoping; this engagement SKIPS passive intel. Do NOT run passive providers. Mark each expected intel technique coverage cell as not_applicable with a short note (\"assets confirmed in scoping; passive intel skipped per mode\"), then submit_stage_deliverable.",
-                );
-            } else {
-                steps.push_str(
-                    "This stage is per-org specialist work. Do NOT call recon_list_providers, recon_discover_subsidiaries, recon_map_assets, recon_lookup_whois, or any sub_agent_* directly from the primary stage agent. Instead call stage_run with the confirmed root org plus subsidiaries from scoping; the recon worker receives the provider-survey methodology and submits each per-org deliverable. Re-run stage_run only for blocked orgs while retry_budget_exhausted=false. If retry_budget_exhausted=true, stop this request BLOCKED; a separate user continuation may resume the saved worker with a fresh bounded budget. After all orgs pass, submit the stage_run pass token via submit_stage_deliverable to close target_intel.",
-                );
-            }
             (
-                "Passive Target Intelligence",
-                format!("Gather passive intelligence on `{target}` without touching the target. {steps}"),
+                "Autonomous Corporate Asset Discovery Goal",
+                format!(
+                    "Continue one durable Target Intel Goal for `{target}` from the frozen confirmed Company Identity. The depth-0 coordinator uses stage_run only to enter or resume that same Goal-owner chain; stage_run is not a fixed provider fan-out and no provider/WHOIS/ASN/DNS/CT/OSINT lane is mandatory. Inside the Goal chain, read the current plan, structured work memory, observations, material frontier, receipts, attribution/reachability state, residuals, and prior review findings. Choose the highest-information feasible semantic pivots, call only host-compiled search capabilities, and update the plan after every result. Spawn generic bounded workers only for independent questions, then merge their evidence into the same Goal. Keep observation, owned attribution, fresh reachability, and active-scan authority distinct; shared, third-party, ambiguous, rejected, and unreachable candidates never become formal Targets. When every material frontier item has a terminal disposition and no meaningful feasible path remains, request the neutral review. A REWORK verdict continues this same durable Goal chain with its findings; NEEDS_HUMAN is a typed hold. Do not self-declare completion or manufacture a completion artifact. Only the host reviewer plus deterministic finalizer may close Target Intel."
+                ),
                 "pentester",
             )
         }
@@ -4932,7 +5073,7 @@ mod dag_driven_helper_tests {
     #[test]
     fn missing_with_ledger_ids_routes_to_submit_only_lock() {
         let mut o =
-            missing_deliverable_gate_outcome(StageKind::TargetIntel, false).expect("BLOCK outcome");
+            missing_deliverable_gate_outcome(StageKind::Enumeration, false).expect("BLOCK outcome");
         o.available_real_ids = vec![1634, 1632, 1700];
         o.evidence_kind_labels = std::collections::HashMap::from([
             (1632_i64, "dns_a".to_string()),
@@ -4960,7 +5101,7 @@ mod dag_driven_helper_tests {
             d.correction
         );
         assert!(
-            d.correction.contains("target_intel"),
+            d.correction.contains("enumeration"),
             "must name the stage being repaired: {}",
             d.correction
         );
@@ -4986,9 +5127,8 @@ mod dag_driven_helper_tests {
         assert_eq!(r.agent.as_deref(), Some("analyzer"));
     }
 
-    /// T4 (设计 2026-06-06 §3.3): scoping 子任务描述随 profile 的 scoping_policy 分流——
-    /// 红队 (require_unit_candidates + human gate) 出 unit_review +
-    /// scope_human_approved; smoke (gate off, asset_confirmation=none) 全不出现.
+    /// Scoping 始终先走 Company Identity 解析 ladder；profile 只控制 identity
+    /// 封存之后的 subsidiary / trusted-target review 分支。
     #[test]
     fn scoping_subtask_prompt_varies_by_policy() {
         use crate::harness::profile::{AssetConfirmation, IntelPolicy, ScopingPolicy, SubjectKind};
@@ -5003,14 +5143,43 @@ mod dag_driven_helper_tests {
         };
         let intel = IntelPolicy::default();
         let s = synthesize_stage_subtask(StageKind::Scoping, "acme corp", &red, &intel);
+        for required in [
+            "unresolved subject label",
+            "exact root",
+            "confirmed immutable Company Identity receipt",
+            "enterprise-registration adapters first",
+            "0.zone",
+            "artifact-first public search/browser fallback",
+            "decision=\"company_identity\"",
+            "resolution_status=confirmed",
+            "needs_human",
+        ] {
+            assert!(
+                s.description.contains(required),
+                "missing synthesized Scoping contract: {required}"
+            );
+        }
         assert!(s.description.contains("subsidiary_scope"));
-        assert!(s.description.contains("parent/root-only"));
+        assert!(s.description.contains("MUST call ask_human"));
+        assert!(s.description.contains("<confirmed-root-uuid>"));
+        assert!(s.description.contains("root_only"));
+        assert!(s.description.contains("include_51"));
+        assert!(s.description.contains("include_100"));
+        assert!(s
+            .description
+            .contains("task prose is not persisted scope authority"));
         assert!(s.description.contains("propose_candidates"));
         assert!(s.description.contains("unit_review"));
         assert!(s.description.contains("scope_review"));
-        assert!(s.description.contains("scope_human_approved"));
+        assert!(s.description.contains("host independently verifies"));
+        assert!(s
+            .description
+            .contains("do not invent a magic approval claim"));
         assert!(s.description.contains("EXACTLY ONCE"));
         assert!(s.description.contains("Do NOT call manage_targets"));
+        assert!(!s
+            .description
+            .contains("use that exact company name as the confirmed root"));
 
         let smoke = ScopingPolicy {
             require_human_scope_approval: false,
@@ -5018,7 +5187,7 @@ mod dag_driven_helper_tests {
             ..ScopingPolicy::default()
         };
         let s2 = synthesize_stage_subtask(StageKind::Scoping, "x", &smoke, &intel);
-        assert!(!s2.description.contains("scope_human_approved"));
+        assert!(!s2.description.contains("host independently verifies"));
         assert!(!s2.description.contains("unit_review"));
     }
 
@@ -5194,11 +5363,10 @@ mod dag_driven_helper_tests {
         assert!(canonical_scoping_cidr("203.0.113.7/99").is_none());
     }
 
-    /// target_intel is a specialist stage: the primary prompt must route through
-    /// `stage_run`, while the recon worker receives the provider methodology.
-    /// Skip mode remains a direct not_applicable closeout.
+    /// Target Intel policy no longer selects a fixed passive-provider lane or an N/A
+    /// shortcut: both modes enter the same autonomous, receipt-backed Goal contract.
     #[test]
-    fn target_intel_prompt_varies_by_intel_policy() {
+    fn target_intel_prompt_uses_autonomous_goal_ignoring_passive_intel_mode() {
         use crate::harness::profile::{IntelPolicy, PassiveIntelMode, ScopingPolicy};
 
         let scoping = ScopingPolicy::default();
@@ -5209,31 +5377,48 @@ mod dag_driven_helper_tests {
             enrich_assets: true,
         };
         let s = synthesize_stage_subtask(StageKind::TargetIntel, "acme corp", &scoping, &red);
-        assert!(s.description.contains("stage_run"));
-        assert!(s.description.contains("per-org specialist work"));
-        assert!(s.description.contains("Do NOT call recon_list_providers"));
-        assert!(s.description.contains("recon_map_assets"));
-        assert!(s.description.contains("submit the stage_run pass token"));
-        assert!(s.description.contains("recon worker"));
-        assert!(s.description.contains("retry_budget_exhausted=true"));
-        assert!(s.description.contains("separate user continuation"));
-        assert!(!s
-            .description
-            .contains("Call recon_map_assets(organization_id=<org>)"));
-        assert!(!s.description.contains("SKIPS passive intel"));
-        assert!(!s.description.contains("subfinder"));
-        assert!(!s.description.contains("dig"));
+        for required in [
+            "one durable Target Intel Goal",
+            "stage_run",
+            "not a fixed provider fan-out",
+            "structured work memory",
+            "highest-information feasible semantic pivots",
+            "update the plan after every result",
+            "generic bounded workers",
+            "neutral review",
+            "REWORK",
+            "same durable Goal chain",
+            "host reviewer plus deterministic finalizer",
+        ] {
+            assert!(
+                s.description.contains(required),
+                "missing autonomous Target Intel contract: {required}"
+            );
+        }
+        for forbidden in [
+            "recon_map_assets",
+            "GOLISH-INTEL-",
+            "pass token",
+            "SKIPS passive intel",
+            "subfinder",
+            "dig",
+        ] {
+            assert!(
+                !s.description.contains(forbidden),
+                "legacy Target Intel contract leaked: {forbidden}"
+            );
+        }
 
         let pentest = IntelPolicy {
             passive_intel: PassiveIntelMode::Skip,
             discover_subsidiaries: false,
             enrich_assets: false,
         };
-        let s2 = synthesize_stage_subtask(StageKind::TargetIntel, "1.2.3.4", &scoping, &pentest);
-        assert!(s2.description.contains("not_applicable"));
-        assert!(!s2.description.contains("recon_list_providers"));
-        assert!(!s2.description.contains("recon_discover_subsidiaries"));
-        assert!(!s2.description.contains("recon_map_assets"));
+        let s2 = synthesize_stage_subtask(StageKind::TargetIntel, "acme corp", &scoping, &pentest);
+        assert_eq!(s.description, s2.description);
+        assert!(!s2
+            .description
+            .contains("fixed passive-intel not_applicable"));
     }
 
     // ── P3 ③ seam: dynamic expected_techniques in the gate hook ───────────────
@@ -5286,7 +5471,7 @@ mod dag_driven_helper_tests {
             super::inject_subsidiary_expected_technique(None, StageKind::Scoping, false).is_none()
         );
         // 非 scoping stage 不注入 (base 原样透传).
-        let base = Some(vec!["GOLISH-INTEL-DNS".to_string()]);
+        let base = Some(vec!["OTHER-TECHNIQUE".to_string()]);
         assert_eq!(
             super::inject_subsidiary_expected_technique(base.clone(), StageKind::TargetIntel, true),
             base
@@ -5330,7 +5515,7 @@ mod dag_driven_helper_tests {
         // 非 SUBSIDIARY 事实不被展开.
         let mut other = vec![EvidenceFact {
             asset: "默安科技".into(),
-            technique: "GOLISH-INTEL-DNS".into(),
+            technique: "OTHER-TECHNIQUE".into(),
             outcome: EvidenceOutcome::Found,
             evidence_id: 7,
         }];
@@ -5608,60 +5793,51 @@ mod harness_gate_hook_tests {
         let facts = vec![
             EvidenceFact {
                 asset: "moresec.cn".to_string(),
-                technique: "GOLISH-INTEL-DNS".to_string(),
+                technique: "DNS-RESOLUTION".to_string(),
                 outcome: EvidenceOutcome::Found,
                 evidence_id: 0,
             },
             EvidenceFact {
                 asset: "moresec.cn".to_string(),
-                technique: "GOLISH-INTEL-ASN".to_string(),
+                technique: "ASN-LOOKUP".to_string(),
                 outcome: EvidenceOutcome::Empty,
                 evidence_id: 5,
             },
         ];
         let out = build_db_truth_diagnosis(&facts).unwrap();
-        assert!(out.contains("moresec.cn") && out.contains("GOLISH-INTEL-DNS"));
+        assert!(out.contains("moresec.cn") && out.contains("DNS-RESOLUTION"));
         assert!(
-            !out.contains("GOLISH-INTEL-ASN"),
+            !out.contains("ASN-LOOKUP"),
             "Empty fact is not persisted data (I8)"
         );
     }
 
     #[test]
-    fn refiner_coverage_block_appends_db_status_and_actions() {
+    fn refiner_coverage_block_appends_generic_db_status() {
         use crate::harness::gate::rule_engine::{EvidenceFact, EvidenceOutcome};
-        let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false).unwrap();
+        let mut o = missing_deliverable_gate_outcome(StageKind::Enumeration, false).unwrap();
         o.missing_deliverable = false;
         o.gate_reasons = vec![
-            "coverage incomplete: never attempted (moresec.cn × GOLISH-INTEL-DNS)".to_string(),
+            "coverage incomplete: never attempted (app.example.com × GOLISH-ENUM-DIR)".to_string(),
         ];
         let facts = vec![EvidenceFact {
-            asset: "moresec.cn".to_string(),
-            technique: "GOLISH-INTEL-SUBDOMAIN".to_string(),
+            asset: "app.example.com".to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
             outcome: EvidenceOutcome::Found,
             evidence_id: 0,
         }];
         let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(Some(&facts)));
         assert!(d.correction.contains("DB truth status"), "DB 现状段");
-        assert!(
-            d.correction.contains("GOLISH-INTEL-SUBDOMAIN"),
-            "列已 Found 的类"
-        );
-        assert!(
-            d.correction.contains("Suggested next target_intel actions"),
-            "下一步动作建议段"
-        );
-        assert!(d.correction.contains("recon_map_assets"));
-        assert!(!d.correction.contains("dig"));
+        assert!(d.correction.contains("GOLISH-ENUM-JS"), "列已 Found 的类");
+        assert!(d.correction.contains("Repair the exact reported gap"));
     }
 
     #[test]
     fn refiner_generic_block_has_no_diagnosis_sections() {
-        let mut o = missing_deliverable_gate_outcome(StageKind::TargetIntel, false).unwrap();
+        let mut o = missing_deliverable_gate_outcome(StageKind::Enumeration, false).unwrap();
         o.missing_deliverable = false;
         o.gate_reasons = vec!["finding count below minimum".to_string()];
         let d = crate::task_orchestrator::refiner::refine(&o.as_refine_input(None));
-        assert!(!d.correction.contains("Suggested next target_intel actions"));
         assert!(!d.correction.contains("DB truth status"));
     }
 
@@ -5833,7 +6009,7 @@ mod harness_gate_hook_tests {
         // When the operation already has real evidence ids, the correction may
         // name them as debug context but must not require the model to copy ids
         // into the deliverable.
-        let mut o = outcome_for_test(StageKind::TargetIntel, vec![1, 2, 3]);
+        let mut o = outcome_for_test(StageKind::Enumeration, vec![1, 2, 3]);
         block_outcome_for_fabricated(&mut o, &[1, 2, 3], &[86, 88, 90]);
         assert!(!o.gate_allowed);
         // Observability (design 2026-06-05): the fabricated/available ids are
@@ -5916,11 +6092,8 @@ mod missing_deliverable_fail_closed_tests {
     #[test]
     fn db_truth_to_evidence_maps_pairs_to_found_with_sentinel_id() {
         let pairs = vec![
-            ("moresec.cn".to_string(), "GOLISH-INTEL-ASN".to_string()),
-            (
-                "moresec.cn".to_string(),
-                "GOLISH-INTEL-SUBDOMAIN".to_string(),
-            ),
+            ("moresec.cn".to_string(), "TECHNIQUE-A".to_string()),
+            ("moresec.cn".to_string(), "TECHNIQUE-B".to_string()),
         ];
         let facts = db_truth_facts_to_evidence(pairs);
         assert_eq!(facts.len(), 2);
@@ -5929,7 +6102,7 @@ mod missing_deliverable_fail_closed_tests {
             assert_eq!(f.evidence_id, 0, "业务表 fact 用哨兵 id=0 (D2)");
         }
         assert_eq!(facts[0].asset, "moresec.cn");
-        assert_eq!(facts[0].technique, "GOLISH-INTEL-ASN");
+        assert_eq!(facts[0].technique, "TECHNIQUE-A");
     }
 
     #[test]
@@ -5941,13 +6114,12 @@ mod missing_deliverable_fail_closed_tests {
 
     #[test]
     fn hook_blocks_missing_deliverable_even_with_ledger_facts() {
-        // PR-R2 行为变化锚点：target_intel（旧投影兜底的灰度 stage）现在与其它
-        // substantive stage 一致——账本有真证据也不投影，BLOCK 后由 Refiner 的
-        // A 类 submit-only 锁驱动 agent 自己提交（live run 两连截胡的根治）。
+        // Generic deliverable stages stay fail-closed: ledger facts never replace
+        // a missing submission, and the Refiner routes the repair from facts.
         let ctx = ExecutionContext::default();
-        for stage in [StageKind::TargetIntel, StageKind::ExternalAttackSurface] {
+        for stage in [StageKind::ExternalAttackSurface, StageKind::Enumeration] {
             let p = planned(stage);
-            let facts = vec![fact("a", "GOLISH-INTEL-DNS", EvidenceOutcome::Found, 7)];
+            let facts = vec![fact("a", "TECHNIQUE-A", EvidenceOutcome::Found, 7)];
             let (out, outcome) = apply_harness_gate_hook(
                 &p,
                 &ctx,

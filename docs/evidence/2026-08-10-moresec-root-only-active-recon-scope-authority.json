@@ -1,0 +1,29 @@
+{
+  "schema": "stage_run_active_recon_scope_authority.v1",
+  "operationId": "f76e47ba-a468-4393-852a-4c2bf8ee5682",
+  "organizationId": "af9ebcb7-27fb-459d-b5ad-6ed959dbb037",
+  "expectedPresented": [
+    {
+      "value": "https://moresec.cn",
+      "type": "url",
+      "scope": "in"
+    },
+    {
+      "value": "moresec.cn",
+      "type": "domain",
+      "scope": "in"
+    }
+  ],
+  "selected": [
+    {
+      "value": "https://moresec.cn",
+      "type": "url",
+      "scope": "in"
+    },
+    {
+      "value": "moresec.cn",
+      "type": "domain",
+      "scope": "in"
+    }
+  ]
+}

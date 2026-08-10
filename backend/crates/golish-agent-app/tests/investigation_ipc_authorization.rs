@@ -1,10 +1,20 @@
 use async_trait::async_trait;
 use golish_agent_app::ai::commands::investigation::{
-    authorize_investigation_scope, InvestigationCommandError, InvestigationHypothesisDetailView,
-    InvestigationHypothesisGetRequest, InvestigationHypothesisListItemView,
-    InvestigationHypothesisListRequest, InvestigationHypothesisListView,
-    InvestigationModePolicyView, InvestigationProjectionEnvelope, InvestigationScopeRequest,
-    InvestigationSummaryView, InvestigationTemporalSnapshotView,
+    authorize_investigation_scope, InvestigationActorTopologyNodeView,
+    InvestigationAuthorityTimeViewV1, InvestigationCampaignDetailRequest,
+    InvestigationCampaignDetailResponse, InvestigationCampaignDetailView,
+    InvestigationCampaignListItemView, InvestigationCampaignListRequest,
+    InvestigationCampaignPageResponse, InvestigationCommandError, InvestigationControlProjectionV1,
+    InvestigationCoverageDenominatorView, InvestigationGenerationSummaryView,
+    InvestigationHypothesisDetailView, InvestigationHypothesisGetRequest,
+    InvestigationHypothesisListItemView, InvestigationHypothesisListRequest,
+    InvestigationHypothesisListView, InvestigationModePolicyView,
+    InvestigationOpenObligationSummaryView, InvestigationProjectionEnvelope,
+    InvestigationRequestStopRequest, InvestigationRequestStopResponse, InvestigationScopeRequest,
+    InvestigationSourceCensusMemberView, InvestigationSummaryView,
+    InvestigationTemporalSnapshotView, InvestigationTimelineItemView,
+    InvestigationTimelineListRequest, InvestigationTimelinePageResponse,
+    InvestigationWaveSummaryView,
 };
 use golish_agent_app::AiState;
 use golish_app_core::domain::operator::{
@@ -474,11 +484,16 @@ fn investigation_temporal_snapshot_and_dtos_are_closed_and_redacted() {
         InvestigationHypothesisListRequest::decl(&config),
         InvestigationScopeRequest::decl(&config),
         InvestigationHypothesisGetRequest::decl(&config),
+        InvestigationRequestStopRequest::decl(&config),
+        InvestigationControlProjectionV1::decl(&config),
+        InvestigationRequestStopResponse::decl(&config),
         InvestigationTemporalSnapshotView::decl(&config),
         InvestigationProjectionEnvelope::decl(&config),
         InvestigationModePolicyView::decl(&config),
         InvestigationCommandError::decl(&config),
         InvestigationSummaryView::decl(&config),
+        InvestigationSourceCensusMemberView::decl(&config),
+        InvestigationActorTopologyNodeView::decl(&config),
         InvestigationHypothesisListItemView::decl(&config),
         InvestigationHypothesisListView::decl(&config),
         InvestigationHypothesisDetailView::decl(&config),
@@ -488,6 +503,7 @@ fn investigation_temporal_snapshot_and_dtos_are_closed_and_redacted() {
         InvestigationHypothesisListRequest::decl(&config),
         InvestigationScopeRequest::decl(&config),
         InvestigationHypothesisGetRequest::decl(&config),
+        InvestigationRequestStopRequest::decl(&config),
     ] {
         assert!(request.contains("sessionId"));
         assert!(request.contains("operationId"));
@@ -512,6 +528,150 @@ fn investigation_temporal_snapshot_and_dtos_are_closed_and_redacted() {
 }
 
 #[test]
+fn investigation_read_views_expose_bounded_census_and_host_verified_actor_identity() {
+    let config = ts_rs::Config::default();
+    let summary = InvestigationSummaryView::decl(&config);
+    for field in [
+        "sourceCensus",
+        "mainActor",
+        "actorTopology",
+        "generationCount",
+        "waveCount",
+        "campaignCount",
+        "openObligationCount",
+    ] {
+        assert!(summary.contains(field), "summary DTO missing {field}");
+    }
+
+    let actor = InvestigationActorTopologyNodeView::decl(&config);
+    for field in [
+        "organizationId",
+        "hypothesisRevisionId",
+        "taskId",
+        "subtaskId",
+        "workerRunId",
+        "owningStageRunRequestId",
+        "transcriptRequestId",
+        "parentActorTranscriptRequestId",
+        "parentDispatchToolRequestId",
+        "status",
+    ] {
+        assert!(actor.contains(field), "actor DTO missing {field}");
+    }
+    assert!(InvestigationHypothesisDetailView::decl(&config).contains("actorTopology"));
+
+    let source = include_str!("../../golish-db/src/repo/investigation_projection/summary.rs");
+    assert!(source.contains("load_exact_source_census_on"));
+    assert!(source.contains("load_exact_main_actor_on"));
+    assert!(source.contains("load_exact_actor_topology_on"));
+    for forbidden in ["raw_corpus_body", "credential_body", "prepared_action_args"] {
+        assert!(
+            !source.contains(forbidden),
+            "raw authority leak: {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn six_read_requests_bind_one_exact_stage_run_and_explicit_snapshot_authority() {
+    let config = ts_rs::Config::default();
+    let bootstrap_reads = [
+        InvestigationScopeRequest::decl(&config),
+        InvestigationHypothesisListRequest::decl(&config),
+        InvestigationCampaignListRequest::decl(&config),
+        InvestigationTimelineListRequest::decl(&config),
+    ];
+    let detail_reads = [
+        InvestigationHypothesisGetRequest::decl(&config),
+        InvestigationCampaignDetailRequest::decl(&config),
+    ];
+
+    for request in bootstrap_reads.iter().chain(detail_reads.iter()) {
+        for selector in ["operationId", "stageExecutionId", "stageRunRequestId"] {
+            assert!(
+                request.contains(selector),
+                "read request is missing exact stage-run selector {selector}: {request}"
+            );
+        }
+        for authority in [
+            "expectedChangeSeq",
+            "expectedTemporalCutoff",
+            "expectedAuthorityEpochSetHash",
+            "expectedEarliestEffectiveValidUntil",
+        ] {
+            assert!(
+                request.contains(authority),
+                "read request is missing snapshot authority {authority}: {request}"
+            );
+        }
+    }
+
+    for request in bootstrap_reads {
+        assert!(
+            request.contains("expectedChangeSeq: number | null"),
+            "summary and first-page bootstrap must use a typed no-seq state: {request}"
+        );
+    }
+    for request in detail_reads {
+        assert!(
+            request.contains("expectedChangeSeq: number"),
+            "detail reads must require an exact non-null change sequence: {request}"
+        );
+        assert!(!request.contains("expectedChangeSeq: number | null"));
+    }
+}
+
+#[test]
+fn six_read_commands_validate_exact_run_before_materialized_projection_queries() {
+    let source = include_str!("../src/ai/commands/investigation/mod.rs");
+    let commands = [
+        (
+            "investigation_get_summary",
+            "read_investigation_summary_for_stage_run(",
+        ),
+        (
+            "investigation_list_hypotheses",
+            "list_investigation_hypotheses_for_stage_run(",
+        ),
+        (
+            "investigation_get_hypothesis",
+            "get_investigation_hypothesis_for_stage_run(",
+        ),
+        (
+            "investigation_list_campaigns",
+            "list_investigation_campaigns_for_stage_run(",
+        ),
+        (
+            "investigation_get_campaign",
+            "get_investigation_campaign_for_stage_run(",
+        ),
+        (
+            "investigation_list_timeline",
+            "read_investigation_timeline_for_stage_run(",
+        ),
+    ];
+    for (command, exact_query) in commands {
+        let start = source
+            .find(&format!("pub async fn {command}"))
+            .unwrap_or_else(|| panic!("missing command {command}"));
+        let body = &source[start..];
+        let exact_head = body
+            .find("exact_read_selector(")
+            .unwrap_or_else(|| panic!("{command} does not validate an exact stage run"));
+        let query = body
+            .find(exact_query)
+            .unwrap_or_else(|| panic!("{command} does not use exact-run projection query"));
+        assert!(
+            exact_head < query,
+            "{command} queries before exact selector validation"
+        );
+    }
+
+    assert!(!source.contains("latest_investigation"));
+    assert!(!source.contains("ORDER BY stage_execution_id DESC LIMIT 1"));
+}
+
+#[test]
 fn export_bindings() {
     let config = ts_rs::Config::default();
     ProjectionEntityKind::export(&config).expect("export ProjectionEntityKind");
@@ -521,11 +681,30 @@ fn export_bindings() {
     InvestigationHypothesisListRequest::export(&config).expect("export list request");
     InvestigationScopeRequest::export(&config).expect("export scope request");
     InvestigationHypothesisGetRequest::export(&config).expect("export get request");
+    InvestigationRequestStopRequest::export(&config).expect("export stop request");
+    InvestigationControlProjectionV1::export(&config).expect("export control projection");
+    InvestigationRequestStopResponse::export(&config).expect("export stop response");
     InvestigationTemporalSnapshotView::export(&config).expect("export temporal snapshot");
     InvestigationProjectionEnvelope::export(&config).expect("export projection envelope");
     InvestigationModePolicyView::export(&config).expect("export mode policy");
     InvestigationCommandError::export(&config).expect("export command error");
     InvestigationSummaryView::export(&config).expect("export summary view");
+    InvestigationSourceCensusMemberView::export(&config).expect("export source census member");
+    InvestigationActorTopologyNodeView::export(&config).expect("export actor topology node");
+    InvestigationGenerationSummaryView::export(&config).expect("export generation summary");
+    InvestigationWaveSummaryView::export(&config).expect("export wave summary");
+    InvestigationOpenObligationSummaryView::export(&config).expect("export open obligation");
+    InvestigationCoverageDenominatorView::export(&config).expect("export coverage denominator");
+    InvestigationAuthorityTimeViewV1::export(&config).expect("export authority time");
+    InvestigationCampaignListRequest::export(&config).expect("export campaign list request");
+    InvestigationCampaignListItemView::export(&config).expect("export campaign list item");
+    InvestigationCampaignPageResponse::export(&config).expect("export campaign page");
+    InvestigationCampaignDetailRequest::export(&config).expect("export campaign detail request");
+    InvestigationCampaignDetailView::export(&config).expect("export campaign detail");
+    InvestigationCampaignDetailResponse::export(&config).expect("export campaign response");
+    InvestigationTimelineListRequest::export(&config).expect("export timeline request");
+    InvestigationTimelineItemView::export(&config).expect("export timeline item");
+    InvestigationTimelinePageResponse::export(&config).expect("export timeline page");
     InvestigationHypothesisListItemView::export(&config).expect("export list item view");
     InvestigationHypothesisListView::export(&config).expect("export list view");
     InvestigationHypothesisDetailView::export(&config).expect("export detail view");

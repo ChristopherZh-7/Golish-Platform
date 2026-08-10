@@ -71,6 +71,7 @@ async fn frozen_scope(db: &GolishDb, project_path: &str, label: &str) -> FrozenS
             profile: "assessment".to_string(),
             entry_stage: "target_intel".to_string(),
             project_scope_id: project_scope.project_scope_id,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             cli_scope: None,
         },
     )

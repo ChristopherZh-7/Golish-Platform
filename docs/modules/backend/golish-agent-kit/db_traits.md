@@ -89,4 +89,25 @@ cd backend && cargo nextest run -p golish-agent-kit db_traits
 - `HypothesisRegistryRepository` 是 Candidate runtime 唯一 persistence port，覆盖 snapshot freeze/page、artifact、H1/H2 coverage census/reducer、final-submitter-only host compilation seal、Gate material与 atomic apply。
 - request DTO 只携带 server-owned operation/scope/org/team/worker/attempt/version fence；没有 bundle root清单、fresh token、caller timestamp、feed signer或任意 canonical JSON write口。
 - production首次Gate使用app-owned opaque snapshot source从DB `load_candidate_pre_gate_material_on`读取同一RR exact closure；pure Gate后才调用`apply_candidate_gate_pass`，后者在DB apply transaction内创建compiler seal并原子写canonical/outbox。`seal_candidate_compilation` / `load_candidate_gate_material`仍是typed compatibility/post-seal API，不代表production pre-seal顺序。
-- semantic summary必须是raw closure的exact typed投影，不能只信hash：input/checklist/proposal/missed refs、blocker codes和bounded observations均由repository重验。canonical mutation transport显式携带generation transition/mutation hash，但Campaign/Prepared Action、Plan C adjudication与terminal state不在此port。
+- unified Investigation 的 `investigation_analysis_host` 只让模型提交 typed hypothesis proposal、verification strategy 与不含 URL/参数/credential/command 的 advisory intent；canonical route/revision/claim component/contract/plan/generation/task identity 均不在 cognitive envelope。host 先绑定 exact Candidate snapshot/attempt，再执行 server compiler + atomic admission。VerificationTask 复用同一 PentAGI subject/census/Primary 合同；prepared subject 只暴露 `campaign_id → plan_objective_id → objective_id → reservation_sha256` 的 UUID/hash authority，task-local strategy/action-intent 必须逐 Campaign 精确绑定该 objective。
+- semantic summary必须是raw closure的exact typed投影，不能只信hash：input/checklist/proposal/missed refs、blocker codes和bounded observations均由repository重验。canonical mutation transport显式携带generation transition/mutation hash；Campaign/Prepared Action使用独立的`VerificationCampaignRepository`，不混入Plan B port。
+
+## Verification Campaign authoritative scheduler seam（Plan C，2026-08-02）
+
+- `verification_campaign.rs`定义SQLx-free的Campaign repository：admission、closed 13-role catalog中的bounded 1–3 lane round census、strategy、coverage denominator、Prepared Action、JIT authorization/action lifecycle、Oracle census、objective closeout与revision adjudication全部使用typed request/receipt；默认实现一律unavailable，不能把缺repo解释为空Campaign。
+- `DbRepoProvider::admit_candidate_generation_campaigns`是Candidate generation seal到Campaign集合的application-owned compound seam；runtime只拿generation、objective、Campaign ids与replay count，不能提交plan/objective/capability或Wave成员。
+- `DbRepoProvider::prepare_authoritative_verification_consults`在provider调用前冻结并返回SQLx-free/redacted pending work item；`record_authoritative_verification_consult_terminal`只接受精确owner tuple上的completed/failed/timed_out/cancelled terminal，completed还必须携带typed artifact。`drive_authoritative_verification_campaigns`返回`VerificationCampaignSchedulerView`；终态必须同时满足Campaign全终态、无pending/authorized/started/oracle/blocker、每个sealed Wave有fixed-point receipt、每个generation revision有adjudication；JIT pending只暴露review-safe Prepared Action ids。
+- authoritative scheduler不允许模型授权Prepared Action或提供URL、credentials、private manifest、budget、policy与Oracle verdict；这些authority始终保留在app/DB边界。
+
+## Target Intel semantic receipt seam（2026-08-02）
+
+- `DbRepoProvider::{semantic_intel_receipt_append, semantic_intel_terminal_receipt}` 是 additive fixture seam；identity 必须同时绑定 exact operation/org/session/stable key。
+- duplicate/frontier read contract中没有 `expansion_queue`；默认实现 fail closed/no terminal，production app bridge使用现有 `audit_log` 加 immutable redacted-artifact table。
+- `RuntimeMemoryRepository` exposes production review freeze/read/verdict/finalizer calls with
+  exact operation/org/unit/controller/reviewer/attempt/row-version/hash fences. Default
+  implementations remain unavailable; the app bridge is the only SQL-backed composition.
+
+## Investigation nested dispatch / task Primary rearm（2026-08-03）
+
+- `InvestigationNestedDispatchRepository` 提供 SQL-free 的 nested cognitive begin/finish compound port；nested success 只能返回 `investigation_cognitive_output.v1` advisory object，不能携带事实、evidence、checked-empty、blocker 或 evidence watermark，nested failure 则必须是 typed blocked output。
+- `RuntimeMemoryRepository::rearm_investigation_task_primary` 接受 previous Primary exact fence、plan/item row version、VerificationTask id 与 server-derived subject fingerprint；production 必须返回该 task 独立的 WorkItem/WorkerRun/message chain，并把 response-loss exact replay 与同 epoch 不同 task 冲突分开处理。缺实现默认 unavailable，不能回退进程内计划或复用旧 Primary identity。

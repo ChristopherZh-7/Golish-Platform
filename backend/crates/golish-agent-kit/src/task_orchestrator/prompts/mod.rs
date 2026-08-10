@@ -48,15 +48,61 @@ pub(crate) fn safe_truncate(s: &str, max: usize) -> &str {
 /// 以及确定性 gate 会检查哪些项. 仅在 subtask 有 `harness_stage` 时由
 /// `execute_single_subtask` 拼到描述前.
 ///
-/// `scoping_policy` (设计 2026-06-06 §3.3/§3.4): scoping 段按 profile 策略分流——
-/// `require_human_scope_approval` 时追加「submit 前必须有 scope_human_approved
-/// claim」的硬门禁提醒, 与 gate hook 注入的规则呼应. 非 scoping stage 不读它.
+/// `scoping_policy` 决定 Company Identity 封存之后是否还需要 subsidiary / trusted
+/// target review；用户输入和模型判断本身永远不能替代 host-owned identity receipt.
 pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String {
     let allowed = if spec.allowed_tool_types.is_empty() {
         "(none — this stage runs no scan tools)".to_string()
     } else {
         spec.allowed_tool_types.join(", ")
     };
+    if spec.kind == StageKind::Scoping {
+        let mut scope_review = String::new();
+        if scoping_policy.require_unit_candidates {
+            scope_review.push_str(
+                "- **Subsidiary policy**: after the root Company Identity is sealed, you MUST call `ask_human(input_type=\"choice\")` exactly once with canonical context `{\"decision\":\"subsidiary_scope\",\"organization_id\":\"<confirmed-root-uuid>\"}` and canonical options `root_only`, `include_51`, and `include_100`. A desired/default value mentioned in task prose is not persisted scope authority: never infer it, freeze it, or skip this tool call because the prose already names an outcome. Only the persisted typed response closes this branch. `root_only` closes it without empty discovery/review; only an included choice may trigger evidence-backed subsidiary discovery, candidate persistence, one `unit_review`, and creation of the human-selected legal entities.\n",
+            );
+        }
+        if scoping_policy.require_human_scope_approval {
+            scope_review.push_str(
+                "- **Trusted target intake**: when the pre-stage target snapshot is non-empty, request exactly one `scope_review` and require an unchanged confirmation. An edit is a proposal, not authority. An empty company-only snapshot must not manufacture a target review.\n",
+            );
+        }
+        return format!(
+            r#"## OPERATION HARNESS — SCOPING COMPANY IDENTITY CHARTER
+
+You own **{stage}** only long enough to resolve the exact authorized enterprise, freeze its immutable Company Identity and scope policy, and stop. A user-supplied label, an organization row, a search snippet, or model confidence is never confirmation.
+
+- **Allowed tool types**: {allowed}
+- **Ordered resolution**: (1) inspect durable organizations and reuse only an exact previously confirmed immutable Company Identity; (2) run the host-owned structured enterprise resolver; (3) let that resolver advance to its 0.zone `org` fallback only when the enterprise sources are unavailable, checked-empty, failed, or materially conflicting; (4) use only the host-controlled artifact-first public search/browser fallback after structured sources are exhausted; (5) ask the human exactly once, with typed evidence-backed choices, only when material ambiguity remains.
+- **Source truth**: preserve `found`, `checked_empty`, `unavailable`, `failed`, and `conflicting` independently. Do not treat transport success, the first/highest-confidence hit, or a similar name as legal-entity authority.
+- **Creation boundary**: create or reuse the root organization only through the candidate/receipt identity selected by the host confirmation flow. Never turn a free-form or near-match name into a confirmed organization.
+- **Close condition**: do not submit until the host reports an operation/org/stage-bound immutable Company Identity receipt with `resolution_status=confirmed`, canonical legal name, available identifiers and disambiguation fields, source Evidence/raw-artifact references, confirmation method, and frozen scope policy. `needs_human` and `unresolved` are holds, not weaker PASS states.
+- **No asset discovery**: do not resolve, probe, create, or promote domains, IPs, URLs, services, or other Targets in Scoping.
+{scope_review}- Cite only the real Company Identity and scope-policy receipt evidence returned by the host. Never invent an evidence id. Then call `submit_stage_deliverable` once with the confirmed organization UUID as the scope claim subject.
+"#,
+            stage = spec.id,
+            allowed = allowed,
+            scope_review = scope_review,
+        );
+    }
+    if spec.kind == StageKind::TargetIntel {
+        return format!(
+            r#"## OPERATION HARNESS — TARGET INTEL GOAL CHARTER
+
+You own the **{stage}** Goal for one confirmed company identity. Stay passive and use only the exact tools exposed by the frozen capability manifest.
+
+- **Allowed tool types**: {allowed}
+- **Outcome**: build an evidence-backed corporate asset and relationship picture by choosing high-information semantic pivots from current durable facts.
+- **Adaptive plan**: inspect observations, frontier, receipts, attribution state, and review findings first; make a small plan, then revise it after every result. Generic delegated tasks may answer independent bounded questions, but their names grant no role or authority.
+- **Truth boundaries**: observation is not ownership, ownership is not reachability, and discovery is not active-scan authorization. Preserve shared, third-party, ambiguous, rejected, unavailable, failed, and checked-empty dispositions exactly.
+- **Completion**: there is no fixed provider order or technique matrix. When every material frontier item is terminal and no meaningful feasible path remains, request a neutral Goal review. Only the host deterministic finalizer may publish completion after validating current receipts, evidence, attribution, reachability, review freshness, and quiescence.
+- Do not hand-build a compatibility StageDeliverable, fabricate evidence ids, or jump to another stage.
+"#,
+            stage = spec.id,
+            allowed = allowed,
+        );
+    }
     // gate-rules-migration (2026-06-05): pass-criteria moved from `required_checks`
     // (deleted) to `gate_rules`; surface each rule's short summary to the agent.
     let checks = if spec.gate_rules.is_empty() {
@@ -82,19 +128,14 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     let coverage_line = if spec.expected_techniques.is_empty() {
         String::new()
     } else if spec.facts_from_db_truth {
-        let db_truth_action = if spec.kind == StageKind::ExternalAttackSurface {
+        let db_truth_action =
             "Run the EAS active mapping tools so their data LANDS in the database \
              (stage_run -> prober -> list_attack_surface_seeds/list_in_scope_targets -> \
              batch-first wrapper calls: eas_discover_ports first for concrete IP/CIDR hosts, \
              eas_fingerprint_services/nmap -sV for every confirmed open port, \
              eas_probe_http_liveness/httpx for domain/URL/web-origin liveness, and \
              eas_fingerprint_web_stack/whatweb for each confirmed HTTP(S) web origin -> \
-             manage_targets/targets.ports/fingerprints/technique_outcomes)."
-        } else {
-            "Run the target_intel registry tools so their data LANDS in the database \
-             (e.g. recon_map_assets / recon_lookup_whois -> target_assets / dns_records where \
-             provider data exists / organizations.*)."
-        };
+             manage_targets/targets.ports/fingerprints/technique_outcomes).";
         let terminal_hint = if spec.kind == StageKind::ExternalAttackSurface {
             "ONLY add a `coverage` cell when the DB cannot derive the terminal state: \
              for active negatives use checked_empty when a scan/probe really ran and found nothing, \
@@ -189,38 +230,8 @@ pub fn stage_charter(spec: &StageSpec, scoping_policy: &ScopingPolicy) -> String
     // C2c · deterministic submission channel: the agent CALLS the
     // `submit_stage_deliverable` tool (typed args), validated by the gate.
     let submission_instr = "### REQUIRED — submit via the `submit_stage_deliverable` tool\n\nWhen this stage's required tools have actually run, CALL the `submit_stage_deliverable` tool with the fields below as STRUCTURED ARGUMENTS — do NOT print or describe the JSON in prose, and do NOT just delegate \"write the JSON\" to another agent. The runtime validates your submission with the deterministic gate. The deliverable shape:";
-    // Per-stage note for scoping. The "do not probe" boundary is now enforced
-    // deterministically by the runtime (the stage tool guard resolves
-    // pentest_run/shell to their real capability and blocks forbidden ones), so
-    // this prose no longer enumerates tool names — it only states intent + the
-    // (relaxed) evidence contract that stops the fabricated-evidence retry loop.
-    let stage_specific = if spec.kind == crate::harness::StageKind::Scoping {
-        let mut s = String::from(
-            "\n### SCOPING — authorization confirmation ONLY\n\
-- This stage CONFIRMS the target is authorized; it does NOT probe. The runtime enforces the stage's tool boundary, so reconnaissance attempts are blocked here — that work belongs to the next stage.\n\
-- You do NOT need tool evidence here: confirm the authorized scope from the task context (target, exclusions, black-box vs credentialed, objective) and submit. Omit `evidence_refs`, claim `evidence_ids`, `findings`, `coverage`, `skipped_checks`, and `required_checks_done` unless this run actually produced those records — the submit tool canonicalizes omitted empty fields.\n\
-- Emit ONE claim with kind \"scope_confirmed\" summarizing the authorized scope. If you created or confirmed an engagement organization via manage_organizations, set this claim's `subject` to that organization_id (the UUID) so the whole engagement binds to it (downstream stages then scope to that org's subtree only); otherwise use the engagement subject name. Then CALL `submit_stage_deliverable`.\n",
-        );
-        // scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): policy 要求时, gate 额外要求一条
-        // scope_human_approved claim — 提前在 charter 里说清「submit 前必须有人确认」,
-        // 与 apply_harness_gate_hook 注入的 scoping_human_gate_rule 呼应.
-        if scoping_policy.require_human_scope_approval {
-            s.push_str(
-                "- HARD GATE — human scope approval REQUIRED: first inspect the trusted pre-stage target snapshot. When it is NON-EMPTY, call `ask_human(input_type=\"scope_review\")` EXACTLY ONCE with those exact rows and have the human confirm the unchanged snapshot. The editable table may only PROPOSE changes; an edited response does not mutate or authorize targets, so stop and ask the user to update the trusted UI/CLI target intake before a fresh Scoping attempt. Never open a second scope_review to replace the first decision. When the trusted snapshot is EMPTY (company/organization-only input), do NOT manufacture an empty target-table review: the applicable organization review/confirmation is the approval. After that applicable human decision, emit a SECOND claim with kind \"scope_human_approved\" (subject = the engagement subject's organization_id) citing its ask_human request_id when one exists. The deterministic gate compares every persisted non-empty target review to DB truth and BLOCKS a missing, repeated, stale, or edited list.\n",
-            );
-        }
-        // red_team (require_unit_candidates): the gate cross-verifies the REAL
-        // unit-candidate flow against this run's tool calls — a claim alone will
-        // NOT pass. State it plainly so the model performs the steps.
-        if scoping_policy.require_unit_candidates {
-            s.push_str(
-                "- HARD GATE — RED-TEAM subsidiary scope is VERIFIED against actual tool calls and the persisted human choice, not claims. First call `ask_human(input_type=\"choice\", context=\"{\\\"decision\\\":\\\"subsidiary_scope\\\",\\\"organization_id\\\":\\\"<root-id>\\\"}\")`. If the human explicitly chooses parent/root-only scope, that decision completes this branch: do NOT run discovery, `propose_candidates`, or an empty `unit_review`. If subsidiaries may be included, you MUST call `manage_organizations(action=\"propose_candidates\")`, then `ask_human(input_type=\"unit_review\")` so the user judges candidate units. If the root org/tree already exists (REUSE mode), DO NOT call `create`/`create_batch` just to satisfy the gate; only create a missing root or units the user explicitly added/confirmed. A claim alone cannot satisfy either branch.\n",
-            );
-        }
-        s
-    } else {
-        String::new()
-    };
+    // Scoping and Target Intel return above with their stage-owned contracts.
+    let stage_specific = String::new();
     format!(
         r#"## OPERATION HARNESS — STAGE CHARTER
 
@@ -291,9 +302,11 @@ pub fn stage_discipline_reminder() -> String {
 
 - Stay inside this stage's tool boundary: use ONLY the stage's allowed tools and NEVER call a forbidden tool. The runtime blocks forbidden calls anyway — do not waste turns attempting them.
 - If a required tool is unavailable, errors, or returns nothing on two attempts: STOP and record it in `skipped_checks` with the reason ("checked-empty" is NOT the same as "unchecked"). Do NOT install tools, spawn additional sub-agents, or retry the same tool to work around an unavailable capability.
+- In Target Intel, the Goal contract overrides obsolete fixed-source or technique-matrix instructions: continue the same adaptive Goal chain and request neutral review when its material frontier is terminal.
 - The runtime advances stages for you once the deterministic gate passes — do not jump ahead to a later stage."#;
-    // C2c · the deliverable-submission directive: always CALL the submit tool.
-    let submit = "\n\n### Submit the StageDeliverable by CALLING `submit_stage_deliverable`\nThe stage completes ONLY when you call the `submit_stage_deliverable` tool with structured fields (`stage_id`, `claims`, plus optional `coverage`/`findings`/notes). Do NOT just print or describe the JSON, and do NOT only delegate \"write the JSON\" to a sub-agent — if you delegated to a reporter, take its result and call `submit_stage_deliverable` yourself. A prose-only ending leaves the gate with nothing to validate and forces you to redo this entire stage.";
+    // C2c · use the stage-owned terminal action. Target Intel closes through
+    // neutral review + host finalizer; other harness stages still CALL submit.
+    let submit = "\n\n### Use the stage-owned terminal action\nFor Target Intel, request the neutral Goal review; review and finalization remain host-owned, so do not hand-build a technique matrix. For every other harness stage, completion requires calling `submit_stage_deliverable` with structured fields (`stage_id`, `claims`, plus optional `coverage`/`findings`/notes). Do NOT just print or describe JSON, and do NOT delegate the terminal action to another agent. A prose-only ending leaves the stage open.";
     format!("{boundary}{submit}")
 }
 
@@ -304,6 +317,17 @@ pub fn stage_discipline_reminder() -> String {
 /// generator 产 JSON 子任务 + 固定子任务循环。与 [`stage_charter`]（工具面 / gate
 /// 要求）和 [`stage_discipline_reminder`]（提交纪律）配套使用。
 pub fn stage_execution_prompt(stage_id: &str) -> String {
+    if stage_id == StageKind::TargetIntel.as_str() {
+        return r#"## TARGET INTEL GOAL EXECUTION — own the adaptive loop end-to-end
+
+1. Read the frozen Company Identity, current observations, material frontier, receipts, attribution state, review findings, and exact capability manifest.
+2. Make a small plan around the highest-information feasible semantic pivots. After every tool or generic-task result, update the plan instead of following a prewritten source sequence.
+3. Keep observation, ownership, reachability, and active-scan authority distinct. Preserve typed residuals and never promote shared, third-party, ambiguous, rejected, or unreachable candidates.
+4. When all material frontier items are terminal and no meaningful feasible path remains, request the neutral Goal review. Continue the same durable chain for bounded rework; only the host finalizer may close the stage.
+
+Do not manufacture a fixed technique checklist, a compatibility deliverable, or later-stage work."#
+            .to_string();
+    }
     format!(
         r#"## STAGE EXECUTION — you own this stage end-to-end
 
@@ -322,13 +346,33 @@ Only plan and act for `{stage_id}`. Do not perform later stages."#
 ///
 /// 与 [`stage_charter`]（边界/否定式约束 + gate 要求）互补：charter 告诉 agent
 /// 「不能用什么 + gate 查什么」，本函数注入「这个阶段**怎么高效做**」的正向方法论
-/// —— 推荐工具序列、效率红线（如 target_intel 禁逐条 dig）、何时收口。内容来自
+/// —— 推荐工具序列、效率红线、何时收口。除 Target Intel 的 Goal-owned
+/// methodology 外，内容来自
 /// `resources/harness/stages/<stage>/methodology.md`（[`crate::harness::resources::stage_methodology_md`]），
 /// 改 markdown 即改指导、0 Rust 改动。没写 playbook 的阶段返回空串（不追加段落）。
 ///
 /// 这是**指导**而非硬门禁：确定性 gate 仍是唯一过关裁判，playbook 只为减少模型空转
-/// / 越界尝试 / 低效循环（headless MiMo 实测：逐条 dig 22min+、target_intel 误试 nmap）。
+/// / 越界尝试 / 低效循环。
 pub fn stage_methodology(spec: &StageSpec) -> String {
+    if spec.kind == StageKind::TargetIntel {
+        return format!(
+            "## STAGE PLAYBOOK — adaptive `{stage}` Goal loop\n\n\
+             Start from the frozen Company Identity and current durable observations/frontier. \
+             Form a small plan around the highest-information semantic pivots that are actually \
+             supported by the frozen capability manifest. After every result, revise the plan: \
+             corroborate ownership, separate shared/third-party/ambiguous infrastructure, and \
+             preserve provenance before proposing any reachable owned asset for promotion. \
+             Parallelize only independent, bounded questions through generic tasks; task names \
+             are labels, never roles or authority. Stop when all material frontier items have a \
+             terminal disposition and request the neutral Goal review. Do not turn discovery \
+             heuristics into a mandatory source or technique checklist, and never treat a \
+             candidate, DNS fact, or model confidence as active-scan authorization.\n\n\
+             This playbook is GUIDANCE, not a gate: the deterministic finalizer still validates \
+             receipts, evidence, attribution, reachability, frontier closure, review freshness, \
+             and quiescence.\n\n",
+            stage = spec.id,
+        );
+    }
     match crate::harness::resources::stage_methodology_md(spec.kind) {
         Some(md) if !md.trim().is_empty() => format!(
             "## STAGE PLAYBOOK — how to do `{stage}` efficiently (methodology)\n\n\
@@ -353,6 +397,19 @@ pub fn stage_methodology(spec: &StageSpec) -> String {
 /// 用户 continuation 才能取得下一份有界预算。无 `specialist` 的阶段返回空串（主 agent
 /// 自己干，仍走 [`stage_methodology`]）。
 pub fn stage_specialist_orchestration(spec: &StageSpec) -> String {
+    if spec.kind == StageKind::TargetIntel {
+        return format!(
+            "## OWN `{stage}` AS AN ADAPTIVE INTEL GOAL\n\n\
+             Keep one durable Goal-owner chain for this organization. Read current observations, \
+             frontier, receipts, and the frozen capability manifest; make and revise your own \
+             bounded plan around semantic pivots. Delegate only independent questions as generic \
+             named tasks, then merge their evidence back into the same Goal state. Do not dispatch \
+             a fixed provider worker sequence and do not manufacture a static technique repair \
+             worklist. When no material, feasible path remains, request the neutral Goal review; \
+             only the host finalizer may publish stage completion.\n\n",
+            stage = spec.id,
+        );
+    }
     let Some(specialist) = spec
         .specialist
         .as_deref()
@@ -523,9 +580,9 @@ Each subtask should be independently executable by a specialist agent.
 When the task involves testing a target, follow this standard methodology:
 
 ### Phase 1: Information Gathering
-- Provider-backed target intelligence (asset/subdomain/DNS-adjacent facts,
-  ASN/CT/OSINT, WHOIS) — ONLY for applicable targets
-- For IP targets, skip domain-only subdomain/CT expectations entirely
+- Use the frozen company identity and current evidence to choose high-information semantic pivots dynamically
+- Corroborate ownership and keep shared, third-party, ambiguous, and unreachable observations out of active target authority
+- Treat unavailable, failed, and checked-empty sources as distinct typed outcomes; do not force a fixed provider or technique checklist
 - Port discovery (naabu first, masscan for larger ranges, nmap fallback/verification) to identify open services
 - **CRITICAL**: Always verify what service is actually running on each confirmed open port using nmap -sV. Use httpx for HTTP liveness/metadata and whatweb only after the endpoint is confirmed HTTP(S). NEVER assume a service based on port number alone (e.g., port 8080 is NOT necessarily Tomcat).
 
@@ -559,7 +616,7 @@ with the ONE harness stage it belongs to (the full operation DAG is supported).
 **Harness stages** (pick the single best match; omit `harness_stage` entirely if none fit):
 
 - `scoping` — define scope / rules of engagement / authorization boundary (no probing).
-- `target_intel` — passive intel (zero-touch, no target contact): provider-backed asset/subdomain/DNS-adjacent/ASN/CT/OSINT survey via recon_map_assets, plus RDAP WHOIS via recon_lookup_whois; no scan-tool fallback. (情报收集)
+- `target_intel` — adaptive, evidence-backed corporate asset discovery: the Goal owner chooses semantic pivots from current facts, updates its plan after each result, resolves attribution, and requests neutral review when material frontier work is terminal. Discovery does not authorize active scanning. (情报收集)
 - `external_attack_surface` — active recon that DEFINES the attack surface of approved hosts: DNS resolution, port scanning, service/version fingerprinting, HTTP probing, screenshots (host x port x service x live-web). Subdomains inherited from `target_intel` (do not re-enumerate). (资产测绘 / 攻击面 / 端口扫描)
 - `enumeration` — content enumeration on the services mapped by EAS: JS collection + API endpoint extraction, directory/path discovery, parameter discovery. Do NOT re-port-scan (already done in EAS). (目录扫描 / JS-API / 参数发现)
 - `vuln_triage` — FORMULAIC vulnerability scan: batch-run tool+dictionary/template techniques with an objective found/checked-empty/blocked observation. It writes evidence-backed observation seeds only; it can never create Candidate/Finding authority. Its initial final-sealed vuln_triage handoff can seed only the initial Candidate Wave. (公式化漏洞扫描)
@@ -822,20 +879,15 @@ mod tests {
         assert!(eas.contains("moresec.cn"));
     }
 
-    /// The final stage-discipline directive must (1) force a parseable
-    /// StageDeliverable JSON ending so the deterministic gate stops being
-    /// skipped, and (2) tell the agent to stop + report instead of
-    /// rabbit-holing on unavailable tools. Locks both intents in place.
+    /// The final stage-discipline directive must select the stage-owned terminal
+    /// action and stop the agent from rabbit-holing on unavailable tools.
     #[test]
-    fn stage_discipline_reminder_forces_deliverable_and_stops_rabbit_holing() {
+    fn stage_discipline_reminder_selects_terminal_action_and_stops_rabbit_holing() {
         let r = stage_discipline_reminder();
-        // Deliverable forcing function (flag-robust: tool path or text path).
-        assert!(r.contains("StageDeliverable"));
-        assert!(
-            r.contains("submit_stage_deliverable") || r.contains("```json"),
-            "must instruct deliverable submission via the tool or a fenced json block"
-        );
-        assert!(r.contains("redo this entire stage"));
+        assert!(r.contains("stage-owned terminal action"));
+        assert!(r.contains("neutral Goal review"));
+        assert!(r.contains("submit_stage_deliverable"));
+        assert!(r.contains("For every other harness stage"));
         // Boundary + stop-on-unavailable, no rabbit-holing (always present).
         assert!(r.contains("forbidden tool"));
         assert!(r.contains("STOP and record"));
@@ -856,6 +908,18 @@ mod tests {
     }
 
     #[test]
+    fn target_intel_execution_prompt_uses_goal_review_not_stage_deliverable() {
+        let prompt = stage_execution_prompt(StageKind::TargetIntel.as_str());
+
+        assert!(prompt.contains("TARGET INTEL GOAL EXECUTION"));
+        assert!(prompt.contains("highest-information feasible semantic pivots"));
+        assert!(prompt.contains("request the neutral Goal review"));
+        assert!(prompt.contains("host finalizer"));
+        assert!(!prompt.contains("submit_stage_deliverable"));
+        assert!(!prompt.contains("GOLISH-INTEL-"));
+    }
+
+    #[test]
     fn specialist_orchestration_stops_after_stage_run_budget_exhaustion() {
         let spec = crate::harness::resources::load_embedded_stage_spec(
             crate::harness::types::StageKind::Enumeration,
@@ -866,6 +930,23 @@ mod tests {
         assert!(prompt.contains("retry_budget_exhausted=true"));
         assert!(prompt.contains("do not call `stage_run` again in this request"));
         assert!(prompt.contains("separate user continuation"));
+    }
+
+    #[test]
+    fn target_intel_orchestration_is_goal_owned_not_fixed_provider_fanout() {
+        let spec = crate::harness::resources::load_embedded_stage_spec(
+            crate::harness::types::StageKind::TargetIntel,
+        )
+        .expect("load target_intel spec");
+        let prompt = stage_specialist_orchestration(&spec);
+
+        assert!(prompt.contains("ADAPTIVE INTEL GOAL"));
+        assert!(prompt.contains("make and revise your own"));
+        assert!(prompt.contains("semantic pivots"));
+        assert!(prompt.contains("neutral Goal review"));
+        assert!(!prompt.contains("recon_map_assets"));
+        assert!(!prompt.contains("recon_lookup_whois"));
+        assert!(!prompt.contains("once per org"));
     }
 
     #[test]
@@ -962,9 +1043,9 @@ mod tests {
         use crate::harness::stage_spec::load_stage_spec_from_json;
 
         let spec = load_stage_spec_from_json(
-            r#"{"id":"target_intel","kind":"target_intel","risk_level":"low",
+            r#"{"id":"vuln_triage","kind":"vuln_triage","risk_level":"high",
                 "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate",
-                "expected_techniques":["GOLISH-INTEL-DNS","GOLISH-INTEL-WHOIS"]}"#,
+                "expected_techniques":["WSTG-INPV-05","WSTG-ATHN-04"]}"#,
         )
         .expect("spec parses");
         let charter = stage_charter(&spec, &ScopingPolicy::default());
@@ -982,11 +1063,9 @@ mod tests {
             .contains("Tag claims/findings with `technique`"));
     }
 
-    /// Phase C 瘦身交付物（设计 2026-06-22）：facts_from_db_truth 阶段的 charter 用
-    /// 「DB 自动裁决」的瘦覆盖指引——不教逐格填矩阵、不教 technique 标注，改教「跑工具
-    /// 落库 + 仅对无源/被阻断技术报 blocked/not_applicable」。
+    /// Target Intel Goal cutover: stale spec axes must not leak into the prompt.
     #[test]
-    fn stage_charter_slim_coverage_when_facts_from_db_truth() {
+    fn target_intel_charter_ignores_legacy_coverage_axes() {
         use crate::harness::stage_spec::load_stage_spec_from_json;
 
         let spec = load_stage_spec_from_json(
@@ -997,15 +1076,18 @@ mod tests {
         )
         .expect("spec parses");
         let charter = stage_charter(&spec, &ScopingPolicy::default());
-        // slim branch: DB auto-adjudicates; technique list still surfaced.
-        assert!(
-            charter.contains("auto-adjudicated from the DATABASE"),
-            "facts_from_db_truth charter must use the slim coverage instruction"
-        );
-        assert!(charter.contains("GOLISH-INTEL-DNS"));
-        // the cell-by-cell matrix + tagging busywork is NOT rendered for slim stages.
+        assert!(charter.contains("TARGET INTEL GOAL CHARTER"));
+        assert!(charter.contains("high-information semantic pivots"));
+        assert!(charter.contains("neutral Goal review"));
+        assert!(charter.contains("host deterministic finalizer"));
+        assert!(!charter.contains("GOLISH-INTEL-DNS"));
+        assert!(!charter.contains("GOLISH-INTEL-WHOIS"));
+        assert!(!charter.contains("recon_map_assets"));
+        assert!(!charter.contains("recon_lookup_whois"));
+        assert!(!charter.contains("auto-adjudicated from the DATABASE"));
         assert!(!charter.contains("Coverage (per in-scope asset)"));
         assert!(!charter.contains("Tag claims/findings with `technique`"));
+        assert!(!charter.contains("submit_stage_deliverable"));
     }
 
     /// 2026-06-25 slim EAS closeout: EAS still surfaces the liveness technique,
@@ -1044,12 +1126,13 @@ mod tests {
         let m = stage_methodology(&ti);
         assert!(m.contains("## STAGE PLAYBOOK"));
         assert!(m.contains("target_intel"));
-        // The key methodology fix must reach the agent: no scan-tool fallback in
-        // target_intel.
-        assert!(m.contains("recon_map_assets"));
-        assert!(m.contains("recon_lookup_whois"));
-        assert!(!m.contains("dig"));
-        assert!(!m.contains("subfinder"));
+        assert!(m.contains("highest-information semantic pivots"));
+        assert!(m.contains("revise the plan"));
+        assert!(m.contains("neutral Goal review"));
+        assert!(m.contains("deterministic finalizer"));
+        assert!(!m.contains("recon_map_assets"));
+        assert!(!m.contains("recon_lookup_whois"));
+        assert!(!m.contains("GOLISH-INTEL-"));
         // Must be clearly framed as guidance, not a hard gate.
         assert!(m.contains("GUIDANCE") || m.contains("not a gate"));
 
@@ -1059,6 +1142,17 @@ mod tests {
         )
         .expect("load cleanup spec");
         assert!(stage_methodology(&cleanup).is_empty());
+    }
+
+    #[test]
+    fn generator_prompt_does_not_restore_target_intel_fixed_axes() {
+        let prompt = generator_prompt();
+
+        assert!(prompt.contains("high-information semantic pivots"));
+        assert!(prompt.contains("updates its plan after each result"));
+        assert!(!prompt.contains("recon_map_assets"));
+        assert!(!prompt.contains("recon_lookup_whois"));
+        assert!(!prompt.contains("ASN/CT/OSINT, WHOIS"));
     }
 
     #[test]
@@ -1083,9 +1177,8 @@ mod tests {
         }
     }
 
-    /// scoping 人工确认硬门禁 (设计 2026-06-06 §3.4): charter 的 scoping 段在
-    /// `require_human_scope_approval` 时点明硬门禁 + scope_human_approved claim;
-    /// 关 (smoke) 时不出现, 与 gate hook 注入条件一致.
+    /// Scoping charter 固定注入 Company Identity 解析与 receipt 门禁；profile 只控制
+    /// identity 封存后的 subsidiary / trusted-target review 分支。
     #[test]
     fn stage_charter_scoping_appends_human_gate_when_policy_requires() {
         use crate::harness::stage_spec::load_stage_spec_from_json;
@@ -1095,32 +1188,49 @@ mod tests {
                 "deliverable_schema":"StageDeliverable","gate_validator":"validate_stage_gate"}"#,
         )
         .unwrap();
-        // Default policy requires human approval → charter spells out the hard gate.
+        // Company Identity resolution is mandatory regardless of later scope policy.
         let gated = ScopingPolicy::default();
         assert!(gated.require_human_scope_approval);
         let c = stage_charter(&scoping, &gated);
-        assert!(c.contains("scope_human_approved"));
-        assert!(c.contains("ask_human(input_type=\"scope_review\")"));
-        assert!(c.contains("EXACTLY ONCE"));
-        assert!(c.contains("Never open a second scope_review"));
-        assert!(c.contains("NON-EMPTY"));
-        assert!(c.contains("do NOT manufacture an empty target-table review"));
+        for required in [
+            "SCOPING COMPANY IDENTITY CHARTER",
+            "exact previously confirmed immutable Company Identity",
+            "structured enterprise resolver",
+            "0.zone",
+            "artifact-first public search/browser fallback",
+            "typed evidence-backed choices",
+            "resolution_status=confirmed",
+            "needs_human",
+            "No asset discovery",
+            "scope_review",
+        ] {
+            assert!(c.contains(required), "missing Scoping contract: {required}");
+        }
+        assert!(!c.contains("You do NOT need tool evidence"));
+        assert!(!c.contains("use that exact company name as the confirmed root"));
 
         let red_team = ScopingPolicy {
             require_unit_candidates: true,
             ..ScopingPolicy::default()
         };
         let red_team_charter = stage_charter(&scoping, &red_team);
-        assert!(red_team_charter.contains("subsidiary_scope"));
-        assert!(red_team_charter.contains("parent/root-only"));
-        assert!(red_team_charter.contains("propose_candidates"));
+        assert!(red_team_charter.contains("Subsidiary policy"));
+        assert!(red_team_charter.contains("MUST call"));
+        assert!(red_team_charter.contains("<confirmed-root-uuid>"));
+        assert!(red_team_charter.contains("root_only"));
+        assert!(red_team_charter.contains("include_51"));
+        assert!(red_team_charter.contains("include_100"));
+        assert!(red_team_charter.contains("task prose is not persisted scope authority"));
+        assert!(red_team_charter.contains("candidate persistence"));
         assert!(red_team_charter.contains("unit_review"));
 
-        // Gate off (smoke) → no human-approval line.
+        // Gate off removes only the trusted-target review, not identity resolution.
         let off = ScopingPolicy {
             require_human_scope_approval: false,
             ..ScopingPolicy::default()
         };
-        assert!(!stage_charter(&scoping, &off).contains("scope_human_approved"));
+        let off_charter = stage_charter(&scoping, &off);
+        assert!(!off_charter.contains("scope_review"));
+        assert!(off_charter.contains("resolution_status=confirmed"));
     }
 }

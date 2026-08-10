@@ -315,7 +315,7 @@ pub enum CandidateRevisionSourceRefRow {
 }
 
 impl CandidateRevisionSourceRefRow {
-    fn canonical_key(&self) -> String {
+    pub(super) fn canonical_key(&self) -> String {
         match self {
             Self::ToolTruthEvidence(id) => format!("tool_truth:{id}"),
             Self::Finding(id) => format!("finding:{id}"),
@@ -394,6 +394,7 @@ pub struct CandidateGenerationSealRowView {
     pub projection_outbox_batch_id: Uuid,
     pub projection_source_batch_seq: i64,
     pub projection_outbox_member_set_hash: String,
+    pub post_seal_route: String,
     pub replayed: bool,
 }
 
@@ -951,38 +952,64 @@ pub async fn apply_candidate_gate_pass(
     .execute(&mut *tx)
     .await?;
 
-    let (residual_reason, residual_route) = if input.mutations.is_empty() {
-        (
+    let rollout_mode: String = sqlx::query_scalar(
+        "SELECT investigation_rollout_mode FROM operation_state WHERE operation_id=$1 FOR SHARE",
+    )
+    .bind(input.fence.operation_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let residual_spec = if input.mutations.is_empty() {
+        Some((
             "candidate_true_zero_proposal_closeout",
             json!({"route":"reporting","verification":"not_applicable_true_zero"}),
-        )
+        ))
+    } else if matches!(
+        rollout_mode.as_str(),
+        "registry_authoritative_legacy_projection" | "new_only"
+    ) {
+        // Plan C is installed for authoritative-new operations.  The sealed
+        // generation/plan is the scheduler handoff; emitting the historical
+        // `plan_c_verification_unavailable` residual here would permanently
+        // skip Verification and falsely route straight to Reporting.
+        None
     } else {
-        (
+        Some((
             "plan_c_verification_unavailable",
             json!({"route":"reporting","verification":"not_available_plan_c"}),
-        )
+        ))
     };
-    let residual_id = Uuid::new_v5(&generation_id, residual_reason.as_bytes());
-    let residual_hash = hash_json_on(
-        &mut tx,
-        &json!({"generation":generation_id,"reason":residual_reason}),
-    )
-    .await?;
-    sqlx::query(
-        r#"INSERT INTO hypothesis_residual_risks(
-               residual_id,operation_id,organization_id,snapshot_id,reason_code,
-               owner_kind,next_action,residual_hash
-           ) VALUES($1,$2,$3,$4,$5,'candidate_analysis',$6,$7)"#,
-    )
-    .bind(residual_id)
-    .bind(input.fence.operation_id)
-    .bind(input.fence.organization_id)
-    .bind(input.fence.snapshot_id)
-    .bind(residual_reason)
-    .bind(residual_route)
-    .bind(&residual_hash)
-    .execute(&mut *tx)
-    .await?;
+    let post_seal_route = match residual_spec.as_ref().map(|(reason, _)| *reason) {
+        Some("candidate_true_zero_proposal_closeout") => "true_zero_reporting",
+        Some("plan_c_verification_unavailable") => "historical_reporting_placeholder",
+        Some(_) => "invalid",
+        None => "verification_campaign_admission",
+    };
+    let residual = if let Some((residual_reason, residual_route)) = residual_spec {
+        let residual_id = Uuid::new_v5(&generation_id, residual_reason.as_bytes());
+        let residual_hash = hash_json_on(
+            &mut tx,
+            &json!({"generation":generation_id,"reason":residual_reason}),
+        )
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO hypothesis_residual_risks(
+                   residual_id,operation_id,organization_id,snapshot_id,reason_code,
+                   owner_kind,next_action,residual_hash
+               ) VALUES($1,$2,$3,$4,$5,'candidate_analysis',$6,$7)"#,
+        )
+        .bind(residual_id)
+        .bind(input.fence.operation_id)
+        .bind(input.fence.organization_id)
+        .bind(input.fence.snapshot_id)
+        .bind(residual_reason)
+        .bind(residual_route)
+        .bind(&residual_hash)
+        .execute(&mut *tx)
+        .await?;
+        Some((residual_id, residual_hash, residual_reason))
+    } else {
+        None
+    };
 
     let occurred_at: DateTime<Utc> = sqlx::query_scalar("SELECT statement_timestamp()")
         .fetch_one(&mut *tx)
@@ -999,8 +1026,11 @@ pub async fn apply_candidate_gate_pass(
         generation_id,
         &pending,
         &state_event_ids,
-        residual_id,
-        &residual_hash,
+        residual
+            .as_ref()
+            .map(|(residual_id, residual_hash, residual_reason)| {
+                (residual_id, residual_hash.as_str(), *residual_reason)
+            }),
         occurred_at,
     )
     .await?;
@@ -1150,6 +1180,7 @@ pub async fn apply_candidate_gate_pass(
         projection_outbox_batch_id: outbox.batch_id,
         projection_source_batch_seq: outbox.source_batch_seq,
         projection_outbox_member_set_hash: outbox.member_set_hash,
+        post_seal_route: post_seal_route.to_string(),
         replayed: false,
     })
 }
@@ -1239,6 +1270,31 @@ async fn load_apply_replay_on(
     .bind(input.fence.organization_id)
     .fetch_one(&mut **tx)
     .await?;
+    let residual_reason: Option<String> = sqlx::query_scalar(
+        r#"SELECT residual.reason_code
+             FROM hypothesis_residual_risks residual
+            WHERE residual.operation_id=$1 AND residual.organization_id=$2
+              AND residual.snapshot_id=$3
+              AND residual.reason_code IN (
+                  'candidate_true_zero_proposal_closeout',
+                  'plan_c_verification_unavailable'
+              )
+            ORDER BY CASE residual.reason_code
+                         WHEN 'candidate_true_zero_proposal_closeout' THEN 0 ELSE 1
+                     END
+            LIMIT 1"#,
+    )
+    .bind(input.fence.operation_id)
+    .bind(input.fence.organization_id)
+    .bind(input.fence.snapshot_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let post_seal_route = match residual_reason.as_deref() {
+        Some("candidate_true_zero_proposal_closeout") => "true_zero_reporting",
+        Some("plan_c_verification_unavailable") => "historical_reporting_placeholder",
+        Some(_) => return Err(conflict(APPLY_REPLAY_DRIFT)),
+        None => "verification_campaign_admission",
+    };
     Ok(Some(CandidateGenerationSealRowView {
         operation_id: input.fence.operation_id,
         scope_snapshot_id: input.fence.scope_snapshot_id,
@@ -1255,6 +1311,7 @@ async fn load_apply_replay_on(
         projection_outbox_batch_id: batch_id,
         projection_source_batch_seq: source_seq,
         projection_outbox_member_set_hash: outbox_hash,
+        post_seal_route: post_seal_route.to_string(),
         replayed: true,
     }))
 }
@@ -2231,7 +2288,16 @@ async fn persist_mutation_compound_on(
     .execute(&mut **tx)
     .await?;
 
-    persist_compiled_authorities_on(tx, input, mutation).await?;
+    persist_compiled_authorities_for_revision_on(
+        tx,
+        &input.claim_components,
+        &input.verification_contracts,
+        &input.verification_plans,
+        mutation.revision_id,
+        &mutation.revision_hash,
+        &mutation.revision_ingredients_hash,
+    )
+    .await?;
     if mutation.predecessor_revision_id.is_none() {
         sqlx::query(
             r#"INSERT INTO attack_hypothesis_heads(
@@ -2370,39 +2436,40 @@ async fn persist_mutation_compound_on(
     Ok(event_id)
 }
 
-async fn persist_compiled_authorities_on(
+pub(super) async fn persist_compiled_authorities_for_revision_on(
     tx: &mut Transaction<'_, Postgres>,
-    input: &ApplyCandidateGatePassInput,
-    mutation: &PreparedMutation,
+    claim_components: &[HypothesisClaimComponentV1],
+    verification_contracts: &[VerificationContractV1],
+    verification_plans: &[HypothesisVerificationPlanV1],
+    revision_id: Uuid,
+    revision_hash: &str,
+    revision_ingredients_hash: &str,
 ) -> Result<()> {
-    let components = input
-        .claim_components
+    let components = claim_components
         .iter()
-        .filter(|component| component.revision_id() == mutation.revision_id)
+        .filter(|component| component.revision_id() == revision_id)
         .collect::<Vec<_>>();
-    let contracts = input
-        .verification_contracts
+    let contracts = verification_contracts
         .iter()
-        .filter(|contract| contract.revision_id() == mutation.revision_id)
+        .filter(|contract| contract.revision_id() == revision_id)
         .collect::<Vec<_>>();
-    let plan = input
-        .verification_plans
+    let plan = verification_plans
         .iter()
-        .find(|plan| plan.revision_id() == mutation.revision_id)
+        .find(|plan| plan.revision_id() == revision_id)
         .ok_or_else(|| conflict(COMPILED_AUTHORITY_INCOMPLETE))?;
     if components.is_empty()
         || contracts.is_empty()
-        || plan.revision_hash() != mutation.revision_hash
-        || plan.revision_ingredients_hash() != mutation.revision_ingredients_hash
+        || plan.revision_hash() != revision_hash
+        || plan.revision_ingredients_hash() != revision_ingredients_hash
     {
         return Err(conflict(COMPILED_AUTHORITY_INCOMPLETE));
     }
     let mut component_ids = BTreeMap::new();
     for component in components {
-        if component.revision_hash() != mutation.revision_hash {
+        if component.revision_hash() != revision_hash {
             return Err(conflict(COMPILED_AUTHORITY_INCOMPLETE));
         }
-        let component_id = Uuid::new_v5(&mutation.revision_id, component.member_hash().as_bytes());
+        let component_id = Uuid::new_v5(&revision_id, component.member_hash().as_bytes());
         component_ids.insert(component.member_hash().to_owned(), component_id);
         sqlx::query(
             r#"INSERT INTO attack_hypothesis_claim_components(
@@ -2412,8 +2479,8 @@ async fn persist_compiled_authorities_on(
                ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)"#,
         )
         .bind(component_id)
-        .bind(mutation.revision_id)
-        .bind(&mutation.revision_hash)
+        .bind(revision_id)
+        .bind(revision_hash)
         .bind(component.component_ordinal() as i32)
         .bind(component.component_key())
         .bind(component.kind().as_str())
@@ -2440,7 +2507,7 @@ async fn persist_compiled_authorities_on(
                ) VALUES($1,$2,$3,'{}','{}',$4,$5)"#,
         )
         .bind(contract.objective_id())
-        .bind(mutation.revision_id)
+        .bind(revision_id)
         .bind(plan_objective_by_hash.len() as i32)
         .bind(contract.stopping_criteria_hash())
         .bind(plan_objective.objective_hash())
@@ -2472,7 +2539,7 @@ async fn persist_compiled_authorities_on(
                 binding_hash.as_bytes(),
             ))
             .bind(contract.contract_id())
-            .bind(mutation.revision_id)
+            .bind(revision_id)
             .bind(contract.objective_id())
             .bind(component_id)
             .bind(ordinal as i32)
@@ -2496,7 +2563,7 @@ async fn persist_compiled_authorities_on(
            ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,statement_timestamp())"#,
     )
     .bind(plan.plan_id())
-    .bind(mutation.revision_id)
+    .bind(revision_id)
     .bind(plan.revision_hash())
     .bind(plan.revision_ingredients_hash())
     .bind(plan.required_claim_component_count() as i64)
@@ -2523,7 +2590,7 @@ async fn persist_compiled_authorities_on(
         )
         .bind(plan_objective_id)
         .bind(plan.plan_id())
-        .bind(mutation.revision_id)
+        .bind(revision_id)
         .bind(objective.objective_id())
         .bind(objective.verification_contract_id())
         .bind(ordinal as i32)
@@ -2573,7 +2640,7 @@ async fn persist_compiled_authorities_on(
             .bind(plan.plan_id())
             .bind(plan_objective_id)
             .bind(member.plan_objective_member_hash())
-            .bind(mutation.revision_id)
+            .bind(revision_id)
             .bind(member.member_ordinal() as i32)
             .bind(member.verification_contract_hash())
             .bind(member.claim_component_set_hash())
@@ -2757,8 +2824,7 @@ async fn build_projection_members(
     generation_id: Uuid,
     mutations: &[PreparedMutation],
     state_event_ids: &[Uuid],
-    residual_id: Uuid,
-    residual_hash: &str,
+    residual: Option<(&Uuid, &str, &str)>,
     occurred_at: DateTime<Utc>,
 ) -> Result<Vec<ProjectionOutboxSourceRow>> {
     let mut members = Vec::new();
@@ -3034,11 +3100,21 @@ async fn build_projection_members(
                 open_obligation_set_hash: open_obligation_set_hash.clone(),
             },
             disposition,
-            readiness: ComparisonHypothesisReadinessV1::ReportingOnlyPlanCUnavailable,
-            plan_c: PlanCComparisonAuthorityInputV1::not_available_plan_c(),
+            readiness: if residual.is_some() {
+                ComparisonHypothesisReadinessV1::ReportingOnlyPlanCUnavailable
+            } else {
+                ComparisonHypothesisReadinessV1::PlanningReady
+            },
+            plan_c: if residual.is_some() {
+                PlanCComparisonAuthorityInputV1::not_available_plan_c()
+            } else {
+                PlanCComparisonAuthorityInputV1::pending_campaign_admission()
+            },
             finding_lineage_member_hashes: Vec::new(),
             refutation_lineage_member_hashes: Vec::new(),
-            residual_member_hashes: vec![residual_hash.to_owned()],
+            residual_member_hashes: residual
+                .map(|(_, residual_hash, _)| vec![residual_hash.to_owned()])
+                .unwrap_or_default(),
             coverage_member_hashes: vec![input.expected_authority.coverage_review_set_hash.clone()],
         };
         let hypothesis_body = freeze_comparison_projection_source_body_v1(
@@ -3176,19 +3252,21 @@ async fn build_projection_members(
             });
         }
     }
-    let residual_body=golish_core::hypothesis_semantic_key::CanonicalJsonObject::try_from_value(json!({"residual_id":residual_id,"residual_hash":residual_hash,"reason":"plan_c_verification_unavailable"}))
-        .map_err(|error|DbError::Other(anyhow::Error::new(error)))?;
-    members.push(ProjectionOutboxSourceRow {
-        outbox_member_id: Uuid::new_v5(&residual_id, b"projection:residual"),
-        change_kind: ProjectionChangeKind::Insert,
-        source: ProjectionSourceSnapshotV1::Residual(
-            ResidualProjectionRecordV1::try_new(residual_id.to_string(), 1, 1, residual_body)
-                .map_err(|error| DbError::Other(anyhow::Error::new(error)))?,
-        ),
-        source_occurred_at: Some(occurred_at),
-        source_time_status: ProjectionSourceTimeStatusV1::Known,
-        invalidation_reason: None,
-        storage: ProjectionSourceStorageV1::Inline,
-    });
+    if let Some((residual_id, residual_hash, residual_reason)) = residual {
+        let residual_body=golish_core::hypothesis_semantic_key::CanonicalJsonObject::try_from_value(json!({"residual_id":residual_id,"residual_hash":residual_hash,"reason":residual_reason}))
+            .map_err(|error|DbError::Other(anyhow::Error::new(error)))?;
+        members.push(ProjectionOutboxSourceRow {
+            outbox_member_id: Uuid::new_v5(residual_id, b"projection:residual"),
+            change_kind: ProjectionChangeKind::Insert,
+            source: ProjectionSourceSnapshotV1::Residual(
+                ResidualProjectionRecordV1::try_new(residual_id.to_string(), 1, 1, residual_body)
+                    .map_err(|error| DbError::Other(anyhow::Error::new(error)))?,
+            ),
+            source_occurred_at: Some(occurred_at),
+            source_time_status: ProjectionSourceTimeStatusV1::Known,
+            invalidation_reason: None,
+            storage: ProjectionSourceStorageV1::Inline,
+        });
+    }
     Ok(members)
 }

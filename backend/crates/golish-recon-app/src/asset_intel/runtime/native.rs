@@ -6,12 +6,13 @@
 //! availability detection and reading stay consistent regardless of which
 //! settings page configured the key.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::super::*;
 use crate::intel_providers::provider_registry;
 use crate::organizations::{OrganizationCandidate, OrganizationCandidateKind};
 use golish_intel_providers::{ProviderRecord, QueryType};
+use golish_pentest_domain::models::{AssetIntelPivot, AssetIntelPivotKind, IntelSearchIntent};
 
 /// b1 (design 2026-06-24-intel-to-eas-handoff): gate which provider queries run.
 /// In domain-keyed mode only `{{domain}}` queries run; in the legacy
@@ -39,6 +40,356 @@ pub(crate) fn parse_query_type(s: &str) -> QueryType {
         "cidr" => QueryType::Cidr,
         _ => QueryType::Site,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticAdapterRoute {
+    Native {
+        provider_id: &'static str,
+        query_type: QueryType,
+        adapter_version: &'static str,
+    },
+    Http {
+        provider_id: &'static str,
+        wire_query_type: &'static str,
+        adapter_version: &'static str,
+    },
+    HostPublic {
+        tool_name: &'static str,
+        adapter_version: &'static str,
+    },
+    Unsupported {
+        capability: &'static str,
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PivotCapability {
+    pub kind: AssetIntelPivotKind,
+    pub adapters: Vec<SemanticAdapterRoute>,
+    pub promotion_eligible: bool,
+}
+
+impl PivotCapability {
+    pub fn executable(&self) -> bool {
+        self.adapters
+            .iter()
+            .any(|adapter| !matches!(adapter, SemanticAdapterRoute::Unsupported { .. }))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedNativeQuery {
+    pub semantic_pivot: AssetIntelPivot,
+    pub intent: IntelSearchIntent,
+    pub provider_id: String,
+    pub query_type: String,
+    pub adapter_version: String,
+    pub wire_query: String,
+    pub promotion_eligible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePivotPlanError {
+    code: &'static str,
+    pub capability: String,
+    pub reason: String,
+}
+
+impl NativePivotPlanError {
+    pub const fn code(&self) -> &'static str {
+        self.code
+    }
+}
+
+pub struct NativePivotPlanner;
+
+impl NativePivotPlanner {
+    pub fn plan(
+        pivot: &AssetIntelPivot,
+        intent: IntelSearchIntent,
+        capabilities: &BTreeMap<AssetIntelPivotKind, PivotCapability>,
+    ) -> Result<Vec<PlannedNativeQuery>, NativePivotPlanError> {
+        let capability = capabilities
+            .get(&pivot.kind)
+            .ok_or_else(|| NativePivotPlanError {
+                code: "INTEL_PIVOT_UNSUPPORTED",
+                capability: pivot.kind.as_str().to_string(),
+                reason: "semantic pivot has no explicit capability matrix entry".to_string(),
+            })?;
+        if !capability.executable() {
+            let (name, reason) = capability
+                .adapters
+                .iter()
+                .find_map(|adapter| match adapter {
+                    SemanticAdapterRoute::Unsupported { capability, reason } => {
+                        Some((*capability, *reason))
+                    }
+                    _ => None,
+                })
+                .unwrap_or((pivot.kind.as_str(), "no safe Plan A adapter"));
+            return Err(NativePivotPlanError {
+                code: "INTEL_PIVOT_UNSUPPORTED",
+                capability: name.to_string(),
+                reason: reason.to_string(),
+            });
+        }
+
+        capability
+            .adapters
+            .iter()
+            .filter_map(|adapter| match adapter {
+                SemanticAdapterRoute::Unsupported { .. } => None,
+                other => Some(other),
+            })
+            .map(|adapter| {
+                let (provider_id, query_type, adapter_version, wire_query) = match adapter {
+                    SemanticAdapterRoute::Native {
+                        provider_id,
+                        query_type,
+                        adapter_version,
+                    } => {
+                        let wire = compile_native_literal(provider_id, *query_type, &pivot.value)
+                            .map_err(|error| NativePivotPlanError {
+                            code: "INTEL_PROVIDER_LITERAL_REJECTED",
+                            capability: provider_id.to_string(),
+                            reason: error.to_string(),
+                        })?;
+                        (*provider_id, query_type.as_str(), *adapter_version, wire)
+                    }
+                    SemanticAdapterRoute::Http {
+                        provider_id,
+                        wire_query_type,
+                        adapter_version,
+                    } => (
+                        *provider_id,
+                        *wire_query_type,
+                        *adapter_version,
+                        pivot.value.clone(),
+                    ),
+                    SemanticAdapterRoute::HostPublic {
+                        tool_name,
+                        adapter_version,
+                    } => (
+                        "host_public",
+                        *tool_name,
+                        *adapter_version,
+                        pivot.value.clone(),
+                    ),
+                    SemanticAdapterRoute::Unsupported { .. } => unreachable!(),
+                };
+                Ok(PlannedNativeQuery {
+                    semantic_pivot: pivot.clone(),
+                    intent,
+                    provider_id: provider_id.to_string(),
+                    query_type: query_type.to_string(),
+                    adapter_version: adapter_version.to_string(),
+                    wire_query,
+                    promotion_eligible: capability.promotion_eligible,
+                })
+            })
+            .collect()
+    }
+}
+
+pub(crate) fn compile_native_literal(
+    provider_id: &str,
+    query_type: QueryType,
+    value: &str,
+) -> golish_intel_providers::IntelResult<String> {
+    match provider_id {
+        "fofa" => golish_intel_providers::fofa::compile_semantic_query(query_type, value),
+        "hunter" => golish_intel_providers::hunter::compile_semantic_query(query_type, value),
+        "shodan" => golish_intel_providers::shodan::compile_semantic_query(query_type, value),
+        "quake" => golish_intel_providers::quake::compile_semantic_query(query_type, value),
+        other => Err(golish_intel_providers::IntelError::Other(format!(
+            "no semantic literal compiler for {other}"
+        ))),
+    }
+}
+
+fn strict_query_type(value: &str) -> Option<QueryType> {
+    Some(match value {
+        "site" => QueryType::Site,
+        "domain" => QueryType::Domain,
+        "cert" => QueryType::Cert,
+        "asn" => QueryType::Asn,
+        "cidr" => QueryType::Cidr,
+        "org" => QueryType::Org,
+        "email" => QueryType::Email,
+        "apk" | "app" => QueryType::Apk,
+        "code" => QueryType::Code,
+        _ => return None,
+    })
+}
+
+fn semantic_native_query(
+    provider_id: &str,
+    query: &golish_pentest::models::NativeProviderQuery,
+    pivot: &AssetIntelPivot,
+) -> Result<Option<(QueryType, String)>, &'static str> {
+    if !query.applicable_pivot_kinds.contains(&pivot.kind) {
+        return Ok(None);
+    }
+    if query.adapter_version.as_deref().is_none_or(str::is_empty)
+        || query.literal_encoder.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("INTEL_NATIVE_SEMANTIC_METADATA_MISSING");
+    }
+    let wire_type = query
+        .wire_query_type
+        .as_deref()
+        .and_then(strict_query_type)
+        .ok_or("INTEL_NATIVE_WIRE_QUERY_TYPE_INVALID")?;
+    let compiled = compile_native_literal(provider_id, wire_type, &pivot.value)
+        .map_err(|_| "INTEL_NATIVE_LITERAL_REJECTED")?;
+    // The compiled value is a complete provider expression. Native providers'
+    // Site transport is the one audited route that accepts such an expression;
+    // the model never sees or authors it.
+    Ok(Some((QueryType::Site, compiled)))
+}
+
+pub fn fixture_capability_matrix() -> BTreeMap<AssetIntelPivotKind, PivotCapability> {
+    use AssetIntelPivotKind as K;
+    use SemanticAdapterRoute as R;
+
+    let native = |provider_id, query_type| R::Native {
+        provider_id,
+        query_type,
+        adapter_version: "semantic_literal.v1",
+    };
+    let unsupported = |capability, reason| R::Unsupported { capability, reason };
+    [
+        (
+            K::CompanyName,
+            vec![
+                native("fofa", QueryType::Org),
+                native("hunter", QueryType::Org),
+                native("shodan", QueryType::Org),
+                native("quake", QueryType::Org),
+            ],
+            true,
+        ),
+        (
+            K::Brand,
+            vec![
+                native("fofa", QueryType::Org),
+                native("hunter", QueryType::Org),
+                native("shodan", QueryType::Org),
+                native("quake", QueryType::Org),
+            ],
+            true,
+        ),
+        (
+            K::Domain,
+            vec![
+                native("fofa", QueryType::Domain),
+                native("hunter", QueryType::Domain),
+                native("shodan", QueryType::Domain),
+                native("quake", QueryType::Domain),
+            ],
+            true,
+        ),
+        (
+            K::Hostname,
+            vec![
+                native("fofa", QueryType::Site),
+                native("hunter", QueryType::Domain),
+                native("shodan", QueryType::Domain),
+                native("quake", QueryType::Site),
+            ],
+            true,
+        ),
+        (
+            K::Ip,
+            vec![
+                native("hunter", QueryType::Site),
+                native("shodan", QueryType::Site),
+            ],
+            false,
+        ),
+        (
+            K::Cidr,
+            vec![
+                native("hunter", QueryType::Cidr),
+                native("shodan", QueryType::Cidr),
+            ],
+            false,
+        ),
+        (
+            K::Asn,
+            vec![
+                native("hunter", QueryType::Asn),
+                native("shodan", QueryType::Asn),
+            ],
+            false,
+        ),
+        (
+            K::Certificate,
+            vec![
+                native("fofa", QueryType::Cert),
+                native("hunter", QueryType::Cert),
+                native("shodan", QueryType::Cert),
+                native("quake", QueryType::Cert),
+            ],
+            false,
+        ),
+        (
+            K::Icp,
+            vec![unsupported(
+                "icp",
+                "no audited semantic ICP adapter in Plan A",
+            )],
+            false,
+        ),
+        (
+            K::EmailDomain,
+            vec![R::Http {
+                provider_id: "0.zone",
+                wire_query_type: "email",
+                adapter_version: "http_semantic.v1",
+            }],
+            false,
+        ),
+        (
+            K::GithubOrg,
+            vec![R::HostPublic {
+                tool_name: "intel_public_search",
+                adapter_version: "host_public.v1",
+            }],
+            false,
+        ),
+        (
+            K::Repository,
+            vec![R::HostPublic {
+                tool_name: "intel_public_search",
+                adapter_version: "host_public.v1",
+            }],
+            false,
+        ),
+        (
+            K::AppId,
+            vec![R::Http {
+                provider_id: "0.zone",
+                wire_query_type: "app",
+                adapter_version: "http_semantic.v1",
+            }],
+            false,
+        ),
+    ]
+    .into_iter()
+    .map(|(kind, adapters, promotion_eligible)| {
+        (
+            kind,
+            PivotCapability {
+                kind,
+                adapters,
+                promotion_eligible,
+            },
+        )
+    })
+    .collect()
 }
 
 fn summarize_native_run(
@@ -296,15 +647,31 @@ pub(crate) async fn run_native_provider(
         .map(str::trim)
         .filter(|d| !d.is_empty());
     for q in queries {
-        if !query_applies(&q.template, domain.is_some()) {
-            continue;
-        }
+        let (qt, rendered) = if let Some(pivot) = config.semantic_pivot.as_ref() {
+            match semantic_native_query(reg_id, q, pivot) {
+                Ok(Some(query)) => query,
+                Ok(None) => continue,
+                Err(code) => {
+                    attempted += 1;
+                    request_evidence.push(serde_json::json!({
+                        "queryType": pivot.kind.as_str(),
+                        "status": "error",
+                        "error": code,
+                    }));
+                    continue;
+                }
+            }
+        } else {
+            if !query_applies(&q.template, domain.is_some()) {
+                continue;
+            }
+            let mut rendered = q.template.replace("{{company_name}}", company_name);
+            if let Some(d) = domain {
+                rendered = rendered.replace("{{domain}}", d);
+            }
+            (parse_query_type(&q.query_type), rendered)
+        };
         attempted += 1;
-        let mut rendered = q.template.replace("{{company_name}}", company_name);
-        if let Some(d) = domain {
-            rendered = rendered.replace("{{domain}}", d);
-        }
-        let qt = parse_query_type(&q.query_type);
         emit_event(
             sink,
             AssetIntelStreamEvent::ProviderProgress {
@@ -396,8 +763,12 @@ pub(crate) async fn run_native_provider(
 
 #[cfg(test)]
 mod tests {
-    use super::{query_applies, summarize_native_run};
+    use super::{
+        fixture_capability_matrix, query_applies, semantic_native_query, summarize_native_run,
+        NativePivotPlanner, PivotCapability,
+    };
     use crate::asset_intel::AssetIntelProviderRunState;
+    use golish_pentest_domain::models::{AssetIntelPivot, AssetIntelPivotKind, IntelSearchIntent};
 
     #[test]
     fn query_applies_gates_by_domain_mode() {
@@ -447,5 +818,69 @@ mod tests {
             summarize_native_run(0, 0, 0),
             AssetIntelProviderRunState::Unavailable
         );
+    }
+
+    #[test]
+    fn native_query_plan_maps_semantics_without_model_selected_provider() {
+        let pivot = AssetIntelPivot::parse(AssetIntelPivotKind::Domain, "example.com").unwrap();
+        let plan = NativePivotPlanner::plan(
+            &pivot,
+            IntelSearchIntent::VerifyAttribution,
+            &fixture_capability_matrix(),
+        )
+        .unwrap();
+        assert!(plan.iter().all(|query| !query.wire_query.is_empty()));
+        assert!(plan
+            .iter()
+            .all(|query| query.semantic_pivot.kind == AssetIntelPivotKind::Domain));
+    }
+
+    #[test]
+    fn production_native_adapter_compiles_ip_without_model_dsl() {
+        let descriptor = golish_pentest::models::NativeProviderQuery {
+            query_type: "site".into(),
+            template: "legacy-placeholder-must-not-run".into(),
+            applicable_pivot_kinds: vec![AssetIntelPivotKind::Ip],
+            wire_query_type: Some("site".into()),
+            adapter_version: Some("semantic_literal.v1".into()),
+            literal_encoder: Some("hunter_quoted_literal.v1".into()),
+        };
+        let pivot = AssetIntelPivot::parse(AssetIntelPivotKind::Ip, "203.0.113.9").unwrap();
+        let (transport_type, compiled) = semantic_native_query("hunter", &descriptor, &pivot)
+            .unwrap()
+            .expect("registered IP adapter");
+        assert_eq!(transport_type, golish_intel_providers::QueryType::Site);
+        assert_eq!(compiled, "ip=\"203.0.113.9\"");
+        assert!(!compiled.contains("legacy-placeholder"));
+    }
+
+    #[test]
+    fn unsupported_pivot_is_blocked_instead_of_falling_back_to_site() {
+        let pivot = AssetIntelPivot::parse(AssetIntelPivotKind::Asn, "AS13335").unwrap();
+        let mut capabilities = fixture_capability_matrix();
+        capabilities.insert(
+            AssetIntelPivotKind::Asn,
+            PivotCapability {
+                kind: AssetIntelPivotKind::Asn,
+                adapters: Vec::new(),
+                promotion_eligible: false,
+            },
+        );
+        let error = NativePivotPlanner::plan(
+            &pivot,
+            IntelSearchIntent::DiscoverRelatedAssets,
+            &capabilities,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "INTEL_PIVOT_UNSUPPORTED");
+    }
+
+    #[test]
+    fn every_material_pivot_has_an_explicit_adapter_or_blocks_promotion() {
+        let capabilities = fixture_capability_matrix();
+        for kind in AssetIntelPivotKind::ALL {
+            let capability = capabilities.get(&kind).expect("explicit matrix entry");
+            assert!(capability.executable() || !capability.promotion_eligible);
+        }
     }
 }

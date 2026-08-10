@@ -7,7 +7,9 @@ use golish_app_core::domain::operator::{
     OperatorChannel, TrustedOperatorPrincipal, TrustedOperatorPrincipalProvider,
 };
 use golish_reporting_app::{ExplicitFinalizeRequest, ReportFinalizer, ReportFormat};
-use golish_reporting_domain::{PublicationStatus, ReportReadModel, ValidationStatus};
+use golish_reporting_domain::{
+    PublicationStatus, ReportClaimValue, ReportReadModel, ValidationStatus,
+};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
@@ -180,7 +182,7 @@ pub struct ReportCitationView {
     pub source_row_version: i64,
     pub source_hash: String,
     #[ts(type = "number")]
-    pub evidence_audit_id: i64,
+    pub evidence_audit_id: Option<i64>,
     pub organization_id_at_time: String,
     pub display_label: String,
 }
@@ -193,8 +195,7 @@ pub struct ReportClaimView {
     pub claim_kind: String,
     pub subject_ref: String,
     pub predicate: String,
-    #[ts(type = "unknown")]
-    pub value: serde_json::Value,
+    pub value: ReportClaimValue,
     #[ts(type = "number")]
     pub ordinal: i32,
     pub citations: Vec<ReportCitationView>,
@@ -278,7 +279,7 @@ fn artifact_view(row: &StoredReportArtifactView) -> ReportArtifactView {
     }
 }
 
-fn bundle_view(bundle: &StoredReportBundle) -> ReportReadModelView {
+fn bundle_view(bundle: &StoredReportBundle) -> Result<ReportReadModelView, ReportingCommandError> {
     let mut citations_by_claim = BTreeMap::<Uuid, Vec<ReportCitationView>>::new();
     for citation in &bundle.citations {
         citations_by_claim
@@ -306,7 +307,12 @@ fn bundle_view(bundle: &StoredReportBundle) -> ReportReadModelView {
                 claim_kind: claim.claim_kind.clone(),
                 subject_ref: claim.subject_ref.clone(),
                 predicate: claim.predicate.clone(),
-                value: claim.object_value.clone(),
+                value: serde_json::from_value(claim.object_value.clone()).map_err(|_| {
+                    ReportingCommandError::new(
+                        "REPORT_AUTHORITY_CORRUPT",
+                        "stored typed report claim is invalid",
+                    )
+                })?,
                 ordinal: claim.ordinal,
                 citations: citations_by_claim
                     .remove(&claim.claim_id)
@@ -328,7 +334,7 @@ fn bundle_view(bundle: &StoredReportBundle) -> ReportReadModelView {
                 .unwrap_or_default(),
         })
         .collect();
-    ReportReadModelView {
+    Ok(ReportReadModelView {
         report_id: bundle.report.report_id.to_string(),
         operation_id: bundle.report.operation_id.to_string(),
         project_scope_id: bundle.report.project_scope_id.to_string(),
@@ -338,7 +344,7 @@ fn bundle_view(bundle: &StoredReportBundle) -> ReportReadModelView {
         revisions: bundle.revisions.iter().map(revision_view).collect(),
         sections,
         artifacts: bundle.artifacts.iter().map(artifact_view).collect(),
-    }
+    })
 }
 
 async fn load_bundle(
@@ -378,10 +384,11 @@ pub async fn reporting_get_read_model(
         operation_id,
     )
     .await?;
-    Ok(load_authorized_bundle(&state, &authority)
+    load_authorized_bundle(&state, &authority)
         .await?
         .as_ref()
-        .map(bundle_view))
+        .map(bundle_view)
+        .transpose()
 }
 
 #[tauri::command]
@@ -407,6 +414,7 @@ pub async fn reporting_build_read_model(
         .await?
         .as_ref()
         .map(bundle_view)
+        .transpose()?
         .ok_or_else(|| ReportingCommandError::new("REPORT_NOT_FOUND", "report disappeared"))
 }
 
@@ -456,9 +464,13 @@ fn deterministic_markdown(view: &ReportReadModelView) -> Vec<u8> {
                 claim.subject_ref, claim.predicate, claim.value
             ));
             for citation in &claim.citations {
+                let authority_label = citation
+                    .evidence_audit_id
+                    .map(|id| format!("Evidence {id}"))
+                    .unwrap_or_else(|| "Canonical authority".to_owned());
                 output.push_str(&format!(
-                    "  - Evidence {} · {}:{}@v{}\n",
-                    citation.evidence_audit_id,
+                    "  - {} · {}:{}@v{}\n",
+                    authority_label,
                     citation.source_kind,
                     citation.source_id_value,
                     citation.source_row_version
@@ -524,7 +536,7 @@ pub async fn reporting_finalize_revision(
             "manifest hash does not match revision",
         ));
     }
-    let view = bundle_view(&bundle);
+    let view = bundle_view(&bundle)?;
     let json = serde_json::to_vec_pretty(&view)
         .map_err(|error| ReportingCommandError::new("REPORT_RENDER_FAILED", error.to_string()))?;
     let markdown = deterministic_markdown(&view);
@@ -569,11 +581,10 @@ pub async fn reporting_finalize_revision(
         )
         .await
         .map_err(|error| ReportingCommandError::new(error.code(), error.to_string()))?;
-    load_authorized_bundle(&state, &authority)
+    let bundle = load_authorized_bundle(&state, &authority)
         .await?
-        .as_ref()
-        .map(bundle_view)
-        .ok_or_else(|| ReportingCommandError::new("REPORT_NOT_FOUND", "report disappeared"))
+        .ok_or_else(|| ReportingCommandError::new("REPORT_NOT_FOUND", "report disappeared"))?;
+    bundle_view(&bundle)
 }
 
 #[cfg(test)]

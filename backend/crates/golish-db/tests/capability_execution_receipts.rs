@@ -348,19 +348,65 @@ async fn seed_wave_denominator_fixture(
     .expect("restore immutable contract trigger");
 
     for asset in assets {
+        let target_id = Uuid::new_v4();
+        let exact_origin = format!("https://{asset}:443");
+        let ports = serde_json::json!([{
+            "port": 443,
+            "state": "open",
+            "service": "https",
+            "url": format!("{exact_origin}/")
+        }]);
         sqlx::query(
             r#"INSERT INTO targets(
-                   id,name,target_type,value,scope,project_path,organization_id,source
-               ) VALUES($1,$2,'domain',$2,'in',$3,$4,'tool_truth_fixture')"#,
+                   id,name,target_type,value,scope,project_path,organization_id,source,ports
+               ) VALUES($1,$2,'domain',$2,'in',$3,$4,'tool_truth_fixture',$5)"#,
         )
-        .bind(Uuid::new_v4())
+        .bind(target_id)
         .bind(*asset)
         .bind(&frozen.project_path)
         .bind(frozen.organization_id)
+        .bind(&ports)
         .execute(pool)
         .await
         .expect("insert exact wave target");
+
+        let web_origin_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO web_origins(
+                   id,organization_id,project_path,scheme,host,host_type,port,origin,
+                   source,confidence,last_confirmed_at
+               ) VALUES($1,$2,$3,'https',$4,'domain',443,$5,'httpx',1.0,NOW())"#,
+        )
+        .bind(web_origin_id)
+        .bind(frozen.organization_id)
+        .bind(&frozen.project_path)
+        .bind(*asset)
+        .bind(&exact_origin)
+        .execute(pool)
+        .await
+        .expect("insert EAS-confirmed exact Web Origin");
+        sqlx::query(
+            r#"INSERT INTO web_origin_observations(
+                   id,organization_id,project_path,web_origin_id,target_id,status_code,
+                   confidence,source,raw
+               ) VALUES($1,$2,$3,$4,$5,200,1.0,'httpx','{}')"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(frozen.organization_id)
+        .bind(&frozen.project_path)
+        .bind(web_origin_id)
+        .bind(target_id)
+        .execute(pool)
+        .await
+        .expect("bind target to EAS-confirmed exact Web Origin");
     }
+    sqlx::query(
+        "UPDATE stage_runs SET started_at=statement_timestamp()+INTERVAL '1 second' WHERE id=$1",
+    )
+    .bind(frozen.stage_execution_id)
+    .execute(pool)
+    .await
+    .expect("place Enumeration start after frozen EAS source facts");
     let wave = stage_asset_waves::current_or_create_initial(
         pool,
         frozen.operation_id,
@@ -473,12 +519,28 @@ async fn seed_target_intel_denominator_assets(
     .await
     .expect("disable contract immutability inside isolated target_intel fixture");
     sqlx::query(
-        "UPDATE operation_state SET tool_truth_contract='receipt_v1' WHERE operation_id=$1",
+        "ALTER TABLE operation_state DISABLE TRIGGER operation_state_investigation_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("disable investigation immutability inside isolated target_intel fixture");
+    sqlx::query(
+        r#"UPDATE operation_state
+              SET tool_truth_contract='receipt_v1',
+                  investigation_contract_version='hypothesis_registry_v1',
+                  investigation_rollout_mode='dual_read_compare'
+            WHERE operation_id=$1"#,
     )
     .bind(frozen.operation_id)
     .execute(pool)
     .await
     .expect("freeze target_intel fixture to receipt_v1");
+    sqlx::query(
+        "ALTER TABLE operation_state ENABLE TRIGGER operation_state_investigation_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("restore target_intel investigation immutability trigger");
     sqlx::query(
         "ALTER TABLE operation_state ENABLE TRIGGER operation_state_tool_truth_contract_immutable",
     )
@@ -686,30 +748,85 @@ async fn seed_multi_root_bundle_fixture(
     .await
     .expect("disable contract immutability in isolated multi-root fixture");
     sqlx::query(
-        "UPDATE operation_state SET tool_truth_contract='receipt_v1' WHERE operation_id=$1",
+        "ALTER TABLE operation_state DISABLE TRIGGER operation_state_investigation_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("disable investigation immutability in isolated multi-root fixture");
+    sqlx::query(
+        r#"UPDATE operation_state
+              SET tool_truth_contract='receipt_v1',
+                  investigation_contract_version='hypothesis_registry_v1',
+                  investigation_rollout_mode='dual_read_compare'
+            WHERE operation_id=$1"#,
     )
     .bind(frozen.operation_id)
     .execute(pool)
     .await
     .expect("freeze multi-root fixture to receipt_v1");
     sqlx::query(
+        "ALTER TABLE operation_state ENABLE TRIGGER operation_state_investigation_contract_immutable",
+    )
+    .execute(pool)
+    .await
+    .expect("restore multi-root investigation immutability trigger");
+    sqlx::query(
         "ALTER TABLE operation_state ENABLE TRIGGER operation_state_tool_truth_contract_immutable",
     )
     .execute(pool)
     .await
     .expect("restore contract immutability");
+    let target_id = Uuid::new_v4();
+    let target_host = format!("{label}.example.test");
+    let exact_origin = format!("https://{target_host}:443");
+    let target_ports = serde_json::json!([{
+        "port": 443,
+        "state": "open",
+        "service": "https",
+        "url": format!("{exact_origin}/")
+    }]);
     sqlx::query(
         r#"INSERT INTO targets(
-               id,name,target_type,value,scope,project_path,organization_id,source
-           ) VALUES($1,$2,'domain',$2,'in',$3,$4,'authority_bundle_fixture')"#,
+               id,name,target_type,value,scope,project_path,organization_id,source,ports
+           ) VALUES($1,$2,'domain',$2,'in',$3,$4,'authority_bundle_fixture',$5)"#,
     )
-    .bind(Uuid::new_v4())
-    .bind(format!("{label}.example.test"))
+    .bind(target_id)
+    .bind(&target_host)
     .bind(&frozen.project_path)
     .bind(frozen.organization_id)
+    .bind(&target_ports)
     .execute(pool)
     .await
     .expect("insert multi-root fixture target");
+    let web_origin_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO web_origins(
+               id,organization_id,project_path,scheme,host,host_type,port,origin,
+               source,confidence,last_confirmed_at
+           ) VALUES($1,$2,$3,'https',$4,'domain',443,$5,'httpx',1.0,NOW())"#,
+    )
+    .bind(web_origin_id)
+    .bind(frozen.organization_id)
+    .bind(&frozen.project_path)
+    .bind(&target_host)
+    .bind(&exact_origin)
+    .execute(pool)
+    .await
+    .expect("insert multi-root EAS-confirmed exact origin");
+    sqlx::query(
+        r#"INSERT INTO web_origin_observations(
+               id,organization_id,project_path,web_origin_id,target_id,status_code,
+               confidence,source,raw
+           ) VALUES($1,$2,$3,$4,$5,200,1.0,'httpx','{}')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(frozen.organization_id)
+    .bind(&frozen.project_path)
+    .bind(web_origin_id)
+    .bind(target_id)
+    .execute(pool)
+    .await
+    .expect("bind multi-root target to exact origin");
 
     for family in families {
         let stage_execution_id = Uuid::new_v4();
@@ -784,6 +901,77 @@ async fn target_intel_managed_begin_requires_exact_sealed_destination_policy() {
 
 #[tokio::test]
 #[serial]
+async fn host_stage_reconciliation_is_network_empty_and_transport_distinct() {
+    let (mut db, _data_dir) = fixture("host_stage_reconciliation").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "host-stage-reconciliation").await;
+    let policy = capability_execution_receipts::seal_host_stage_reconciliation_policy(
+        db.pool(),
+        &capability_execution_receipts::SealHostStageReconciliationPolicy {
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+        },
+    )
+    .await
+    .expect("seal empty host reconciliation policy");
+    let receipt = capability_execution_receipts::begin_managed(
+        db.pool(),
+        &capability_execution_receipts::BeginManagedCapabilityReceipt {
+            id: Uuid::new_v4(),
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            attempt_ordinal: 1,
+            destination_policy_id: policy.id,
+        },
+    )
+    .await
+    .expect("begin host reconciliation receipt");
+    let mut close =
+        target_intel_finalization(db.pool(), &receipt, &[("GOLISH-INTEL-DNS", "no_match")]).await;
+    close.network_hops.clear();
+    close.request_count = 0;
+    close.retry_count = 0;
+    close.wall_clock_ms = 0;
+    close.typed_landing = serde_json::json!({
+        "schema": "tool_truth_host_stage_reconciliation_v1",
+        "security_interpretation": "inconclusive",
+        "blocked_input_count": 1,
+    });
+
+    let wrong_transport =
+        capability_execution_receipts::finalize_target_intel_receipt(db.pool(), &close)
+            .await
+            .expect_err("provider finalizer must reject a sandboxed host policy");
+    assert!(wrong_transport
+        .to_string()
+        .contains("TOOL_TRUTH_AUTHORITY_STALE"));
+
+    let finalized = capability_execution_receipts::finalize_host_stage_receipt(db.pool(), &close)
+        .await
+        .expect("network-empty host reconciliation finalizes");
+    assert_eq!(finalized.attempt_state, "succeeded");
+    assert_eq!(finalized.landing_state, "committed");
+    assert_eq!(finalized.coverage_extent, "complete");
+    assert_eq!(finalized.reconciliation_state, "consistent");
+    assert_eq!(finalized.observation_state, "no_match");
+    assert_eq!(finalized.security_interpretation, "inconclusive");
+
+    let (backend, member_count, sealed_empty): (String, Option<i64>, bool) = sqlx::query_as(
+        r#"SELECT execution_backend,member_count,sealed_empty
+             FROM capability_execution_destination_policies WHERE id=$1"#,
+    )
+    .bind(policy.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read sealed host policy");
+    assert_eq!(backend, "sandboxed_cli");
+    assert_eq!(member_count, Some(0));
+    assert!(sealed_empty);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn target_intel_managed_claim_is_single_sender_and_policy_exact() {
     let (mut db, _data_dir) = fixture("target_intel_managed_claim").await;
     let (_frozen, denominator) =
@@ -850,6 +1038,31 @@ async fn target_intel_managed_claim_is_single_sender_and_policy_exact() {
     .await
     .expect_err("an existing claim cannot be replayed under a different policy");
     assert!(error.to_string().contains("TOOL_TRUTH_MANIFEST_DRIFT"));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn target_intel_fixed_policy_accepts_server_owned_underscore_path() {
+    let (mut db, _data_dir) = fixture("target_intel_fixed_policy_underscore").await;
+    let (_frozen, denominator) =
+        seed_target_intel_denominator(db.pool(), "target-intel-fixed-policy-underscore").await;
+    let policy = capability_execution_receipts::seal_fixed_provider_destination_policy(
+        db.pool(),
+        &capability_execution_receipts::SealFixedProviderDestinationPolicy {
+            denominator_id: denominator.id,
+            capability: "intel.dns".to_string(),
+            endpoints: vec![capability_execution_receipts::FixedProviderEndpoint {
+                scheme: "https".to_string(),
+                normalized_host: "quake.360.net".to_string(),
+                port: 443,
+                path_prefix: "/api/v3/search/quake_service".to_string(),
+            }],
+        },
+    )
+    .await
+    .expect("a closed server-owned provider path may contain a URL-safe underscore");
+    assert!(!policy.id.is_nil());
     db.stop().await;
 }
 
@@ -1102,7 +1315,7 @@ async fn release_revalidation_dispatch_for_test(pool: &PgPool, operation_id: Uui
     .await
     .expect("restore policy immutability");
     sqlx::query(
-        "ALTER TABLE tool_truth_revalidation_dispatch_heads DISABLE TRIGGER tool_truth_revalidation_dispatch_head_immutable",
+        "ALTER TABLE tool_truth_revalidation_dispatch_heads DISABLE TRIGGER tool_truth_revalidation_dispatch_head_admin_cas",
     )
     .execute(pool)
     .await
@@ -1115,7 +1328,7 @@ async fn release_revalidation_dispatch_for_test(pool: &PgPool, operation_id: Uui
     .await
     .expect("release isolated dispatch head");
     sqlx::query(
-        "ALTER TABLE tool_truth_revalidation_dispatch_heads ENABLE TRIGGER tool_truth_revalidation_dispatch_head_immutable",
+        "ALTER TABLE tool_truth_revalidation_dispatch_heads ENABLE TRIGGER tool_truth_revalidation_dispatch_head_admin_cas",
     )
     .execute(pool)
     .await
@@ -1715,7 +1928,7 @@ async fn authority_bundle_all_fresh_callback_replays_and_rolls_back_atomically()
     let seeded = seed_multi_root_bundle_fixture(
         db.pool(),
         "authority-bundle-all-fresh",
-        &ToolTruthRootFamilyV1::ALL,
+        &ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS,
     )
     .await;
     sqlx::query(
@@ -1738,7 +1951,7 @@ async fn authority_bundle_all_fresh_callback_replays_and_rolls_back_atomically()
         &request,
         |tx, checked| {
             Box::pin(async move {
-                assert_eq!(checked.roots().len(), 4);
+                assert_eq!(checked.roots().len(), 3);
                 assert!(checked.is_all_fresh());
                 assert_eq!(
                     checked
@@ -1746,7 +1959,7 @@ async fn authority_bundle_all_fresh_callback_replays_and_rolls_back_atomically()
                         .iter()
                         .map(|root| root.root_family)
                         .collect::<Vec<_>>(),
-                    ToolTruthRootFamilyV1::ALL
+                    ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
                 );
                 sqlx::query(
                     "INSERT INTO authority_bundle_callback_probe(id,label) VALUES($1,'commit')",
@@ -1860,12 +2073,96 @@ async fn authority_bundle_all_fresh_callback_replays_and_rolls_back_atomically()
 
 #[tokio::test]
 #[serial]
+async fn authority_bundle_does_not_apply_one_root_skew_budget_across_sequential_stages() {
+    let (mut db, _data_dir) = fixture("authority_bundle_sequential_stage_windows").await;
+    let seeded = seed_multi_root_bundle_fixture(
+        db.pool(),
+        "authority-bundle-sequential-stage-windows",
+        &ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS,
+    )
+    .await;
+
+    sqlx::query(
+        "ALTER TABLE capability_execution_temporal_censuses DISABLE TRIGGER capability_temporal_census_header_guard",
+    )
+    .execute(db.pool())
+    .await
+    .expect("allow isolated temporal-window fixture adjustment");
+    sqlx::query(
+        r#"UPDATE capability_execution_temporal_censuses census
+              SET observation_window_started_at=statement_timestamp()-INTERVAL '5 minutes',
+                  observation_window_completed_at=statement_timestamp()-INTERVAL '5 minutes'+INTERVAL '10 milliseconds',
+                  effective_valid_until=statement_timestamp()+INTERVAL '12 hours'
+             FROM capability_execution_receipts receipt
+             JOIN coverage_denominators denominator ON denominator.id=receipt.denominator_id
+            WHERE census.id=receipt.temporal_census_id
+              AND denominator.operation_id=$1 AND denominator.organization_id=$2
+              AND denominator.stage_kind='external_attack_surface'"#,
+    )
+    .bind(seeded.frozen.operation_id)
+    .bind(seeded.frozen.organization_id)
+    .execute(db.pool())
+    .await
+    .expect("separate one individually fresh root from later stage windows");
+    sqlx::query(
+        "ALTER TABLE capability_execution_temporal_censuses ENABLE TRIGGER capability_temporal_census_header_guard",
+    )
+    .execute(db.pool())
+    .await
+    .expect("restore temporal census immutability");
+
+    let request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
+        stable_consumer_request_id: Uuid::new_v4(),
+        operation_id: seeded.frozen.operation_id,
+        organization_id: seeded.frozen.organization_id,
+        consumer_kind:
+            capability_execution_receipts::ToolTruthAuthorityBundleConsumerV1::VerificationCampaign,
+    };
+    let statuses = capability_execution_receipts::with_all_fresh_tool_truth_authority_bundle(
+        db.pool(),
+        &request,
+        |_tx, all_fresh| {
+            Box::pin(async move {
+                Ok(all_fresh
+                    .checked()
+                    .roots()
+                    .iter()
+                    .map(|root| root.member_status)
+                    .collect::<Vec<_>>())
+            })
+        },
+    )
+    .await
+    .expect("sequential root windows remain independently fresh");
+    assert_eq!(
+        statuses,
+        vec![
+            capability_execution_receipts::ToolTruthAuthorityBundleMemberStatusV1::ConsistentFresh;
+            ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len()
+        ]
+    );
+    let (started_at, completed_at): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+        sqlx::query_as(
+            r#"SELECT observation_window_started_at,observation_window_completed_at
+                 FROM tool_truth_authority_bundle_seals
+                WHERE stable_consumer_request_id=$1"#,
+        )
+        .bind(request.stable_consumer_request_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("read descriptive aggregate bundle window");
+    assert!(completed_at - started_at > chrono::Duration::seconds(30));
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn authority_bundle_mixed_epoch_preserves_roots_and_records_obligations() {
     let (mut db, _data_dir) = fixture("authority_bundle_mixed_epoch").await;
     let seeded = seed_multi_root_bundle_fixture(
         db.pool(),
         "authority-bundle-mixed-epoch",
-        &ToolTruthRootFamilyV1::ALL,
+        &ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS,
     )
     .await;
     let head = sqlx::query_as::<_, (String, i64, Uuid, i64)>(
@@ -1947,7 +2244,7 @@ async fn authority_bundle_mixed_epoch_preserves_roots_and_records_obligations() 
         )
         .await
         .expect("checked bundle keeps stale roots available to the blocked consumer");
-    assert_eq!(root_count, 4);
+    assert_eq!(root_count, 3);
     assert!(stale_count >= 1);
     assert!(obligation_count >= 1);
 
@@ -1979,7 +2276,7 @@ async fn authority_bundle_semantic_orphan_cannot_be_filtered_into_all_fresh() {
     let seeded = seed_multi_root_bundle_fixture(
         db.pool(),
         "authority-bundle-semantic-orphan",
-        &ToolTruthRootFamilyV1::ALL,
+        &ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS,
     )
     .await;
     let receipt = sqlx::query_as::<_, (Uuid, i64)>(
@@ -2041,7 +2338,7 @@ async fn authority_bundle_semantic_orphan_cannot_be_filtered_into_all_fresh() {
         )
         .await
         .expect("checked callback receives the complete orphan-bearing root census");
-    assert_eq!(root_count, 4);
+    assert_eq!(root_count, 3);
     assert_eq!(invalid_count, 1);
     assert!(obligations >= 1);
 
@@ -2073,7 +2370,7 @@ async fn authority_bundle_missing_required_root_never_invokes_consumer() {
     let seeded = seed_multi_root_bundle_fixture(
         db.pool(),
         "authority-bundle-missing-root",
-        &ToolTruthRootFamilyV1::ALL[..3],
+        &ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS[..2],
     )
     .await;
     let request = capability_execution_receipts::CheckToolTruthAuthorityBundle {
@@ -2902,7 +3199,12 @@ async fn denominator_source_compound_derives_exact_members_and_replays() {
     assets.sort_unstable();
     assert_eq!(
         assets,
-        vec!["a.example", "a.example", "b.example", "b.example"]
+        vec![
+            "https://a.example:443",
+            "https://a.example:443",
+            "https://b.example:443",
+            "https://b.example:443"
+        ]
     );
 
     let replay = capability_execution_receipts::seal_source_denominator(
@@ -2913,6 +3215,53 @@ async fn denominator_source_compound_derives_exact_members_and_replays() {
     .await
     .expect("same source request replays exactly");
     assert_eq!(replay, first);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn enumeration_wave_root_rejects_post_start_origin_and_cannot_shrink_the_wave() {
+    let (mut db, _data_dir) = fixture("enumeration_origin_cutoff").await;
+    let wave = seed_wave_denominator_fixture(
+        db.pool(),
+        "enumeration-origin-cutoff",
+        &["before.example", "late.example"],
+    )
+    .await;
+    sqlx::query(
+        r#"UPDATE web_origin_observations observation
+              SET observed_at=(
+                    SELECT started_at+INTERVAL '1 second'
+                      FROM stage_runs WHERE id=$1
+                  )
+             FROM web_origins origin
+            WHERE observation.web_origin_id=origin.id
+              AND observation.organization_id=$2
+              AND origin.host='late.example'"#,
+    )
+    .bind(wave.frozen.stage_execution_id)
+    .bind(wave.frozen.organization_id)
+    .execute(db.pool())
+    .await
+    .expect("move one exact-origin observation beyond the frozen cutoff");
+
+    let error = capability_execution_receipts::seal_source_denominator(
+        db.pool(),
+        &capability_execution_receipts::SealSourceDenominator {
+            stable_seal_request_id: Uuid::new_v4(),
+            stage_execution_id: wave.frozen.stage_execution_id,
+            source: capability_execution_receipts::DenominatorSourceRef::StageAssetWave(
+                wave.wave_id,
+            ),
+        },
+        compile_test_denominator,
+    )
+    .await
+    .expect_err("a frozen wave cannot silently omit a post-start exact origin");
+    assert!(error
+        .to_string()
+        .contains("TOOL_TRUTH_DENOMINATOR_UNSEALED"));
+
     db.stop().await;
 }
 
@@ -3049,7 +3398,10 @@ async fn stage_team_unit_denominator_excludes_targets_created_after_stage_start(
     .fetch_all(db.pool())
     .await
     .expect("read unit denominator assets");
-    assert_eq!(assets, vec!["before.example", "before.example"]);
+    assert_eq!(
+        assets,
+        vec!["https://before.example:443", "https://before.example:443"]
+    );
     db.stop().await;
 }
 
@@ -3178,6 +3530,25 @@ async fn begin_receipt_is_idempotent_and_attempt_identity_is_denominator_scoped(
     assert_eq!(replay.id, first.id);
     assert_eq!(replay.input_manifest_hash, denominator.input_manifest_hash);
     assert_eq!(replay.coverage_gap_reason, "policy_blocked");
+
+    let frozen_ttls = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        r#"SELECT member.positive_ttl_ms,member.negative_ttl_ms,
+                  member.refutation_ttl_ms,member.required_recheck_source
+             FROM capability_execution_receipts receipt
+             JOIN evidence_temporal_validity_policy_members member
+               ON member.policy_id=receipt.temporal_validity_policy_id
+            WHERE receipt.id=$1 AND member.fact_class='target_state'"#,
+    )
+    .bind(first.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read receipt-frozen target-state TTL policy");
+    assert_eq!(
+        frozen_ttls,
+        (86_400_000, 21_600_000, 7_200_000, "manual_only".into())
+    );
+    assert!(frozen_ttls.1 < frozen_ttls.0);
+    assert!(frozen_ttls.2 < frozen_ttls.0);
 
     let second_attempt = capability_execution_receipts::begin(
         db.pool(),

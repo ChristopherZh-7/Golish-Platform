@@ -23,7 +23,7 @@
 |---|---|
 | `crud_ops::*` | 文件 CRUD（落盘/读取/删除） |
 | `import_export::*` | 项目导入导出 |
-| `stage_report_artifact` / `verify_report_artifact` / `discard_staged_report_artifact` | 报告 blob 的暂存、read-back 与 staging 清理；Unix 使用 anchored dirfd/`*at`，Windows 使用 retained capability directory handles |
+| `stage_report_artifact` / `verify_report_artifact` / `read_verified_report_artifact` / `discard_staged_report_artifact` | 报告 blob 的暂存、校验读取与 staging 清理；读取只在 named-entry/handle identity、digest、length 全部复核后返回 bytes；Unix 使用 anchored dirfd/`*at`，Windows 使用 retained capability directory handles |
 | `promote_report_artifact` → `ReservedReportArtifact` | 在 per-content advisory lock 内 hard-link put-if-absent、校验并刷新 blob mtime；返回的 reservation 必须持有到 DB artifact attach 完成 |
 | `gc_report_artifacts` | grace-period orphan staging/blob GC；每个待删 content key 取得同一锁后重新检查 grace，Unix 用 `unlinkat`，Windows 用已验证 handle 的 `FileDispositionInfo` 删除 |
 

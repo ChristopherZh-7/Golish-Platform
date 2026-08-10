@@ -24,6 +24,15 @@ pub(super) fn handle_text_chunk(
     accumulated_thinking: &mut String,
     last_repetition_check_len: &mut usize,
 ) -> bool {
+    if ctx.target_intel_goal_shadow.is_some()
+        && (text.starts_with("[WEB_SEARCH_RESULT:") || text.starts_with("[WEB_FETCH_RESULT:"))
+    {
+        tracing::warn!(
+            target: "harness::target_intel_goal_shadow",
+            "fixture dropped provider server-web result marker before UI/model visibility"
+        );
+        return false;
+    }
     if let Some(thinking) = text.strip_prefix("[Thinking] ") {
         if supports_thinking {
             tracing::trace!(

@@ -368,6 +368,41 @@ pub async fn recent_evidence_ids_for_session(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// Return recent evidence produced by one exact stage attempt. The current
+/// classification row is the durable producer binding; filtering by session
+/// alone would let an earlier stage make a later stage look completed.
+pub async fn recent_evidence_ids_for_stage_attempt(
+    pool: &PgPool,
+    session_id: &str,
+    stage_execution_id: Uuid,
+    limit: i64,
+) -> Result<Vec<i64>> {
+    if limit <= 0 || stage_execution_id.is_nil() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(i64,)> = sqlx::query_as(
+        r#"SELECT al.id
+           FROM audit_log al
+           WHERE al.audit_role = 'evidence'
+             AND al.session_id = $1
+             AND EXISTS (
+                 SELECT 1
+                 FROM evidence_classifications ec
+                 WHERE ec.evidence_audit_id = al.id
+                   AND ec.valid_to IS NULL
+                   AND ec.producing_stage_run_id = $2
+             )
+           ORDER BY al.id DESC
+           LIMIT $3"#,
+    )
+    .bind(session_id)
+    .bind(stage_execution_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// 一条「最近证据」明细行 (设计 2026-07-02-eas-worker-evidence): 给 `list_recent_evidence`
 /// 工具用. 比 [`recent_evidence_ids_for_session`] 的裸 id 多带上下文
 /// (tool / subject / technique / asset / outcome / kind / age), 让 worker 能把
@@ -416,6 +451,42 @@ pub async fn recent_evidence_detailed_for_session(
     .bind(limit)
     .fetch_all(pool)
     .await?;
+    Ok(rows)
+}
+
+const RECENT_EVIDENCE_DETAILED_FOR_WORKER_SQL: &str = r#"SELECT id,
+                  tool_name,
+                  NULLIF(details, '')            AS subject,
+                  evidence_technique             AS technique,
+                  evidence_asset                 AS asset,
+                  evidence_outcome               AS outcome,
+                  detail->>'kind'                AS kind,
+                  EXTRACT(EPOCH FROM (NOW() - created_at))::double precision AS age_seconds
+           FROM audit_log
+           WHERE audit_role = 'evidence'
+             AND run_id = $1
+             AND detail->>'producer_worker_run_id' = $2::text
+           ORDER BY id DESC
+           LIMIT $3"#;
+
+/// Exact stage-worker evidence view. Query receipts may use the durable
+/// artifact session instead of the UI chat key, so ownership is established
+/// from host-written operation and producer-worker identities.
+pub async fn recent_evidence_detailed_for_worker(
+    pool: &PgPool,
+    operation_id: Uuid,
+    worker_run_id: Uuid,
+    limit: i64,
+) -> Result<Vec<RecentEvidenceRow>> {
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, RecentEvidenceRow>(RECENT_EVIDENCE_DETAILED_FOR_WORKER_SQL)
+        .bind(operation_id)
+        .bind(worker_run_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 

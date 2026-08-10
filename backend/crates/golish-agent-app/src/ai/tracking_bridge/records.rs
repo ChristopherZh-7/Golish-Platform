@@ -28,7 +28,7 @@ fn agent_log_persistence_type(agent_id: &str) -> &str {
         // and the Stage Team read model. The legacy `agent_logs.agent_type`
         // enum predates them, so its compatibility boundary stores the
         // existing broad pentest role instead of dropping the log row.
-        "vuln_scanner" | "attack_analyst" | "candidate_verifier" => "pentester",
+        "vuln_scanner" | "attack_analyst" | "candidate_verifier" | "investigation" => "pentester",
         supported => supported,
     }
 }
@@ -299,7 +299,12 @@ mod tests {
         assert_eq!(agent_log_persistence_type("prober"), "prober");
         assert_eq!(agent_log_persistence_type("enumerator"), "enumerator");
         assert_eq!(agent_log_persistence_type("vuln_scanner"), "pentester");
+        assert_eq!(
+            agent_log_persistence_type("application_understanding"),
+            "pentester"
+        );
         assert_eq!(agent_log_persistence_type("attack_analyst"), "pentester");
+        assert_eq!(agent_log_persistence_type("investigation"), "pentester");
         assert_eq!(
             agent_log_persistence_type("candidate_verifier"),
             "pentester"

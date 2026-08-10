@@ -240,7 +240,9 @@ pub(super) fn handle_ai_event_terminal(event: &AiEvent) -> Result<()> {
             );
         }
         // Events handled in the main match or not displayed in terminal mode
-        AiEvent::Completed { .. } | AiEvent::Error { .. } => {}
+        AiEvent::Completed { .. }
+        | AiEvent::Error { .. }
+        | AiEvent::InvestigationProjectionChanged { .. } => {}
         _ => {}
     }
 

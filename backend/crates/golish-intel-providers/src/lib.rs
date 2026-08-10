@@ -33,7 +33,8 @@ pub mod zone;
 
 pub use error::{IntelError, IntelResult};
 pub use types::{
-    api_key_integration_schema, ConnectionStatus, ProviderMeta, ProviderRecord, QueryType,
+    api_key_integration_schema, escape_provider_literal, ConnectionStatus, ProviderMeta,
+    ProviderRecord, QueryType,
 };
 
 use async_trait::async_trait;

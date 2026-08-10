@@ -309,6 +309,7 @@ pub struct CandidateWriteFenceRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CandidateSnapshotDispositionRow {
     SealedReady,
+    SealedAnalysisReadyWithResiduals,
     BlockedAuthorityBundle,
 }
 
@@ -316,6 +317,7 @@ impl CandidateSnapshotDispositionRow {
     const fn as_str(self) -> &'static str {
         match self {
             Self::SealedReady => "sealed_ready",
+            Self::SealedAnalysisReadyWithResiduals => "sealed_analysis_ready_with_residuals",
             Self::BlockedAuthorityBundle => "blocked_authority_bundle",
         }
     }
@@ -323,9 +325,24 @@ impl CandidateSnapshotDispositionRow {
     fn parse(value: &str) -> Result<Self> {
         match value {
             "sealed_ready" => Ok(Self::SealedReady),
+            "sealed_analysis_ready_with_residuals" => Ok(Self::SealedAnalysisReadyWithResiduals),
             "blocked_authority_bundle" => Ok(Self::BlockedAuthorityBundle),
             _ => Err(conflict(AUTHORITY_MISMATCH)),
         }
+    }
+}
+
+const fn candidate_snapshot_disposition(
+    unified_investigation: bool,
+    all_roots_fresh: bool,
+    managed_feed_available: bool,
+) -> CandidateSnapshotDispositionRow {
+    if all_roots_fresh && managed_feed_available {
+        CandidateSnapshotDispositionRow::SealedReady
+    } else if unified_investigation {
+        CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals
+    } else {
+        CandidateSnapshotDispositionRow::BlockedAuthorityBundle
     }
 }
 
@@ -465,9 +482,13 @@ async fn load_bundle_rows_on(
     .await?;
     if header.operation_id != checked.operation_id()
         || header.organization_id != checked.organization_id()
-        || header.relevant_root_count != 4
-        || header.member_count != 4
-        || members.len() != 4
+        || header.relevant_root_count
+            != i64::try_from(ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len())
+                .unwrap_or(i64::MAX)
+        || header.member_count
+            != i64::try_from(ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len())
+                .unwrap_or(i64::MAX)
+        || members.len() != ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len()
         || header.relevant_root_set_hash != checked.relevant_root_set_hash()
         || header.member_set_hash != checked.member_set_hash()
         || header.semantic_authority_bundle_hash != checked.semantic_authority_bundle_hash()
@@ -590,7 +611,222 @@ async fn load_snapshot_source_members_on(
             .await?;
         sources.insert(source_kind, members);
     }
+    let unified_investigation: bool = sqlx::query_scalar(
+        "SELECT stage_topology_contract='unified_investigation_v1' FROM operation_state WHERE operation_id=$1 FOR SHARE",
+    )
+    .bind(operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    if unified_investigation {
+        for (source_kind, members) in load_predecessor_authority_bodies_on(
+            tx,
+            operation_id,
+            organization_id,
+            scope_snapshot_id,
+        )
+        .await?
+        {
+            let mut sealed_members = Vec::with_capacity(members.len());
+            for (source_identity, body) in members {
+                sealed_members.push((source_identity, hash_json_on(tx, &body).await?));
+            }
+            sources.insert(source_kind, sealed_members);
+        }
+    }
     Ok(sources)
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct PredecessorHandoffAuthorityRow {
+    source_identity: String,
+    source_operation_id: Uuid,
+    source_stage_kind: String,
+    source_scope_snapshot_id: Uuid,
+    source_stage_execution_id: Uuid,
+    source_stage_run_unit_id: Uuid,
+    source_deliverable_submission_id: Uuid,
+    source_payload: Value,
+    source_payload_sha256: String,
+    source_evidence_ids: Vec<i64>,
+    source_coverage_watermark: Value,
+    source_unit_gate_decision_hash: String,
+    source_aggregate_pass_token_hash: Option<String>,
+    source_gate_passed_at: DateTime<Utc>,
+    manifest_input_sha256: String,
+}
+
+/// Load the exact immutable predecessor authority selected for one unified
+/// Investigation snapshot.  A stage fork owns an explicit copied manifest;
+/// an ordinary full run owns same-operation final handoffs.  Both variants are
+/// immutable DB authority and therefore safe to re-read while the Candidate
+/// snapshot is being frozen.  The model never supplies this selector.
+async fn load_predecessor_authority_bodies_on(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    organization_id: Uuid,
+    scope_snapshot_id: Uuid,
+) -> Result<BTreeMap<&'static str, Vec<(String, Value)>>> {
+    let mut handoffs = sqlx::query_as::<_, PredecessorHandoffAuthorityRow>(
+        r#"SELECT ('fork:' || input.id::TEXT) AS source_identity,
+                  input.source_operation_id,input.source_stage_kind,
+                  input.source_scope_snapshot_id,input.source_stage_execution_id,
+                  input.source_stage_run_unit_id,input.source_deliverable_submission_id,
+                  input.source_payload,input.source_payload_sha256,
+                  input.source_evidence_ids,input.source_coverage_watermark,
+                  input.source_unit_gate_decision_hash,
+                  input.source_aggregate_pass_token_hash,input.source_gate_passed_at,
+                  input.manifest_input_sha256
+             FROM operation_stage_fork_inputs input
+            WHERE input.operation_id=$1 AND input.organization_id=$2
+              AND input.target_scope_snapshot_id=$3
+            ORDER BY operation_stage_rank_for_topology(
+                         input.source_stage_topology_contract,input.source_stage_kind),
+                     input.id
+            FOR SHARE"#,
+    )
+    .bind(operation_id)
+    .bind(organization_id)
+    .bind(scope_snapshot_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if handoffs.is_empty() {
+        handoffs = sqlx::query_as::<_, PredecessorHandoffAuthorityRow>(
+            r#"SELECT ('local:' || handoff.id::TEXT) AS source_identity,
+                      handoff.operation_id AS source_operation_id,handoff.from_stage_kind AS source_stage_kind,
+                      handoff.scope_snapshot_id AS source_scope_snapshot_id,
+                      handoff.stage_execution_id AS source_stage_execution_id,
+                      handoff.source_stage_run_unit_id,handoff.deliverable_submission_id AS source_deliverable_submission_id,
+                      handoff.payload AS source_payload,handoff.payload_sha256 AS source_payload_sha256,
+                      handoff.evidence_ids AS source_evidence_ids,
+                      handoff.coverage_watermark AS source_coverage_watermark,
+                      handoff.unit_gate_decision_hash AS source_unit_gate_decision_hash,
+                      handoff.aggregate_pass_token_hash AS source_aggregate_pass_token_hash,
+                      handoff.gate_passed_at AS source_gate_passed_at,
+                      handoff.payload_sha256 AS manifest_input_sha256
+                 FROM stage_handoffs handoff
+                WHERE handoff.operation_id=$1 AND handoff.organization_id=$2
+                  AND handoff.scope_snapshot_id=$3 AND handoff.invalidated_at IS NULL
+                ORDER BY operation_stage_rank_for_topology(
+                             'unified_investigation_v1',handoff.from_stage_kind),
+                         handoff.id
+                FOR SHARE"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(scope_snapshot_id)
+        .fetch_all(&mut **tx)
+        .await?;
+    }
+
+    let mut authority = BTreeMap::new();
+    let mut handoff_members = Vec::with_capacity(handoffs.len());
+    let mut expected_evidence = BTreeMap::<i64, (Uuid, BTreeSet<String>)>::new();
+    for handoff in handoffs {
+        for evidence_id in &handoff.source_evidence_ids {
+            let entry = expected_evidence
+                .entry(*evidence_id)
+                .or_insert_with(|| (handoff.source_operation_id, BTreeSet::new()));
+            if entry.0 != handoff.source_operation_id {
+                return Err(conflict(AUTHORITY_MISMATCH));
+            }
+            entry.1.insert(handoff.source_stage_kind.clone());
+        }
+        let body = json!({
+            "schema":"investigation_predecessor_handoff.v1",
+            "instruction_authority":false,
+            "source_operation_id":handoff.source_operation_id,
+            "source_stage_kind":handoff.source_stage_kind,
+            "source_scope_snapshot_id":handoff.source_scope_snapshot_id,
+            "source_stage_execution_id":handoff.source_stage_execution_id,
+            "source_stage_run_unit_id":handoff.source_stage_run_unit_id,
+            "source_deliverable_submission_id":handoff.source_deliverable_submission_id,
+            "source_payload":handoff.source_payload,
+            "source_payload_sha256":handoff.source_payload_sha256,
+            "source_evidence_ids":handoff.source_evidence_ids,
+            "source_coverage_watermark":handoff.source_coverage_watermark,
+            "source_unit_gate_decision_hash":handoff.source_unit_gate_decision_hash,
+            "source_aggregate_pass_token_hash":handoff.source_aggregate_pass_token_hash,
+            "source_gate_passed_at":handoff.source_gate_passed_at,
+            "manifest_input_sha256":handoff.manifest_input_sha256,
+        });
+        handoff_members.push((handoff.source_identity, body));
+    }
+    authority.insert("predecessor_handoff", handoff_members);
+
+    let evidence_ids = expected_evidence.keys().copied().collect::<Vec<_>>();
+    let evidence_rows = if evidence_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query(
+            r#"SELECT id,run_id,session_id,tool_name,status,action,category,source,
+                      target_id,evidence_technique,evidence_outcome,evidence_asset,
+                      created_at,detail
+                 FROM audit_log
+                WHERE id=ANY($1) AND audit_role='evidence'
+                ORDER BY id
+                FOR SHARE"#,
+        )
+        .bind(&evidence_ids)
+        .fetch_all(&mut **tx)
+        .await?
+    };
+    if evidence_rows.len() != expected_evidence.len() {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    let mut evidence_members = Vec::with_capacity(evidence_rows.len());
+    let organization_id_text = organization_id.to_string();
+    for row in evidence_rows {
+        let evidence_id: i64 = row.try_get("id")?;
+        let run_id: Option<Uuid> = row.try_get("run_id")?;
+        let (expected_operation_id, source_stages) = expected_evidence
+            .get(&evidence_id)
+            .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+        let detail: Value = row.try_get("detail")?;
+        if run_id != Some(*expected_operation_id)
+            || predecessor_evidence_organization_id(&detail) != Some(organization_id_text.as_str())
+        {
+            return Err(conflict(AUTHORITY_MISMATCH));
+        }
+        let body = json!({
+            "schema":"investigation_predecessor_evidence.v1",
+            "instruction_authority":false,
+            "evidence_id":evidence_id,
+            "source_operation_id":expected_operation_id,
+            "source_stage_kinds":source_stages,
+            "session_id":row.try_get::<Option<String>, _>("session_id")?,
+            "tool_name":row.try_get::<Option<String>, _>("tool_name")?,
+            "status":row.try_get::<String, _>("status")?,
+            "action":row.try_get::<String, _>("action")?,
+            "category":row.try_get::<String, _>("category")?,
+            "source":row.try_get::<String, _>("source")?,
+            "target_id":row.try_get::<Option<Uuid>, _>("target_id")?,
+            "evidence_technique":row.try_get::<Option<String>, _>("evidence_technique")?,
+            "evidence_outcome":row.try_get::<Option<String>, _>("evidence_outcome")?,
+            "evidence_asset":row.try_get::<Option<String>, _>("evidence_asset")?,
+            "created_at":row.try_get::<DateTime<Utc>, _>("created_at")?,
+            "detail":detail,
+        });
+        evidence_members.push((format!("{}:{evidence_id}", expected_operation_id), body));
+    }
+    authority.insert("predecessor_evidence", evidence_members);
+    Ok(authority)
+}
+
+/// Evidence producers use one of two explicit, versioned ownership envelopes:
+/// ordinary tool evidence owns `detail.organization_id`, while server-owned
+/// Tool Truth receipts own `detail.tool_truth_producer.organization_id`.
+/// Candidate snapshot authority accepts only those exact paths; it never
+/// guesses ownership from asset text or another operation-scoped row.
+fn predecessor_evidence_organization_id(detail: &Value) -> Option<&str> {
+    detail
+        .get("organization_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            detail
+                .get("tool_truth_producer")
+                .and_then(|producer| producer.get("organization_id"))
+                .and_then(Value::as_str)
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -989,11 +1225,18 @@ pub(crate) async fn freeze_snapshot_on(
 
     let managed_feed =
         select_managed_feed_authority_on(tx, input.operation_id, input.organization_id).await?;
-    let disposition = if checked.is_all_fresh() && managed_feed.store_catalog_id.is_some() {
-        CandidateSnapshotDispositionRow::SealedReady
-    } else {
-        CandidateSnapshotDispositionRow::BlockedAuthorityBundle
-    };
+    let unified_investigation: bool = sqlx::query_scalar(
+        r#"SELECT stage_topology_contract='unified_investigation_v1'
+             FROM operation_state WHERE operation_id=$1 FOR SHARE"#,
+    )
+    .bind(input.operation_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let disposition = candidate_snapshot_disposition(
+        unified_investigation,
+        checked.is_all_fresh(),
+        managed_feed.store_catalog_id.is_some(),
+    );
     let candidate_snapshot_authority_hash = hash_json_on(
         tx,
         &json!({
@@ -1127,7 +1370,11 @@ pub(crate) async fn freeze_snapshot_on(
         )
         .await?;
     }
-    if disposition == CandidateSnapshotDispositionRow::SealedReady {
+    if matches!(
+        disposition,
+        CandidateSnapshotDispositionRow::SealedReady
+            | CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals
+    ) {
         freeze_ready_snapshot_inputs_and_attempt_on(tx, snapshot_id, &members).await?;
     }
     load_snapshot_on(tx, snapshot_id).await
@@ -1341,9 +1588,13 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
     .bind(snapshot_id)
     .fetch_all(&mut **tx)
     .await?;
-    if sources.is_empty() || bundle_members.len() != ToolTruthRootFamilyV1::ALL.len() {
+    if bundle_members.len() != ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len() {
         return Err(conflict(AUTHORITY_MISMATCH));
     }
+    let sourced_root_families = sources
+        .iter()
+        .map(|source| source.root_family.clone())
+        .collect::<BTreeSet<_>>();
     let subject_identity_hash = hash_json_on(
         tx,
         &json!({
@@ -1528,6 +1779,45 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
         }
         input_hashes.push(input_hash);
     }
+    for member in bundle_members
+        .iter()
+        .filter(|member| !sourced_root_families.contains(&member.root_family))
+    {
+        let stable_input_key = format!("tool-truth-residual:{}", member.root_family);
+        let source_ref = format!("tool_truth_authority_bundle_member:{}", member.id);
+        let residual_body = json!({
+            "schema":"candidate_tool_truth_root_residual.v1",
+            "instruction_authority":false,
+            "root_family":member.root_family,
+            "root_denominator_id":member.root_denominator_id,
+            "root_denominator_hash":member.root_denominator_hash,
+            "authority_set_seal_id":member.authority_set_seal_id,
+            "authority_set_semantic_hash":member.authority_set_semantic_hash,
+            "authority_set_graph_hash":member.authority_set_graph_hash,
+            "authority_set_freshness_hash":member.authority_set_freshness_hash,
+            "temporal_validity_policy_set_hash":member.temporal_validity_policy_set_hash,
+            "target_state_epoch_set_hash":member.target_state_epoch_set_hash,
+            "semantic_status":member.semantic_status,
+            "temporal_validity_status":member.temporal_validity_status,
+            "member_status":member.member_status,
+            "member_hash":member.member_hash,
+            "coverage_claim":"not_complete",
+        });
+        input_hashes.push(
+            persist_frozen_candidate_input_on(
+                tx,
+                snapshot_id,
+                &stable_input_key,
+                "tool_truth_residual",
+                &source_ref,
+                &member.member_hash,
+                "organization",
+                &subject_identity_hash,
+                &residual_body,
+            )
+            .await?,
+        );
+    }
     let source_set_rows: Vec<(String, String, String, String)> = sqlx::query_as(
         r#"SELECT source_set.source_kind,member.source_identity,
                   member.source_hash,member.member_hash
@@ -1540,14 +1830,58 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
     .bind(snapshot_id)
     .fetch_all(&mut **tx)
     .await?;
+    let (snapshot_operation_id, snapshot_organization_id, snapshot_scope_snapshot_id): (
+        Uuid,
+        Uuid,
+        Uuid,
+    ) = sqlx::query_as(
+        r#"SELECT operation_id,organization_id,scope_snapshot_id
+             FROM candidate_analysis_snapshots WHERE snapshot_id=$1 FOR SHARE"#,
+    )
+    .bind(snapshot_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let predecessor_bodies = if source_set_rows.iter().any(|(source_kind, _, _, _)| {
+        matches!(
+            source_kind.as_str(),
+            "predecessor_handoff" | "predecessor_evidence"
+        )
+    }) {
+        load_predecessor_authority_bodies_on(
+            tx,
+            snapshot_operation_id,
+            snapshot_organization_id,
+            snapshot_scope_snapshot_id,
+        )
+        .await?
+        .into_iter()
+        .flat_map(|(source_kind, members)| {
+            members.into_iter().map(move |(source_identity, body)| {
+                ((source_kind.to_owned(), source_identity), body)
+            })
+        })
+        .collect::<BTreeMap<_, _>>()
+    } else {
+        BTreeMap::new()
+    };
     for (source_kind, source_identity, source_hash, member_hash) in source_set_rows {
         let stable_key = format!("source-set:{source_kind}:{source_identity}");
         let source_ref = format!("candidate_snapshot_source_member:{member_hash}");
-        let body = json!({
-            "schema":"candidate_snapshot_source_member.v1","instruction_authority":false,
-            "source_kind":source_kind,"source_identity":source_identity,
-            "source_hash":source_hash,"member_hash":member_hash,
-        });
+        let body = predecessor_bodies
+            .get(&(source_kind.clone(), source_identity.clone()))
+            .cloned()
+            .unwrap_or_else(|| {
+                json!({
+                    "schema":"candidate_snapshot_source_member.v1","instruction_authority":false,
+                    "source_kind":source_kind,"source_identity":source_identity,
+                    "source_hash":source_hash,"member_hash":member_hash,
+                })
+            });
+        if predecessor_bodies.contains_key(&(source_kind.clone(), source_identity.clone()))
+            && hash_json_on(tx, &body).await? != source_hash
+        {
+            return Err(conflict(AUTHORITY_MISMATCH));
+        }
         input_hashes.push(
             persist_frozen_candidate_input_on(
                 tx,
@@ -1859,6 +2193,8 @@ async fn persist_temporal_census_on(
         temporal_policy_hash: String,
         policy_member_id: Uuid,
         evidence_class: String,
+        target_scope_identity_hash: String,
+        source_temporal_census_member_id: Uuid,
         observed_at: DateTime<Utc>,
         valid_until: DateTime<Utc>,
         source_epoch: i64,
@@ -1876,6 +2212,8 @@ async fn persist_temporal_census_on(
                   temporal.temporal_validity_policy_id AS temporal_policy_id,
                   temporal.temporal_validity_policy_hash AS temporal_policy_hash,
                   decision.policy_member_id,decision.temporal_fact_class AS evidence_class,
+                  decision.target_scope_identity_hash,
+                  decision.id AS source_temporal_census_member_id,
                   decision.observed_at,decision.effective_valid_until AS valid_until,
                   decision.target_state_epoch AS source_epoch,head.current_epoch,
                   temporal.observation_window_started_at AS window_started_at,
@@ -1946,11 +2284,12 @@ async fn persist_temporal_census_on(
                    census_member_id,census_id,snapshot_id,ordinal,root_family,
                    bundle_member_id,receipt_id,temporal_census_id,temporal_policy_id,
                    temporal_policy_hash,policy_member_id,evidence_class,
+                   target_scope_identity_hash,source_temporal_census_member_id,
                    receipt_observed_at,receipt_valid_until,source_target_state_epoch,
                    current_target_state_epoch,observation_window_started_at,
                    observation_window_completed_at,max_cross_observation_skew_ms,
                    temporal_status,semantic_status,decision_hash
-               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)"#,
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)"#,
         )
         .bind(census_member_id)
         .bind(census_id)
@@ -1964,6 +2303,8 @@ async fn persist_temporal_census_on(
         .bind(&decision.temporal_policy_hash)
         .bind(decision.policy_member_id)
         .bind(&decision.evidence_class)
+        .bind(&decision.target_scope_identity_hash)
+        .bind(decision.source_temporal_census_member_id)
         .bind(decision.observed_at)
         .bind(decision.valid_until)
         .bind(decision.source_epoch)
@@ -9497,6 +9838,53 @@ mod managed_feed_authority_tests {
 
     use super::*;
     use crate::{DbConfig, GolishDb};
+
+    #[test]
+    fn snapshot_disposition_preserves_legacy_freshness_gate() {
+        assert_eq!(
+            candidate_snapshot_disposition(false, true, true),
+            CandidateSnapshotDispositionRow::SealedReady
+        );
+        assert_eq!(
+            candidate_snapshot_disposition(false, false, false),
+            CandidateSnapshotDispositionRow::BlockedAuthorityBundle
+        );
+    }
+
+    #[test]
+    fn unified_investigation_can_analyze_typed_residuals() {
+        assert_eq!(
+            candidate_snapshot_disposition(true, false, false),
+            CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals
+        );
+        assert_eq!(
+            candidate_snapshot_disposition(true, true, false),
+            CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals
+        );
+    }
+
+    #[test]
+    fn predecessor_evidence_accepts_only_explicit_ownership_envelopes() {
+        let organization_id = Uuid::new_v4().to_string();
+        assert_eq!(
+            predecessor_evidence_organization_id(&json!({
+                "organization_id": organization_id,
+            })),
+            Some(organization_id.as_str())
+        );
+        assert_eq!(
+            predecessor_evidence_organization_id(&json!({
+                "tool_truth_producer": {"organization_id": organization_id},
+            })),
+            Some(organization_id.as_str())
+        );
+        assert_eq!(
+            predecessor_evidence_organization_id(&json!({
+                "producer": {"organization_id": organization_id},
+            })),
+            None
+        );
+    }
 
     fn digest(nibble: char) -> String {
         format!("sha256:{}", nibble.to_string().repeat(64))

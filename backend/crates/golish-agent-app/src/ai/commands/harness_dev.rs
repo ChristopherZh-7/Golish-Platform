@@ -16,7 +16,8 @@ use crate::error::GolishError;
 use crate::state::AgentState;
 use golish_agent_kit::harness::operation_flow::OperationFlowState;
 use golish_agent_kit::harness::{
-    base_operation_graph, load_embedded_profile, load_embedded_stage_spec, AllowedDag, StageKind,
+    load_embedded_profile, load_embedded_stage_spec, operation_graph_for_topology, AllowedDag,
+    StageKind, StageTopologyContract,
 };
 use golish_agent_kit::task_orchestrator::agent_run_checkpoint::{
     agent_run_from_state_blob, state_blob_without_agent_run, AgentRunCheckpoint,
@@ -80,6 +81,8 @@ fn fact_domain(stage: StageKind) -> Option<golish_db::repo::stage_purge::StagePu
         StageKind::Enumeration => StagePurgeDomain::Enumeration,
         StageKind::VulnTriage => StagePurgeDomain::Vuln,
         StageKind::Scoping
+        | StageKind::ApplicationUnderstanding
+        | StageKind::Investigation
         | StageKind::AttackCandidate
         | StageKind::Verification
         | StageKind::AccessValidation
@@ -213,7 +216,12 @@ pub async fn harness_dev_reset_stage_checkpoint(
             "operation_state not found: {operation_id}"
         )));
     };
-    let dag = projected_dag_for_profile(&row.profile)?;
+    let operation_view = crate::ai::db_bridge::operation_state_view_from_db(row.clone())
+        .map_err(|error| GolishError::Internal(format!("validate operation contracts: {error}")))?;
+    let dag = projected_dag_for_profile(
+        &row.profile,
+        operation_view.stage_topology_contract.topology,
+    )?;
     if !dag.contains(stage_kind) {
         return Err(GolishError::Validation(format!(
             "stage '{}' is not enabled for profile '{}'",
@@ -451,16 +459,21 @@ async fn resolve_chat_session_uuid(
         })
 }
 
-fn projected_dag_for_profile(profile_id: &str) -> Result<AllowedDag, GolishError> {
-    let profile = match load_embedded_profile(profile_id) {
-        Ok(Some(profile)) => profile,
-        _ => load_embedded_profile("assessment")
-            .map_err(|e| GolishError::Internal(format!("load assessment profile: {e}")))?
-            .ok_or_else(|| GolishError::Internal("assessment profile missing".to_string()))?,
-    };
-    let graph = base_operation_graph()
-        .map_err(|e| GolishError::Internal(format!("load operation graph: {e}")))?;
-    Ok(graph.project(&profile.allowed_stage_set()))
+fn projected_dag_for_profile(
+    profile_id: &str,
+    topology: StageTopologyContract,
+) -> Result<AllowedDag, GolishError> {
+    let profile = load_embedded_profile(profile_id)
+        .map_err(|e| GolishError::Internal(format!("load profile {profile_id}: {e}")))?
+        .ok_or_else(|| GolishError::Internal(format!("profile {profile_id} is missing")))?;
+    let graph = operation_graph_for_topology(topology)
+        .map_err(|e| GolishError::Internal(format!("load operation graph for {topology}: {e}")))?;
+    let allowed = profile
+        .allowed_stage_set_for_topology(topology)
+        .map_err(|e| {
+            GolishError::Internal(format!("project profile {profile_id} for {topology}: {e}"))
+        })?;
+    Ok(graph.project(&allowed))
 }
 
 fn affected_stages(
@@ -753,7 +766,11 @@ mod tests {
     }
 
     fn assessment_dag() -> AllowedDag {
-        projected_dag_for_profile("assessment").expect("assessment dag")
+        projected_dag_for_profile(
+            "assessment",
+            StageTopologyContract::LegacyCandidateVerificationV1,
+        )
+        .expect("assessment dag")
     }
 
     #[test]

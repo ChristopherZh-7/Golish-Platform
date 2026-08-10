@@ -16,8 +16,8 @@ use golish_sub_agents::SubAgentContext;
 
 use super::super::{AgenticLoopContext, ToolExecutionResult};
 use golish_agent_kit::tool_executors::{
-    execute_ask_human_tool, execute_plan_patch_tool, execute_plan_tool, execute_web_fetch_tool,
-    extract_and_upsert_entities,
+    execute_ask_human_tool, execute_intel_public_tool, execute_plan_patch_tool, execute_plan_tool,
+    execute_web_fetch_tool, extract_and_upsert_entities,
 };
 
 mod sub_agent_call;
@@ -27,6 +27,7 @@ use self::sub_agent_call::execute_sub_agent_call;
 pub mod candidate_analysis_agent_runner;
 pub mod candidate_verification;
 mod stage_team_scheduler;
+pub mod verification_campaign;
 
 // `pub(crate)` so `execution_mode::selection_apply` can pull the tool definition
 // (co-located with its handler) when exposing `stage_run` to the primary agent.
@@ -108,6 +109,98 @@ fn generic_pentest_evidence_enabled(result: &serde_json::Value) -> bool {
         .get("generic_evidence_disabled")
         .and_then(|value| value.as_bool())
         .unwrap_or(false)
+}
+
+fn validate_recon_search_intel_args(
+    args: &serde_json::Value,
+) -> std::result::Result<(), &'static str> {
+    let object = args
+        .as_object()
+        .ok_or("RECON_SEARCH_INTEL_ARGS_MUST_BE_OBJECT")?;
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "organization_id" | "pivot" | "intent"))
+    {
+        return Err("RECON_SEARCH_INTEL_UNKNOWN_FIELD");
+    }
+    if object
+        .get("organization_id")
+        .and_then(Value::as_str)
+        .and_then(|value| value.parse::<uuid::Uuid>().ok())
+        .is_none()
+    {
+        return Err("RECON_SEARCH_INTEL_ORGANIZATION_INVALID");
+    }
+    let pivot = object
+        .get("pivot")
+        .and_then(Value::as_object)
+        .ok_or("RECON_SEARCH_INTEL_PIVOT_INVALID")?;
+    let pivot_kind = pivot.get("kind").and_then(Value::as_str);
+    let pivot_value = pivot.get("value").and_then(Value::as_str);
+    if pivot
+        .keys()
+        .any(|key| !matches!(key.as_str(), "kind" | "value"))
+        || !matches!(
+            pivot_kind,
+            Some(
+                "company_name"
+                    | "brand"
+                    | "domain"
+                    | "hostname"
+                    | "ip"
+                    | "cidr"
+                    | "asn"
+                    | "certificate"
+                    | "icp"
+                    | "email_domain"
+                    | "github_org"
+                    | "repository"
+                    | "app_id"
+            )
+        )
+        || !pivot_value.is_some_and(|value| {
+            !value.trim().is_empty()
+                && value.chars().count() <= 512
+                && !value.chars().any(char::is_control)
+        })
+    {
+        return Err("RECON_SEARCH_INTEL_PIVOT_NOT_CLOSED");
+    }
+    if !matches!(
+        object.get("intent").and_then(Value::as_str),
+        Some("discover_related_assets" | "verify_attribution" | "enrich_known_asset")
+    ) {
+        return Err("RECON_SEARCH_INTEL_INTENT_INVALID");
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn validate_intel_dynamic_spawn_args(args: &serde_json::Value) -> bool {
+    let Ok(request) =
+        serde_json::from_value::<golish_sub_agents::IntelDynamicSpawnRequest>(args.clone())
+    else {
+        return false;
+    };
+    !request.agents.is_empty()
+        && request.agents.len() <= 16
+        && request.agents.iter().all(|agent| {
+            let name = agent.name.trim();
+            let prompt = agent.prompt.trim();
+            !name.is_empty()
+                && name.chars().count() <= 80
+                && !name.chars().any(char::is_control)
+                && !prompt.is_empty()
+                && prompt.chars().count() <= 4_000
+                && !prompt.chars().any(char::is_control)
+                && agent.subject_refs.len() <= 32
+                && agent.subject_refs.iter().all(|reference| {
+                    let reference = reference.trim();
+                    !reference.is_empty()
+                        && reference.chars().count() <= 512
+                        && !reference.chars().any(char::is_control)
+                })
+        })
 }
 
 fn combined_stdout_stderr(result: &serde_json::Value) -> String {
@@ -406,6 +499,43 @@ fn is_security_analysis_direct_tool(tool_name: &str) -> bool {
     )
 }
 
+fn unified_investigation_direct_tool_allowed(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "stage_run"
+            | "update_plan"
+            | "query_target_data"
+            | "list_in_scope_targets"
+            | "list_recent_evidence"
+            | "search_memories"
+            | "search_knowledge_base"
+            | "read_knowledge"
+            | "graph_search"
+            | "graph_neighbors"
+            | "graph_attack_paths"
+            | "harness_trace"
+            | "submit_result"
+            | "submit_stage_deliverable"
+    ) || tool_name.starts_with("sub_agent_")
+}
+
+fn production_target_intel_primary_direct_tool_allowed(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "stage_run" | "update_plan" | "submit_stage_deliverable"
+    )
+}
+
+fn production_target_intel_primary_direct_tool_blocked(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    operation_id: Option<uuid::Uuid>,
+    tool_name: &str,
+) -> bool {
+    stage == Some(golish_agent_kit::harness::StageKind::TargetIntel)
+        && operation_id.is_some()
+        && !production_target_intel_primary_direct_tool_allowed(tool_name)
+}
+
 /// Execute a tool directly for generic models (after approval or auto-approved).
 pub async fn execute_tool_direct_generic<M>(
     tool_name: &str,
@@ -418,11 +548,115 @@ pub async fn execute_tool_direct_generic<M>(
 where
     M: RigCompletionModel + Sync,
 {
+    if production_target_intel_primary_direct_tool_blocked(
+        ctx.harness_stage,
+        ctx.harness_operation_id,
+        tool_name,
+    ) {
+        return Ok(ToolExecutionResult {
+            value: json!({
+                "code": "TARGET_INTEL_GOAL_PRIMARY_TOOL_FORBIDDEN",
+                "error": format!(
+                    "Tool '{tool_name}' is unavailable to the Target Intel primary; enter the durable AI Goal owner through stage_run"
+                ),
+                "blocked": true,
+            }),
+            success: false,
+        });
+    }
+    if ctx.harness_stage == Some(golish_agent_kit::harness::StageKind::Investigation)
+        && !unified_investigation_direct_tool_allowed(tool_name)
+    {
+        return Ok(ToolExecutionResult {
+            value: json!({
+                "code": "INVESTIGATION_COGNITIVE_TOOL_FORBIDDEN",
+                "error": format!(
+                    "Tool '{tool_name}' is unavailable to an Investigation cognitive actor; external actions require a host-compiled typed Operator"
+                ),
+                "blocked": true,
+            }),
+            success: false,
+        });
+    }
     if tool_name.starts_with("indexer_") {
         return Ok(ToolExecutionResult {
             value: json!({"error": "Indexer tools are no longer available. Use grep_file, ast_grep, read_file, or sub-agents for code analysis."}),
             success: false,
         });
+    }
+
+    if tool_name == "recon_search_intel" {
+        if let Err(code) = validate_recon_search_intel_args(tool_args) {
+            return Ok(ToolExecutionResult {
+                value: json!({"error": code}),
+                success: false,
+            });
+        }
+        // Fixture evals may handle this through `custom_tool_executor` while
+        // production falls through to the registered host-owned Tool.
+    }
+
+    if matches!(
+        tool_name,
+        golish_sub_agents::STAGE_TEAM_SPAWN_INTEL_SUBAGENTS
+            | golish_sub_agents::STAGE_TEAM_REQUEST_INTEL_REVIEW
+    ) {
+        let fixture_enabled =
+            ctx.target_intel_goal_shadow.is_some() && ctx.harness_operation_id.is_none();
+        if !fixture_enabled {
+            return Ok(ToolExecutionResult {
+                value: json!({"error": "INTEL_GOAL_FIXTURE_LEADER_REQUIRED"}),
+                success: false,
+            });
+        }
+        let valid = if tool_name == golish_sub_agents::STAGE_TEAM_SPAWN_INTEL_SUBAGENTS {
+            serde_json::from_value::<golish_sub_agents::IntelDynamicSpawnRequest>(tool_args.clone())
+                .is_ok()
+        } else {
+            tool_args.as_object().is_some_and(|object| {
+                object.len() == 1
+                    && object
+                        .get("completion_claim")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|claim| {
+                            !claim.trim().is_empty() && claim.chars().count() <= 12_000
+                        })
+            })
+        };
+        if !valid {
+            return Ok(ToolExecutionResult {
+                value: json!({"error": "INTEL_GOAL_CLOSED_SCHEMA_REJECTED"}),
+                success: false,
+            });
+        }
+        // A fixture composition executor persists the stamped WorkItem/review
+        // receipt. Continue to the custom-tool seam only after this independent
+        // runtime validation; production never sees these names.
+    }
+
+    if matches!(tool_name, "intel_public_search" | "intel_public_fetch") {
+        let fixture_enabled = ctx
+            .target_intel_goal_shadow
+            .is_some_and(|fixture| fixture.strict_passive_public_tools_enabled())
+            && ctx.harness_operation_id.is_none();
+        if !fixture_enabled {
+            return Ok(ToolExecutionResult {
+                value: json!({
+                    "error": "INTEL_PUBLIC_FIXTURE_AUTHORITY_REQUIRED",
+                    "blocked": true
+                }),
+                success: false,
+            });
+        }
+        let Some(adapter) = ctx.intel_public_adapter.as_ref() else {
+            return Ok(ToolExecutionResult {
+                value: json!({"error": "Intel public evidence adapter not configured"}),
+                success: false,
+            });
+        };
+        let (value, success) =
+            execute_intel_public_tool(adapter.as_ref(), tool_name, tool_args).await;
+        return Ok(ToolExecutionResult { value, success });
     }
 
     if tool_name == "web_fetch" {
@@ -1258,6 +1492,45 @@ mod direct_tool_routing_tests {
     use super::*;
 
     #[test]
+    fn production_target_intel_primary_fails_closed_outside_stage_run_boundary() {
+        let operation_id = Some(uuid::Uuid::new_v4());
+        let stage = Some(golish_agent_kit::harness::StageKind::TargetIntel);
+        for allowed in ["stage_run", "update_plan", "submit_stage_deliverable"] {
+            assert!(!production_target_intel_primary_direct_tool_blocked(
+                stage,
+                operation_id,
+                allowed
+            ));
+        }
+        for forbidden in [
+            "recon_search_intel",
+            "recon_list_providers",
+            "recon_map_assets",
+            "recon_lookup_whois",
+            "query_target_data",
+            "check_stage_asset_coverage",
+            "stage_worklist_status",
+            "stage_worklist_next",
+            "sub_agent_recon",
+        ] {
+            assert!(
+                production_target_intel_primary_direct_tool_blocked(stage, operation_id, forbidden),
+                "Target Intel primary direct bypass must reject {forbidden}"
+            );
+        }
+        assert!(!production_target_intel_primary_direct_tool_blocked(
+            stage,
+            None,
+            "recon_search_intel"
+        ));
+        assert!(!production_target_intel_primary_direct_tool_blocked(
+            Some(golish_agent_kit::harness::StageKind::Enumeration),
+            operation_id,
+            "stage_worklist_next"
+        ));
+    }
+
+    #[test]
     fn attack_surface_seeds_routes_through_security_analysis_executor() {
         assert!(
             is_security_analysis_direct_tool("list_attack_surface_seeds"),
@@ -1489,12 +1762,37 @@ mod tests {
         source_query_belongs_to_action, source_query_statuses_all_terminal,
         source_status_completion_marker_matches, source_status_completion_rows,
         stage_evidence_operation_id, structured_storage_hook_payload,
+        unified_investigation_direct_tool_allowed,
     };
     use golish_agent_kit::harness::StageKind;
     use serde_json::json;
 
     fn in_stage() -> Option<StageKind> {
         Some(StageKind::ExternalAttackSurface)
+    }
+
+    #[test]
+    fn investigation_direct_dispatch_allows_cognition_but_not_raw_io() {
+        for allowed in [
+            "stage_run",
+            "update_plan",
+            "query_target_data",
+            "sub_agent_browser",
+            "submit_stage_deliverable",
+        ] {
+            assert!(unified_investigation_direct_tool_allowed(allowed));
+        }
+        for forbidden in [
+            "web_fetch",
+            "browser_navigate",
+            "pentest_run",
+            "run_pty_cmd",
+            "vault",
+            "record_finding",
+            "graph_add_entity",
+        ] {
+            assert!(!unified_investigation_direct_tool_allowed(forbidden));
+        }
     }
 
     #[test]

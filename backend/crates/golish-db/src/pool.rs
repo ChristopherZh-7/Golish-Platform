@@ -39,6 +39,40 @@ pub fn create_lazy_pool(connection_string: &str) -> Result<Arc<PgPool>> {
 /// so the connect should succeed quickly. The acquire_timeout here is mainly a
 /// safety net for slow migrations or transient hiccups.
 pub async fn create_pool(connection_string: &str) -> Result<PoolInfo> {
+    use sqlx::Connection;
+
+    info!("Running database migrations");
+    let migrator = sqlx::migrate!("./migrations");
+    // Migrations run on one explicitly owned connection. `sqlx::Migrator`
+    // uses a session advisory lock; keeping migration work inside a pool can
+    // return a failed connection (and its lock) to the pool, then deadlock a
+    // repair retry on a different connection.
+    let mut migration_conn = sqlx::postgres::PgConnection::connect(connection_string)
+        .await
+        .context("Failed to connect to PostgreSQL for migrations")?;
+    if let Err(first_err) = migrator.run_direct(&mut migration_conn).await {
+        warn!(
+            error = %first_err,
+            "Migration failed, attempting to repair"
+        );
+        // A failed Migrator run can leave its session lock held. Clear only
+        // advisory locks owned by this dedicated connection before retrying;
+        // no unrelated application work shares this session.
+        sqlx::query("SELECT pg_advisory_unlock_all()")
+            .execute(&mut migration_conn)
+            .await
+            .context("Failed to release the failed migration advisory lock")?;
+        repair_migrations(&mut migration_conn, &migrator).await?;
+        migrator
+            .run_direct(&mut migration_conn)
+            .await
+            .context("Failed to run database migrations after repair")?;
+        info!("Database migrations complete (after repair)");
+    } else {
+        info!("Database migrations complete");
+    }
+    drop(migration_conn);
+
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .min_connections(1)
@@ -48,57 +82,6 @@ pub async fn create_pool(connection_string: &str) -> Result<PoolInfo> {
         .connect(connection_string)
         .await
         .context("Failed to connect to PostgreSQL")?;
-
-    info!("Running database migrations");
-    let migrator = sqlx::migrate!("./migrations");
-
-    if let Err(first_err) = migrator.run(&pool).await {
-        warn!(
-            error = %first_err,
-            "Migration failed, attempting to repair"
-        );
-
-        // Repair using a SEPARATE short-lived connection to avoid advisory lock
-        // conflicts: the first migrator.run() acquires a PG advisory lock on a
-        // pooled connection that is returned (but not closed) on failure, so a
-        // second run() from the same pool would deadlock waiting for that lock.
-        {
-            use sqlx::Connection;
-            let mut repair_conn = sqlx::postgres::PgConnection::connect(connection_string)
-                .await
-                .context("Failed to open repair connection")?;
-
-            repair_migrations(&mut repair_conn, &migrator).await?;
-        }
-
-        // Close the entire pool to release any advisory locks held by the
-        // first failed migrator.run(), then recreate it cleanly.
-        pool.close().await;
-
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .min_connections(1)
-            .acquire_timeout(Duration::from_secs(30))
-            .idle_timeout(Duration::from_secs(300))
-            .max_lifetime(Duration::from_secs(1800))
-            .connect(connection_string)
-            .await
-            .context("Failed to reconnect to PostgreSQL after repair")?;
-
-        migrator
-            .run(&pool)
-            .await
-            .context("Failed to run database migrations after repair")?;
-
-        info!("Database migrations complete (after repair)");
-
-        let has_pgvector = detect_pgvector(&pool).await;
-        info!(has_pgvector, "Extension detection complete");
-
-        return Ok(PoolInfo { pool, has_pgvector });
-    }
-
-    info!("Database migrations complete");
 
     let has_pgvector = detect_pgvector(&pool).await;
     info!(has_pgvector, "Extension detection complete");

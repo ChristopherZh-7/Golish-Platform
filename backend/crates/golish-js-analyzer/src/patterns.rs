@@ -10,7 +10,11 @@
 use regex::Captures;
 use serde::{Deserialize, Serialize};
 
-use crate::{AuthHint, Endpoint, EndpointSource, UrlKind};
+use crate::{
+    ArgumentFact, ArgumentRole, AuthHint, CallAdapter, ConfigFact, Endpoint, EndpointSource,
+    GraphqlOperationFact, GraphqlOperationKind, ParameterFact, ParameterLocation,
+    ParameterValueType, UrlKind,
+};
 
 /// Family of HTTP-call call-site this endpoint was extracted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -22,6 +26,10 @@ pub enum CallSiteKind {
     HttpClientVerb,
     JqueryAjax,
     NewRequest,
+    XmlHttpRequest,
+    Graphql,
+    WebSocket,
+    EventSource,
     HaeRoute,
 }
 
@@ -63,6 +71,23 @@ pub(crate) const JQUERY_AJAX: &str =
 /// `new Request('/path', { method: 'PUT' })`.
 pub(crate) const NEW_REQUEST: &str = r#"(?m)\bnew\s+Request\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
 
+/// `xhr.open('POST', '/path', ...)` — receiver, method and URL.
+pub(crate) const XHR_OPEN: &str = r#"(?m)\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*open\s*\(\s*[`'"](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[`'"]\s*,\s*[`'"]([^`'"]+)[`'"]"#;
+
+/// URL-first GraphQL helpers. Opaque wrappers outside this closed name set are
+/// intentionally left to the raw custom-client path.
+pub(crate) const GRAPHQL_URL_CALL: &str =
+    r#"(?m)\b(graphql|graphqlRequest|gqlRequest)\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
+
+/// Apollo/urql-style client calls. They carry no URL at this layer; the empty
+/// raw path is an explicit unresolved input for the contextual resolver.
+pub(crate) const GRAPHQL_CLIENT_CALL: &str =
+    r#"(?m)\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*(query|mutate|subscribe)\s*\(\s*\{"#;
+
+pub(crate) const WEBSOCKET: &str = r#"(?m)\bnew\s+WebSocket\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
+
+pub(crate) const EVENT_SOURCE: &str = r#"(?m)\bnew\s+EventSource\s*\(\s*[`'"]([^`'"]+)[`'"]"#;
+
 /// `fetch('/api/users/' + id, ...)` — captures the literal prefix when
 /// the URL is built by string concatenation. The `+` after the closing
 /// quote is the disambiguator that prevents this from re-matching plain
@@ -74,6 +99,48 @@ pub(crate) const FETCH_CONCAT: &str = r#"(?m)\bfetch\s*\(\s*[`'"]([^`'"]+)[`'"]\
 /// body (placeholders preserved) so callers see the same text the model
 /// would.
 pub(crate) const FETCH_TEMPLATE: &str = r#"(?m)\bfetch\s*\(\s*`([^`]*\$\{[^`]*)`"#;
+
+#[derive(Debug, Default)]
+pub(crate) struct CandidateFacts {
+    pub adapter: CallAdapter,
+    pub arguments: Vec<ArgumentFact>,
+    pub config: Vec<ConfigFact>,
+    pub parameters: Vec<ParameterFact>,
+    pub graphql_operation: Option<GraphqlOperationFact>,
+}
+
+/// Interpret only the exact AST-confirmed call expression supplied by the
+/// caller. No surrounding source window is consulted, which prevents fields
+/// from an adjacent minified call from leaking into this candidate.
+pub(crate) fn facts_from_call(
+    kind: CallSiteKind,
+    method: &str,
+    path: &str,
+    call_source: &str,
+) -> CandidateFacts {
+    let arguments = call_arguments(call_source);
+    let mut facts = CandidateFacts::default();
+
+    match kind {
+        CallSiteKind::Fetch => extract_fetch_facts(path, &arguments, &mut facts),
+        CallSiteKind::AxiosVerb | CallSiteKind::AxiosConfig => {
+            extract_axios_facts(kind, method, path, &arguments, &mut facts);
+        }
+        CallSiteKind::NewRequest => extract_request_facts(path, &arguments, &mut facts),
+        CallSiteKind::JqueryAjax => extract_jquery_facts(path, &arguments, &mut facts),
+        CallSiteKind::XmlHttpRequest => extract_xhr_facts(path, &arguments, &mut facts),
+        CallSiteKind::Graphql => extract_graphql_facts(path, &arguments, &mut facts),
+        CallSiteKind::WebSocket => {
+            extract_stream_facts(CallAdapter::WebSocket, path, &arguments, &mut facts);
+        }
+        CallSiteKind::EventSource => {
+            extract_stream_facts(CallAdapter::EventSource, path, &arguments, &mut facts);
+        }
+        CallSiteKind::HttpClientVerb | CallSiteKind::HaeRoute => {}
+    }
+
+    facts
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Per-pattern helpers
@@ -229,6 +296,114 @@ pub(crate) fn endpoint_from_new_request(
         line: line_of(source, match_start),
         confidence: 0.85,
         kind: CallSiteKind::NewRequest,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
+        source: EndpointSource::Regex,
+    })
+}
+
+pub(crate) fn endpoint_from_xhr_open(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    let method = cap.get(2)?.as_str().to_uppercase();
+    let path = cap.get(3)?.as_str().to_string();
+    let match_start = cap.get(0)?.start();
+    let (has_path_params, id_param_position) = analyze_path(&path);
+    Some(Endpoint {
+        method,
+        path,
+        auth: AuthHint::None,
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.95,
+        kind: CallSiteKind::XmlHttpRequest,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
+        source: EndpointSource::Regex,
+    })
+}
+
+pub(crate) fn endpoint_from_graphql_url_call(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    let path = cap.get(2)?.as_str().to_string();
+    let match_start = cap.get(0)?.start();
+    let (has_path_params, id_param_position) = analyze_path(&path);
+    Some(Endpoint {
+        method: "POST".to_string(),
+        path,
+        auth: AuthHint::None,
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.9,
+        kind: CallSiteKind::Graphql,
+        url_kind: UrlKind::Literal,
+        has_path_params,
+        id_param_position,
+        source: EndpointSource::Regex,
+    })
+}
+
+pub(crate) fn endpoint_from_graphql_client_call(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    let match_start = cap.get(0)?.start();
+    Some(Endpoint {
+        method: "POST".to_string(),
+        path: String::new(),
+        auth: AuthHint::None,
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.55,
+        kind: CallSiteKind::Graphql,
+        url_kind: UrlKind::Literal,
+        has_path_params: false,
+        id_param_position: None,
+        source: EndpointSource::Regex,
+    })
+}
+
+pub(crate) fn endpoint_from_websocket(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    endpoint_from_stream_constructor(cap, source, source_file, CallSiteKind::WebSocket)
+}
+
+pub(crate) fn endpoint_from_event_source(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+) -> Option<Endpoint> {
+    endpoint_from_stream_constructor(cap, source, source_file, CallSiteKind::EventSource)
+}
+
+fn endpoint_from_stream_constructor(
+    cap: &Captures,
+    source: &str,
+    source_file: &str,
+    kind: CallSiteKind,
+) -> Option<Endpoint> {
+    let path = cap.get(1)?.as_str().to_string();
+    let match_start = cap.get(0)?.start();
+    let (has_path_params, id_param_position) = analyze_path(&path);
+    Some(Endpoint {
+        method: "GET".to_string(),
+        path,
+        auth: AuthHint::None,
+        source_file: source_file.to_string(),
+        line: line_of(source, match_start),
+        confidence: 0.95,
+        kind,
         url_kind: UrlKind::Literal,
         has_path_params,
         id_param_position,
@@ -435,4 +610,562 @@ fn is_id_shaped(seg: &str) -> bool {
         return true;
     }
     false
+}
+
+fn extract_fetch_facts(path: &str, arguments: &[&str], facts: &mut CandidateFacts) {
+    facts.adapter = CallAdapter::Fetch;
+    add_query_parameters(path, facts);
+    add_path_parameters(path, facts);
+    if let Some(url) = arguments.first() {
+        add_argument(0, ArgumentRole::Url, url, facts);
+    }
+    if let Some(config) = arguments.get(1) {
+        add_argument(1, ArgumentRole::Config, config, facts);
+        add_config_object(config, facts);
+        add_named_config_parameters(config, "headers", ParameterLocation::Header, facts);
+        if let Some(body) = object_field(config, "body") {
+            let location = if expression_is_call_to(body, &["URLSearchParams", "FormData"]) {
+                ParameterLocation::Form
+            } else {
+                ParameterLocation::Body
+            };
+            add_object_parameters(body, location, facts);
+        }
+    }
+}
+
+fn extract_request_facts(path: &str, arguments: &[&str], facts: &mut CandidateFacts) {
+    extract_fetch_facts(path, arguments, facts);
+    facts.adapter = CallAdapter::Request;
+}
+
+fn extract_axios_facts(
+    kind: CallSiteKind,
+    method: &str,
+    path: &str,
+    arguments: &[&str],
+    facts: &mut CandidateFacts,
+) {
+    facts.adapter = CallAdapter::Axios;
+    add_query_parameters(path, facts);
+    add_path_parameters(path, facts);
+
+    if kind == CallSiteKind::AxiosConfig {
+        if let Some(config) = arguments.first() {
+            add_argument(0, ArgumentRole::Config, config, facts);
+            add_axios_config(config, facts);
+        }
+        return;
+    }
+
+    if let Some(url) = arguments.first() {
+        add_argument(0, ArgumentRole::Url, url, facts);
+    }
+    let method_has_body = matches!(method, "POST" | "PUT" | "PATCH");
+    if method_has_body {
+        if let Some(body) = arguments.get(1) {
+            add_argument(1, ArgumentRole::Body, body, facts);
+            add_object_parameters(body, ParameterLocation::Body, facts);
+        }
+        if let Some(config) = arguments.get(2) {
+            add_argument(2, ArgumentRole::Config, config, facts);
+            add_axios_config(config, facts);
+        }
+    } else if let Some(config) = arguments.get(1) {
+        add_argument(1, ArgumentRole::Config, config, facts);
+        add_axios_config(config, facts);
+    }
+}
+
+fn add_axios_config(config: &str, facts: &mut CandidateFacts) {
+    add_config_object(config, facts);
+    add_named_config_parameters(config, "params", ParameterLocation::Query, facts);
+    add_named_config_parameters(config, "data", ParameterLocation::Body, facts);
+    add_named_config_parameters(config, "headers", ParameterLocation::Header, facts);
+}
+
+fn extract_jquery_facts(path: &str, arguments: &[&str], facts: &mut CandidateFacts) {
+    facts.adapter = CallAdapter::JQuery;
+    add_query_parameters(path, facts);
+    add_path_parameters(path, facts);
+    if let Some(config) = arguments.first() {
+        add_argument(0, ArgumentRole::Config, config, facts);
+        add_config_object(config, facts);
+        add_named_config_parameters(config, "data", ParameterLocation::Form, facts);
+        add_named_config_parameters(config, "headers", ParameterLocation::Header, facts);
+    }
+}
+
+fn extract_xhr_facts(path: &str, arguments: &[&str], facts: &mut CandidateFacts) {
+    facts.adapter = CallAdapter::XmlHttpRequest;
+    add_query_parameters(path, facts);
+    add_path_parameters(path, facts);
+    if let Some(method) = arguments.first() {
+        add_argument(0, ArgumentRole::Unknown, method, facts);
+    }
+    if let Some(url) = arguments.get(1) {
+        add_argument(1, ArgumentRole::Url, url, facts);
+    }
+}
+
+fn extract_graphql_facts(path: &str, arguments: &[&str], facts: &mut CandidateFacts) {
+    facts.adapter = CallAdapter::Graphql;
+    add_query_parameters(path, facts);
+    add_path_parameters(path, facts);
+
+    let mut config_index = 0;
+    if !path.is_empty() {
+        if let Some(url) = arguments.first() {
+            add_argument(0, ArgumentRole::Url, url, facts);
+        }
+        config_index = 1;
+    }
+
+    if let Some(config_or_document) = arguments.get(config_index) {
+        if is_object_expression(config_or_document) {
+            add_argument(
+                config_index,
+                ArgumentRole::Config,
+                config_or_document,
+                facts,
+            );
+            add_config_object(config_or_document, facts);
+            if let Some(document) = object_field(config_or_document, "query") {
+                add_graphql_document(document, facts);
+            }
+            if let Some(variables) = object_field(config_or_document, "variables") {
+                add_object_parameters(variables, ParameterLocation::GraphqlVariable, facts);
+            }
+        } else {
+            add_argument(
+                config_index,
+                ArgumentRole::GraphqlDocument,
+                config_or_document,
+                facts,
+            );
+            add_graphql_document(config_or_document, facts);
+        }
+    }
+
+    if let Some(variables) = arguments.get(config_index + 1) {
+        add_argument(
+            config_index + 1,
+            ArgumentRole::GraphqlVariables,
+            variables,
+            facts,
+        );
+        add_object_parameters(variables, ParameterLocation::GraphqlVariable, facts);
+    }
+}
+
+fn extract_stream_facts(
+    adapter: CallAdapter,
+    path: &str,
+    arguments: &[&str],
+    facts: &mut CandidateFacts,
+) {
+    facts.adapter = adapter;
+    add_query_parameters(path, facts);
+    add_path_parameters(path, facts);
+    if let Some(url) = arguments.first() {
+        add_argument(0, ArgumentRole::Url, url, facts);
+    }
+}
+
+fn add_argument(index: usize, role: ArgumentRole, expression: &str, facts: &mut CandidateFacts) {
+    let value_type = expression_type(expression);
+    facts.arguments.push(ArgumentFact {
+        index,
+        role,
+        value_type,
+        dynamic: value_type == ParameterValueType::Unknown,
+    });
+}
+
+fn add_config_object(expression: &str, facts: &mut CandidateFacts) {
+    for (name, value) in object_fields(expression) {
+        if facts.config.iter().any(|fact| fact.name == name) {
+            continue;
+        }
+        facts.config.push(ConfigFact {
+            name,
+            value_type: expression_type(value),
+        });
+    }
+}
+
+fn add_named_config_parameters(
+    config: &str,
+    field: &str,
+    location: ParameterLocation,
+    facts: &mut CandidateFacts,
+) {
+    if let Some(expression) = object_field(config, field) {
+        add_object_parameters(expression, location, facts);
+    }
+}
+
+fn add_object_parameters(
+    expression: &str,
+    location: ParameterLocation,
+    facts: &mut CandidateFacts,
+) {
+    let object = unwrap_value_container(expression).unwrap_or(expression);
+    for (name, value) in object_fields(object) {
+        push_parameter(
+            ParameterFact {
+                name,
+                location,
+                value_type: expression_type(value),
+            },
+            facts,
+        );
+    }
+}
+
+fn add_query_parameters(path: &str, facts: &mut CandidateFacts) {
+    let Some((_, query_and_fragment)) = path.split_once('?') else {
+        return;
+    };
+    let query = query_and_fragment.split('#').next().unwrap_or_default();
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let name = pair.split_once('=').map_or(pair, |(name, _)| name).trim();
+        if !name.is_empty() {
+            push_parameter(
+                ParameterFact {
+                    name: name.to_string(),
+                    location: ParameterLocation::Query,
+                    value_type: ParameterValueType::Unknown,
+                },
+                facts,
+            );
+        }
+    }
+}
+
+fn add_path_parameters(path: &str, facts: &mut CandidateFacts) {
+    for segment in path.split('?').next().unwrap_or(path).split('/') {
+        let name = if let Some(name) = segment.strip_prefix(':') {
+            Some(name)
+        } else if segment.starts_with('{') && segment.ends_with('}') {
+            segment.get(1..segment.len().saturating_sub(1))
+        } else if segment.starts_with("${") && segment.ends_with('}') {
+            segment.get(2..segment.len().saturating_sub(1))
+        } else {
+            None
+        };
+        if let Some(name) = name.filter(|name| is_identifier(name)) {
+            push_parameter(
+                ParameterFact {
+                    name: name.to_string(),
+                    location: ParameterLocation::Path,
+                    value_type: ParameterValueType::Unknown,
+                },
+                facts,
+            );
+        }
+    }
+}
+
+fn add_graphql_document(expression: &str, facts: &mut CandidateFacts) {
+    let operation = regex::RegexBuilder::new(
+        r"\b(query|mutation|subscription)(?:\s+([A-Za-z_][A-Za-z0-9_]*))?",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("GraphQL operation regex is valid");
+    if let Some(captures) = operation.captures(expression) {
+        let kind = match captures
+            .get(1)
+            .map(|value| value.as_str().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("mutation") => GraphqlOperationKind::Mutation,
+            Some("subscription") => GraphqlOperationKind::Subscription,
+            _ => GraphqlOperationKind::Query,
+        };
+        facts.graphql_operation = Some(GraphqlOperationFact {
+            kind,
+            name: captures.get(2).map(|value| value.as_str().to_string()),
+        });
+    }
+
+    let variables =
+        regex::Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").expect("GraphQL variable regex is valid");
+    for captures in variables.captures_iter(expression) {
+        if let Some(name) = captures.get(1) {
+            push_parameter(
+                ParameterFact {
+                    name: name.as_str().to_string(),
+                    location: ParameterLocation::GraphqlVariable,
+                    value_type: ParameterValueType::Unknown,
+                },
+                facts,
+            );
+        }
+    }
+}
+
+fn push_parameter(parameter: ParameterFact, facts: &mut CandidateFacts) {
+    if let Some(existing) = facts
+        .parameters
+        .iter_mut()
+        .find(|existing| existing.name == parameter.name && existing.location == parameter.location)
+    {
+        if existing.value_type == ParameterValueType::Unknown
+            && parameter.value_type != ParameterValueType::Unknown
+        {
+            existing.value_type = parameter.value_type;
+        }
+        return;
+    }
+    facts.parameters.push(parameter);
+}
+
+fn call_arguments(call_source: &str) -> Vec<&str> {
+    let Some(open) = find_unquoted(call_source, b'(') else {
+        return Vec::new();
+    };
+    let Some(close) = matching_closing(call_source, open, b'(', b')') else {
+        return Vec::new();
+    };
+    split_top_level(&call_source[open + 1..close], b',')
+}
+
+fn object_fields(expression: &str) -> Vec<(String, &str)> {
+    let expression = expression.trim();
+    let Some(body) = expression
+        .strip_prefix('{')
+        .and_then(|body| body.strip_suffix('}'))
+    else {
+        return Vec::new();
+    };
+
+    split_top_level(body, b',')
+        .into_iter()
+        .filter_map(|field| {
+            let field = field.trim();
+            if field.is_empty() || field.starts_with("...") {
+                return None;
+            }
+            if let Some(colon) = find_top_level(field, b':') {
+                let name = field_name(&field[..colon])?;
+                let value = field[colon + 1..].trim();
+                return (!value.is_empty()).then_some((name, value));
+            }
+            is_identifier(field).then_some((field.to_string(), field))
+        })
+        .collect()
+}
+
+fn object_field<'a>(expression: &'a str, wanted: &str) -> Option<&'a str> {
+    object_fields(expression)
+        .into_iter()
+        .find_map(|(name, value)| (name == wanted).then_some(value))
+}
+
+fn field_name(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if is_identifier(raw) {
+        return Some(raw.to_string());
+    }
+    unquote_literal(raw).map(ToOwned::to_owned)
+}
+
+fn unwrap_value_container(expression: &str) -> Option<&str> {
+    const NAMES: &[&str] = &["JSON.stringify", "URLSearchParams", "FormData", "Headers"];
+    if !expression_is_call_to(expression, NAMES) {
+        return None;
+    }
+    call_arguments(expression).into_iter().next()
+}
+
+fn expression_is_call_to(expression: &str, names: &[&str]) -> bool {
+    let expression = expression
+        .trim()
+        .strip_prefix("new ")
+        .unwrap_or(expression.trim());
+    let Some(open) = find_unquoted(expression, b'(') else {
+        return false;
+    };
+    let callee = expression[..open]
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    names.iter().any(|name| callee == *name)
+}
+
+fn is_object_expression(expression: &str) -> bool {
+    let expression = expression.trim();
+    expression.starts_with('{') && expression.ends_with('}')
+}
+
+fn expression_type(expression: &str) -> ParameterValueType {
+    let expression = expression.trim();
+    if expression.is_empty() {
+        return ParameterValueType::Unknown;
+    }
+    if expression.starts_with('{') && expression.ends_with('}') {
+        return ParameterValueType::Object;
+    }
+    if expression.starts_with('[') && expression.ends_with(']') {
+        return ParameterValueType::Array;
+    }
+    if expression == "true" || expression == "false" {
+        return ParameterValueType::Boolean;
+    }
+    if expression == "null" {
+        return ParameterValueType::Null;
+    }
+    if expression.parse::<f64>().is_ok() {
+        return ParameterValueType::Number;
+    }
+    if let Some(literal) = unquote_literal(expression) {
+        return if expression.starts_with('`') && literal.contains("${") {
+            ParameterValueType::Unknown
+        } else {
+            ParameterValueType::String
+        };
+    }
+    ParameterValueType::Unknown
+}
+
+fn unquote_literal(expression: &str) -> Option<&str> {
+    let bytes = expression.as_bytes();
+    if bytes.len() < 2 || !matches!(bytes[0], b'\'' | b'"' | b'`') {
+        return None;
+    }
+    (bytes.last() == Some(&bytes[0])).then_some(&expression[1..expression.len() - 1])
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    matches!(first, b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'$')
+        && bytes.all(|byte| matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'$'))
+}
+
+fn split_top_level(input: &str, delimiter: u8) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+
+    for (index, byte) in input.bytes().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            _ if byte == delimiter && paren == 0 && brace == 0 && bracket == 0 => {
+                parts.push(input[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(input[start..].trim());
+    parts
+}
+
+fn find_top_level(input: &str, needle: u8) -> Option<usize> {
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for (index, byte) in input.bytes().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            _ if byte == needle && paren == 0 && brace == 0 && bracket == 0 => {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_unquoted(input: &str, needle: u8) -> Option<usize> {
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for (index, byte) in input.bytes().enumerate() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+        } else if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+        } else if byte == needle {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn matching_closing(input: &str, open: usize, opening: u8, closing: u8) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut escaped = false;
+    for (index, byte) in input.bytes().enumerate().skip(open) {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"' | b'`') {
+            quote = Some(byte);
+        } else if byte == opening {
+            depth += 1;
+        } else if byte == closing {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some(index);
+            }
+        }
+    }
+    None
 }

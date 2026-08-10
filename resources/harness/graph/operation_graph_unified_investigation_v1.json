@@ -1,0 +1,28 @@
+{
+  "$schema": "../../../docs/design/2026-08-02-rag-first-unified-investigation-stage.md#5-stage-与operation-graph",
+  "$comment": "Unified Investigation v1 Operation DAG. This resource is selected only by the server-frozen unified_investigation_v1 topology contract. Production profiles remain unchanged until the persistence and runtime seams freeze that contract on a new operation.",
+  "$comment_edge_order": "Edge order is semantic for branch stages: first edge = progress/main path, last edge = no-progress bail path.",
+
+  "nodes": [
+    "scoping",
+    "target_intel",
+    "external_attack_surface",
+    "enumeration",
+    "vuln_triage",
+    "application_understanding",
+    "investigation",
+    "reporting"
+  ],
+
+  "edges": [
+    { "from": "scoping", "to": "target_intel" },
+    { "from": "target_intel", "to": "external_attack_surface" },
+    { "from": "external_attack_surface", "to": "enumeration" },
+    { "from": "external_attack_surface", "to": "reporting" },
+    { "from": "enumeration", "to": "vuln_triage" },
+    { "from": "enumeration", "to": "reporting" },
+    { "from": "vuln_triage", "to": "application_understanding" },
+    { "from": "application_understanding", "to": "investigation" },
+    { "from": "investigation", "to": "reporting" }
+  ]
+}

@@ -317,14 +317,20 @@ pub(crate) fn setup_subsystems(app: &mut tauri::App) -> Result<(), Box<dyn std::
         let memory_supervisor = state.memory_supervisor.clone();
         let cleanup_closeout = state.cleanup_closeout.clone();
         let reporting_artifact_gc = state.reporting_artifact_gc.clone();
-        let investigation_projection_worker = state.investigation_projection_worker.clone();
+        let investigation_projection_event_bridge =
+            state.investigation_projection_event_bridge.clone();
+        let investigation_event_runtime: Arc<dyn golish_core::runtime::GolishRuntime> = Arc::new(
+            golish_app_core::runtime::TauriRuntime::new(app_handle.clone(), None),
+        );
         async_runtime::spawn(async move {
             let ready = db_gate.wait().await;
             if ready {
-                let started = investigation_projection_worker.start().await;
+                let started = investigation_projection_event_bridge
+                    .start(investigation_event_runtime)
+                    .await;
                 tracing::info!(
                     started,
-                    "Investigation projection worker started after DB readiness"
+                    "Investigation projection event bridge started after DB readiness"
                 );
                 match memory_supervisor.start().await {
                     Ok(outcome) => tracing::info!(

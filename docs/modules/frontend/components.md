@@ -184,4 +184,12 @@ just test-fe    # vitest（含组件快照/交互测试）
 
 ## Hypothesis Registry audit UI（Plan B，2026-07-30）
 
-- UI只审计Plan B projection，不提供rollout promotion、timeline authoring、Campaign/Prepared Action、queue-centric执行或Plan C/D操作。focused入口：`frontend/components/Engagement/HypothesisRegistryAudit.test.tsx`与`frontend/components/ToolCallDetailView/ToolCallDetailView.candidate.test.tsx`。
+- `HypothesisRegistryAudit`保留为Plan B legacy presentation/test source，不提供rollout promotion、timeline authoring、Campaign/Prepared Action、queue-centric执行或Plan C/D操作。2026-08-08 unified exact DTO切换后，Candidate `ToolCallDetailView`已移除其operation-only production mount，默认API也fail closed；它不能伪造stage execution/request/snapshot selectors去调用unified wrapper。focused入口：`frontend/components/Engagement/HypothesisRegistryAudit.test.tsx`与`frontend/components/ToolCallDetailView/ToolCallDetailView.candidate.test.tsx`。
+
+## Unified Investigation full-pane route（2026-08-02）
+
+- 新operation的 unified `Investigation` 只从当前 `stage_run` 的既有 `tool-detail` full-pane 进入；`ToolCallDetailView.resolveInvestigationStageRun` 必须让 args/result/live rows 的 operation、stage execution 与 selected stage-run request identity 完全一致，冲突时显示 unavailable，禁止 latest fallback。
+- `InvestigationWorkspaceView` 是纯 presentational view model：左栏按真实 Main → organization bounded read session → Analysis Task 单 Primary/ordered subtasks/dynamic+nested workers → Hypothesis → Verification Task 单 Primary/workers → typed Operator artifact 排列。缺失 Main/transcript 显式 unavailable，绝不生成 `__main__` 或把 Operator 伪装成 Agent。
+- `InvestigationWorkspaceRoute` 是唯一 production adapter：首次 summary 用 exact operation/execution/request 且四个 expected snapshot 字段全为 null；其后的 hypothesis/campaign/timeline page 与 hypothesis/campaign detail 全部固定到 summary 返回的 change-seq、temporal cutoff、authority epoch set hash 与 earliest valid-until。任何 continuation identity/snapshot 冲突都 fail closed，refresh event/gap 与 stale stop只触发新的 no-seq bootstrap，绝不改用 latest selector或重试 stop。
+- Hypothesis click 只改组件本地 `agent | hypothesis | campaign` selection；JIT prepared-action surface、stop、reset 与 successor fork 是独立 DOM/authority path。JIT只按 exact mode policy出现并传 exact operation/campaign；stop只提交 server control projection 的 exact run-state head/change seq与稳定idempotency key；reset/fork availability只来自同一 control projection。
+- actor transcript由 exact `transcriptRequestId` 匹配同session live/restored `ActiveSubAgent.parentRequestId`，0条或多条均显示unavailable，不能猜最新Agent。Plan D旧 `InvestigationWorkspace/` 保留为legacy source且默认 API fail closed，不再由 `PaneLeaf`、`DetailViewMode` 或全局 store提供独立 route。focused入口：`InvestigationWorkspaceRoute.test.tsx`、`InvestigationWorkspaceView.test.tsx`、`ToolCallDetailView.investigation.test.tsx`。

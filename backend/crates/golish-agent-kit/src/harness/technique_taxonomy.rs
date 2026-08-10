@@ -64,22 +64,6 @@ mod tests {
     use crate::harness::resources::load_embedded_stage_spec;
     use crate::harness::types::StageKind;
 
-    const ALL_KINDS: [StageKind; 13] = [
-        StageKind::Scoping,
-        StageKind::TargetIntel,
-        StageKind::ExternalAttackSurface,
-        StageKind::Enumeration,
-        StageKind::VulnTriage,
-        StageKind::AttackCandidate,
-        StageKind::Verification,
-        StageKind::AccessValidation,
-        StageKind::InternalDiscovery,
-        StageKind::ObjectivePathing,
-        StageKind::ObjectiveSimulation,
-        StageKind::Cleanup,
-        StageKind::Reporting,
-    ];
-
     #[test]
     fn taxonomy_loads_and_is_nonempty() {
         let t = load_technique_taxonomy().expect("technique_taxonomy.json parses");
@@ -110,7 +94,7 @@ mod tests {
     /// 不了的矩阵列。新增技术类时，先在词典登记再用于 `expected_techniques`。
     #[test]
     fn all_embedded_expected_techniques_are_recognized() {
-        for kind in ALL_KINDS {
+        for kind in StageKind::ALL {
             let spec = load_embedded_stage_spec(kind)
                 .unwrap_or_else(|e| panic!("load {kind:?} spec failed: {e}"));
             for tech in &spec.expected_techniques {

@@ -149,6 +149,34 @@ pub struct AssetIntelHydrateConfig {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub domain: Option<String>,
+    /// Host-only semantic pivot selected by the Target Intel controller. This
+    /// is deliberately absent from the public hydrate IPC/TS contract: the
+    /// model supplies the closed `recon_search_intel` schema and the host
+    /// parses, authorizes and binds it before provider execution.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub(crate) semantic_pivot: Option<golish_pentest_domain::models::AssetIntelPivot>,
+}
+
+/// Internal fixture/dev execution request. It intentionally has no TS derive:
+/// the existing hydrate IPC contract remains byte-for-byte unchanged and the
+/// host, not the model/frontend, owns projection and fixture authority.
+#[derive(Debug, Clone)]
+pub struct AssetIntelExecutionRequest {
+    pub legacy_config: AssetIntelHydrateConfig,
+    pub pivot: golish_pentest_domain::models::AssetIntelPivot,
+    pub intent: golish_pentest_domain::models::IntelSearchIntent,
+    pub projection_authorization: super::authority::ProjectionAuthorization,
+    pub fixture_context: AssetIntelFixtureContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetIntelFixtureContext {
+    pub operation_id: uuid::Uuid,
+    pub organization_id: uuid::Uuid,
+    pub session_id: uuid::Uuid,
+    pub strict_passive: bool,
+    pub fake_transport: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +250,19 @@ pub struct AssetIntelRun {
     /// cumulative and must never be reread as fresh observation input.
     #[serde(skip)]
     pub(crate) observed_domain_hosts: Vec<String>,
+    /// Current-run normalized provider profile facts. Target Intel uses this
+    /// exact set to create typed non-address observations and future semantic
+    /// pivots; it must never be reconstructed from the cumulative org profile.
+    #[serde(skip)]
+    pub(crate) observed_profile_fields: Vec<ObservedProfileField>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ObservedProfileField {
+    pub provider_id: String,
+    pub target_kind: golish_pentest::models::AssetIntelProfileFieldTarget,
+    pub target_field: String,
+    pub value: String,
 }
 
 /// One disambiguation hit returned by `asset_intel_lookup_company`.
@@ -272,6 +313,30 @@ pub struct AssetIntelLookupResult {
     pub run_id: String,
     pub matches: Vec<LookupCompanyMatch>,
     pub provider_status: Vec<AssetIntelProviderRunStatus>,
+    /// A lookup may identify one deterministic candidate, but only the
+    /// host-owned Scoping receipt flow can confirm an organization.
+    #[serde(default)]
+    pub resolution_status: AssetIntelLookupResolutionStatus,
+    /// Explicit continuation signal for the Scoping planner. Structured
+    /// provider ambiguity never silently degrades into a first-hit choice.
+    #[serde(default)]
+    pub next_step: AssetIntelLookupNextStep,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetIntelLookupResolutionStatus {
+    UniqueCandidate,
+    #[default]
+    Unresolved,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetIntelLookupNextStep {
+    None,
+    #[default]
+    NeedsPublicSearch,
 }
 
 /// One value lifted out of provider raw JSON destined for the organization

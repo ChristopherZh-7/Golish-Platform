@@ -1,6 +1,6 @@
 //! Phase grouping DTO + loader (设计 2026-06-03 两级阶段模型).
 //!
-//! Phase = 大阶段，是 12 个 [`StageKind`] 之上的编排薄层。成员是 StageKind 列表，
+//! Phase = 大阶段，是 [`StageKind`] 之上的编排薄层。成员是 StageKind 列表，
 //! 每个 phase 可声明跨入它之前的 `entry_approval`（human_approval key）。
 //! 与 `operation_graph.json` 一样：静态 JSON 加载 + 校验 + 按 profile 投影。
 //!
@@ -50,6 +50,7 @@ pub enum PhaseMapError {
 }
 
 /// 全部 13 个 StageKind（校验「不漏不重」用）.
+#[allow(dead_code)]
 const ALL_STAGES: [StageKind; 13] = [
     StageKind::Scoping,
     StageKind::TargetIntel,
@@ -87,7 +88,7 @@ impl PhaseMap {
                 seen.push(s);
             }
         }
-        for s in ALL_STAGES {
+        for s in StageKind::ALL {
             if !seen.contains(&s) {
                 return Err(PhaseMapError::UnassignedStage(s));
             }
@@ -143,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn phases_cover_all_13_stages_exactly_once() {
+    fn phases_cover_all_stage_kinds_exactly_once() {
         let m = map();
         assert_eq!(m.phases.len(), 5);
         m.validate().expect("every stage assigned exactly once");
@@ -153,6 +154,11 @@ mod tests {
     fn attack_candidate_belongs_to_vuln_phase() {
         let m = map();
         assert_eq!(m.phase_of(StageKind::AttackCandidate).unwrap().id, "vuln");
+        assert_eq!(
+            m.phase_of(StageKind::ApplicationUnderstanding).unwrap().id,
+            "vuln"
+        );
+        assert_eq!(m.phase_of(StageKind::Investigation).unwrap().id, "vuln");
     }
 
     #[test]
@@ -206,7 +212,7 @@ mod tests {
     #[test]
     fn validate_rejects_duplicate_stage() {
         let raw = r#"{"phases":[
-            {"id":"a","stages":["scoping","scoping","target_intel","external_attack_surface","enumeration","vuln_triage","verification","access_validation","internal_discovery","objective_pathing","objective_simulation","reporting","cleanup"]}
+            {"id":"a","stages":["scoping","scoping","target_intel","external_attack_surface","enumeration","vuln_triage","application_understanding","investigation","attack_candidate","verification","access_validation","internal_discovery","objective_pathing","objective_simulation","reporting","cleanup"]}
         ]}"#;
         assert!(matches!(
             load_phase_map_from_json(raw),
@@ -218,7 +224,7 @@ mod tests {
     fn validate_rejects_unassigned_stage() {
         // 缺 cleanup → UnassignedStage.
         let raw = r#"{"phases":[
-            {"id":"a","stages":["scoping","target_intel","external_attack_surface","enumeration","vuln_triage","attack_candidate","verification","access_validation","internal_discovery","objective_pathing","objective_simulation","reporting"]}
+            {"id":"a","stages":["scoping","target_intel","external_attack_surface","enumeration","vuln_triage","application_understanding","investigation","attack_candidate","verification","access_validation","internal_discovery","objective_pathing","objective_simulation","reporting"]}
         ]}"#;
         assert!(matches!(
             load_phase_map_from_json(raw),

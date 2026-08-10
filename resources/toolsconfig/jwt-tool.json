@@ -1,0 +1,33 @@
+{
+  "tool": {
+    "id": "jwt-tool",
+    "pentestPhase": ["vuln_id", "exploit"],
+    "name": "jwt_tool",
+    "description": "Decode JWTs locally and formulate bounded token hypotheses; tamper or cracking requires JIT.",
+    "executable": "jwt_tool/jwt_tool.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "version": "2.3.0",
+    "category": "web",
+    "subcategory": "auth",
+    "tier": "recommended",
+    "tags": ["jwt", "token", "local-analysis", "active-jit", "gpl-3.0-only"],
+    "install": {
+      "method": "github",
+      "source": "ticarpi/jwt_tool",
+      "macos": {"method": "github", "source": "ticarpi/jwt_tool"},
+      "linux": {"method": "github", "source": "ticarpi/jwt_tool"},
+      "windows": {"method": "github", "source": "ticarpi/jwt_tool"}
+    },
+    "params": [
+      {"label": "JWT credential reference", "flag": "", "type": "string", "required": true, "description": "Resolved only by the host credential broker; never place plaintext tokens in presets or evidence.", "placeholder": "credential-ref"},
+      {"label": "Mode", "flag": "-M", "type": "select", "description": "Active modes remain JIT-only.", "options": [{"value": "pb", "label": "Playbook scan"}, {"value": "at", "label": "Algorithm tamper"}]},
+      {"label": "Exact target URL", "flag": "-t", "type": "string", "description": "Required only for an authorized active hypothesis.", "placeholder": "https://target.example/api"}
+    ],
+    "skills": [
+      {"id": "local-help", "name": "Local help smoke", "description": "No-token, no-target executable smoke only.", "args": "-h", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "text", "produces": ["token_claim", "observation", "info"], "patterns": [], "fields": {}, "detect": "jwt_tool|JSON Web Token"}
+  }
+}

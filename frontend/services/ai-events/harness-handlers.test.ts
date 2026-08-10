@@ -3,7 +3,11 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { handleHarnessTrace, stageRunRequestIdFromAgentRequestId } from "./harness-handlers";
+import {
+  handleHarnessTrace,
+  handleInvestigationProjectionChanged,
+  stageRunRequestIdFromAgentRequestId,
+} from "./harness-handlers";
 import type { EventHandlerContext } from "./types";
 
 function mockCtx(
@@ -309,5 +313,34 @@ describe("handleHarnessTrace", () => {
       mockCtx(upsert)
     );
     expect(upsert.mock.calls[0][1].status).toBe("pending");
+  });
+});
+
+describe("handleInvestigationProjectionChanged", () => {
+  it("forwards only the exact four-field refresh hint to the monotonic store action", () => {
+    const setInvestigationRefreshHint = vi.fn();
+    const ctx = mockCtx(vi.fn());
+    ctx.getState = vi.fn(() => ({
+      setInvestigationRefreshHint,
+    })) as unknown as EventHandlerContext["getState"];
+
+    handleInvestigationProjectionChanged(
+      {
+        type: "investigation_projection_changed",
+        session_id: "sess-1",
+        operation_id: "operation-1",
+        stage_execution_id: "execution-1",
+        stage_run_request_id: "request-1",
+        change_seq: 11,
+      },
+      ctx
+    );
+
+    expect(setInvestigationRefreshHint).toHaveBeenCalledWith("sess-1", {
+      operationId: "operation-1",
+      stageExecutionId: "execution-1",
+      stageRunRequestId: "request-1",
+      changeSeq: 11,
+    });
   });
 });

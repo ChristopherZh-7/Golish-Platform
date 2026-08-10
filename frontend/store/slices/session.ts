@@ -24,6 +24,7 @@ import type {
   ExecutionMode,
   InputMode,
   InteractiveModeState,
+  InvestigationRefreshHint,
   PendingCommand,
   RenderMode,
   ReportingReadModelHint,
@@ -104,6 +105,8 @@ export interface SessionActions {
     sessionId: string,
     hint: Omit<ReportingReadModelHint, "refreshVersion"> | null
   ) => void;
+  /** Monotonically retain a refresh-only exact Investigation projection hint. */
+  setInvestigationRefreshHint: (sessionId: string, hint: InvestigationRefreshHint | null) => void;
   /**
    * Upsert one org's live row into this session's stage-run from a
    * `StageRunOrgProgress` event (design 2026-06-13-stage-run-fanout). Builds the

@@ -231,9 +231,60 @@ production seam 检查五个命令都在 report read/build/confirmation 分支�
 - `candidate_analysis_projection` 只从immutable snapshot input/chunk与current signed/known-version feed material构造bounded、`instruction_authority=false` payload；source change/delete后仍按冻结body/hash重放。
 - `candidate_analysis_runtime` 实现Controller dispatch → rolling Analyst → H1 seal → phased Critic map/reduce → H2/review → Controller final两波状态机；small input为1 lane，其余2–8 live lanes，lifetime work item不受8限制。返回`AnalysisArtifactsReady`仍需已安装finalizer完成Gate/apply，不能直接当stage完成。
 - `candidate_analysis_gate::PgCandidateGateSnapshotSource` 在单一repeatable-read transaction调用`load_candidate_pre_gate_material_on`，重验semantic-summary/raw closure并构造repository-owned opaque snapshot；`AtomicCandidateFinalizer`随后运行无I/O pure Gate，再调用DB CAS apply。DB apply在自己的短事务内锁定/重验并创建compiler seal，canonical generation/revision/plan/transition与projection outbox同事务提交；不再存在“先pre-seal再Gate”的production顺序。
-- `commands/bridge_config.rs` 已安装完整production composition：`PgHypothesisRegistryRepository` + snapshot source + finalizer + submit-only runner + `CandidateAnalysisStageRuntime`组成closed runtime Arc并注入bridge。Registry-authoritative operation在任何legacy seed/manifest/provider前按冻结policy路由且绝不回落旧Candidate；managed feed缺失仍作为snapshot/feed authority fail closed，production adapter状态保持已安装。Plan B不提供rollout promotion，Plan C/D的Campaign、Prepared Action、capability assessment、adjudication/terminal authority仍未实现。
+- `db_bridge::investigation_analysis_host` 负责 unified Investigation 的 cognitive→canonical 边界：重验 exact work/binding/PentAGI plan+census+Primary/proof 后，把 advisory proposal 交给 server recipe/pure compiler，再调用 Investigation-owned atomic apply；不借用 legacy Candidate final-submitter fence。VerificationTask prepared subject 以 reservation receipt exact-set 暴露 Campaign→plan objective→verification objective 的 UUID/hash 映射。`investigation_verification_advisory` 重验该完整映射、denominator 与 accepted worker output exact set，打开零固定 consult lane 的 Campaign round，封存逐 Campaign/objective typed strategy，并只通过现有 host compiler生成 Prepared Action或 typed residual；没有真实 Operator receipt 时不会伪造 Oracle/FactDelta。
+- `commands/bridge_config.rs` 已安装完整production composition：`PgHypothesisRegistryRepository` + snapshot source + finalizer + submit-only runner + `CandidateAnalysisStageRuntime`组成closed runtime Arc并注入bridge。Registry-authoritative operation在任何legacy seed/manifest/provider前按冻结policy路由且绝不回落旧Candidate；managed feed缺失仍作为snapshot/feed authority fail closed，production adapter状态保持已安装。Plan C另由`db_bridge/verification_campaign*.rs`接管Campaign authority，Plan D只读投影继续走`commands/investigation/`。
+- `tracking_bridge::records` 将 `application_understanding` 和 unified `investigation` 的运行角色折叠到现有持久化 `pentester` telemetry enum；这是兼容性的观察层映射，不改变阶段/Agent 的业务 identity，也不能用 unknown enum 写失败阻断 stage execution。
+- Vuln anonymous-access planning 只能从 DB 返回的 `persisted_url_query_names` 构造 `query_values`：没有持久化 URL query 时必须提交 `{}`，不得从 JS/form parameter 名猜 query string。planner、executor prompt、tool description 与 recon projection 使用同一合同；wrapper 仍独立重验 exact eligible endpoint set。
+
+## Verification Campaign host driver（Plan C，2026-08-02）
+
+- `db_bridge/verification_campaign.rs`把SQLx-free Campaign port接到canonical DB repositories；每轮从closed 13-role catalog确定性选择Lead+匹配specialist+Independent Critic三条bounded lane，并先把只含sealed/redacted authority的完整census冻结为pending。runtime随后以最多3路并发调用现有SubAgent provider executor，`verification_campaign_artifact.v1`经role/input/owner typed校验后才追加completed terminal；provider失败、210秒超时与取消分别追加failed/timed_out/cancelled，绝不伪造成completed。`verification_campaign_scheduler.rs`重读全终态并封存order-independent census hash后才创建strategy/coverage，编译首个host-available Prepared Action并严格停在JIT人工授权边界；consult永远是reasoning-only，不能伪装provider observation或security verdict。
+- 已有授权后，scheduler先经`begin_action`持久化send-before-begin authority，再由`verification_send_authority.rs`执行可信transport、写capability receipt、closeout action、追加Oracle assessment；随后seal Oracle census并以objective outcome/coverage receipt/FactDelta关闭Campaign。
+- `verification_send_authority.rs` 的 production executor 只接受六个 durable UUID selector，并在单个 trusted read 中重导 Prepared Action、JIT/Operator、current scope/target、budget reservation、conflict-key lease、capability 与 adapter authority。2026-08-07 catalog membership 只是 admission metadata：当前十个 `contract_pending|disabled` 工具全部稳定落为 metadata-only failure、零网络；即使未来某项 ready，缺 typed operator dispatcher 仍会 fail closed。既有 `verify.*` transport 不受 catalog fallback 影响。
+- `db_bridge::investigation_analysis_host` 的 post-synthesis resume 会从 exact Primary checkpoint 重放唯一 landed `submit_result`，复核 sealed task-plan/refiner/census/synthesis 后再进入 host reducer/compiler；它不再次调用模型。已提交的 decision/apply/generation/admission 四件套由 stable identity 的只读 fast path复用，partial/collision fail closed，覆盖 response-loss 与 retained-run 恢复。
+- operation内所有Campaign终态后，scheduler对generation revision做fresh Tool Truth adjudication，再在单事务内验证Wave exact partition、消费non-material FactDelta并写Wave coverage/consolidation/fixed-point receipts。`support|contradiction|retraction`必须等待Registry evolution reducer，禁止伪装成fixed point。
+- `commands/investigation/dto.rs`的summary/hypothesis/campaign/timeline request/response全部derive `ts_rs::TS`且输出到`frontend/lib/generated/`；DTO安全声明测试覆盖新增Campaign/Timeline类型，raw payload、credential、prompt、lease/checkpoint/cursor salt不得越过IPC。
 - focused入口：`candidate_analysis_runtime`、`candidate_analysis_runtime_pg`、`investigation_ipc_authorization`及`db_bridge::hypothesis_registry` inline tests；三个readonly command的trace只作refresh hint，不能成为projection/Gate truth。
 
 ## Vuln operation-scoped coverage details（2026-07-19）
 
 - `ai_get_stage_asset_coverage` 接受可选 operation id；Vuln UI调用必须提供并通过 active exact stage/org/sealed-scope校验，后端禁止 latest-operation fallback。Vuln snapshot从相关 Nuclei evidence读取 attempt ordinal/retry/failure owner/class并只附到 partial/error/blocked cell details，供 UI区分历史 attempt 与当前执行。
+
+## Target Intel semantic audit projection（2026-08-02）
+
+- `db_bridge/evidence.rs` 把 `intel.semantic_pivot_receipt.v1` 追加到现有 `audit_log`，并按 exact operation/org/session/kind/stable key读取 terminal receipt；合法状态为 `succeeded|empty|blocked|unsupported`。
+- receipt identity或status不匹配均 fail closed；receipt append 还会重验 immutable redacted
+  artifact 与 exact org/session evidence row 的双向引用。artifact/evidence/receipt 都有精确
+  response-loss replay key；该 seam 不查询 `expansion_queue`，也不改变 production legacy
+  Target Intel authority。
+
+## Target Intel Goal fixture executor（2026-08-02）
+
+- `target_intel_goal_shadow.rs` is an explicit fixture/dev composition seam for
+  `recon_search_intel` and the dynamic worker/reviewer primitives. Construction requires strict
+  passive authority plus a collector that self-identifies as fake; any real transport is rejected
+  before dispatch.
+- Semantic pivot/provider planning remains host-owned and every supported/unsupported terminal
+  attempt passes through the evidence-first receipt store. Dynamic work and review are delegated
+  only to an injected control plane; the production bridge does not install one.
+
+## Target Intel Goal production cutover service（2026-08-02）
+
+- `target_intel_goal_cutover.rs` maps the SQLx-free runtime-memory review DTOs to immutable
+  operation contracts and DB-owned StageTeam material. Review freeze is CAS-bound to the exact
+  plan/Goal epoch/material high-water vector, and section reads return the current review row
+  version required by terminal verdict CAS.
+- Terminal verdict recording validates every inherited critical/major finding, then atomically
+  persists new findings, inherited dispositions, an optional typed human hold, and the exact
+  verdict hash. Identical response-loss replay returns the prior result; mismatched replay fails
+  closed.
+- The runtime bridge now freezes the server-built `intel_goal_v1` contract/epoch on the exact
+  production Controller claim. After the ordinary deterministic Gate passes, StageTeam freezes
+  the review bundle, claims and runs the durable read-only reviewer, terminalizes its verdict,
+  and passes the trusted StageTeam seal plus exact review hashes to one compound finalizer. Review
+  PASS alone never completes the Unit.
+
+## Investigation nested dispatch / task Primary rearm（2026-08-03）
+
+- `db_bridge::{investigation_nested_dispatch,runtime_memory}` 是 nested cognitive lifecycle 与 VerificationTask Primary rearm 的 production adapter：前者把 begin/finish 等值委托给单个 PostgreSQL compound transaction，后者把 exact previous fence/plan/item/task/fingerprint CAS 映射为独立 task Primary identity。
+- adapter 不执行 SQL、不绕过 trigger，也不把 nested success 当作 canonical fact/evidence authority；receipt 只约束持久化 lifecycle/evidence contract，Main AI 的自主 plan/tool loop 仍由 runtime 拥有。

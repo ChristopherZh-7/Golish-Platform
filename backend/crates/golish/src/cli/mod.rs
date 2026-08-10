@@ -25,11 +25,13 @@
 
 mod args;
 mod bootstrap;
+mod maintenance;
 mod repl;
 mod runner;
 
 pub use args::Args;
 pub use bootstrap::{initialize, CliContext};
+pub use maintenance::run_plan_d_maintenance;
 // In-crate only: `stage_run` reuses the CLI's provider-bridge builder.
 pub(crate) use bootstrap::initialize_agent;
 // Re-export from golish-cli-output crate

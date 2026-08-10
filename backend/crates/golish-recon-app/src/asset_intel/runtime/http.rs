@@ -67,6 +67,24 @@ fn request_applies_to_domain_mode(
     }
 }
 
+/// Fixture/dev semantic applicability is explicit metadata only. This helper
+/// intentionally does not inspect URL/body templates, so `{{domain}}` cannot
+/// silently reinterpret a semantic pivot or make an unsupported kind `Site`.
+pub(crate) fn request_applies_to_semantic_pivot(
+    request: &golish_pentest::models::AssetIntelHttpRequest,
+    kind: golish_pentest_domain::models::AssetIntelPivotKind,
+) -> Result<bool, &'static str> {
+    if request.applicable_pivot_kinds.is_empty()
+        || request.wire_query_type.as_deref().is_none_or(str::is_empty)
+        || request.adapter_version.as_deref().is_none_or(str::is_empty)
+        || request.literal_encoder.as_deref().is_none_or(str::is_empty)
+    {
+        return Err("INTEL_HTTP_SEMANTIC_METADATA_MISSING");
+    }
+    Ok(request.applicable_pivot_kinds.contains(&kind))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_http_json_provider(
     pool: &sqlx::PgPool,
     tool: &ToolConfig,
@@ -75,6 +93,7 @@ pub(crate) async fn run_http_json_provider(
     company_name: &str,
     config: &AssetIntelHydrateConfig,
     sink: Option<&EventEmitterHandle>,
+    controlled_fixture: Option<&golish_pentest::config::ControlledFixtureIntelTransportAuthority>,
 ) -> Result<
     (
         AssetIntelProviderRunStatus,
@@ -160,15 +179,26 @@ pub(crate) async fn run_http_json_provider(
         .as_deref()
         .map(str::trim)
         .is_some_and(|domain| !domain.is_empty());
-    let applicable_requests = requests
-        .iter()
-        .filter(|request| request_applies_to_domain_mode(request, domain_mode))
-        .collect::<Vec<_>>();
+    let applicable_requests = if let Some(pivot) = config.semantic_pivot.as_ref() {
+        requests
+            .iter()
+            .filter(|request| {
+                request_applies_to_semantic_pivot(request, pivot.kind).unwrap_or(false)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        requests
+            .iter()
+            .filter(|request| request_applies_to_domain_mode(request, domain_mode))
+            .collect::<Vec<_>>()
+    };
     if applicable_requests.is_empty() {
         let status = AssetIntelProviderRunStatus {
             provider_id: provider_id.clone(),
             status: AssetIntelProviderRunState::CheckedEmpty,
-            message: "http_json provider has no requests for this survey mode".into(),
+            message:
+                "http_json provider has no registered request for this semantic pivot/survey mode"
+                    .into(),
         };
         return finish_provider_run(
             sink,
@@ -182,6 +212,7 @@ pub(crate) async fn run_http_json_provider(
                 "state": "checked_empty",
                 "reason": "no_applicable_requests",
                 "domainMode": domain_mode,
+                "semanticPivotKind": config.semantic_pivot.as_ref().map(|pivot| pivot.kind.as_str()),
             }),
             profile_entries,
         );
@@ -253,6 +284,7 @@ pub(crate) async fn run_http_json_provider(
             &out_dir,
             max_retries,
             enforce_pinned_transport,
+            controlled_fixture,
         )
         .await?;
         let response_path = artifact.as_ref().map(|item| item.path.clone());
@@ -433,6 +465,7 @@ async fn run_one_http_request(
     out_dir: &Path,
     max_retries: u32,
     enforce_pinned_transport: bool,
+    controlled_fixture: Option<&golish_pentest::config::ControlledFixtureIntelTransportAuthority>,
 ) -> Result<(Option<ReconArtifactRef>, RequestOutcome), GolishError> {
     let method = match reqwest::Method::from_bytes(request.method.as_bytes()) {
         Ok(method) => method,
@@ -447,13 +480,20 @@ async fn run_one_http_request(
             ));
         }
     };
-    let url = render_http_template(&request.url, company_name, config, secrets);
+    let url = render_http_url_template(
+        &request.url,
+        company_name,
+        config,
+        secrets,
+        request.literal_encoder.as_deref(),
+    );
     let pinned_endpoint = if enforce_pinned_transport {
         Some(
-            crate::intel_providers::validate_fixed_provider_destination(
+            crate::intel_providers::validate_provider_destination(
                 provider_id,
                 &request.url,
                 &url,
+                controlled_fixture,
             )
             .map_err(|error| GolishError::Validation(error.code().to_string()))?,
         )
@@ -531,9 +571,10 @@ async fn run_one_http_request(
         };
         let send_client = if let Some(endpoint) = pinned_endpoint.as_ref() {
             let (pinned_client, observed_addresses, observed_selected_address) =
-                crate::intel_providers::build_pinned_provider_client(
+                crate::intel_providers::build_pinned_provider_client_with_authority(
                     endpoint,
                     pinned_addresses.as_deref(),
+                    controlled_fixture,
                 )
                 .await
                 .map_err(|error| GolishError::Validation(error.code().to_string()))?;
@@ -934,6 +975,12 @@ mod http_runner_tests {
             form: std::collections::HashMap::new(),
             json: serde_json::json!({ "query": query }),
             timeout_secs: 5,
+            applicable_pivot_kinds: vec![
+                golish_pentest_domain::models::AssetIntelPivotKind::CompanyName,
+            ],
+            wire_query_type: Some("org".into()),
+            adapter_version: Some("fixture.v1".into()),
+            literal_encoder: Some("quoted_literal.v1".into()),
         }
     }
 
@@ -946,6 +993,24 @@ mod http_runner_tests {
         assert!(!request_applies_to_domain_mode(&company_request, true));
         assert!(request_applies_to_domain_mode(&domain_request, true));
         assert!(!request_applies_to_domain_mode(&domain_request, false));
+    }
+
+    #[test]
+    fn semantic_http_applicability_uses_metadata_not_template_shape() {
+        let mut request = request_for_test("{{domain}}");
+        assert!(request_applies_to_semantic_pivot(
+            &request,
+            golish_pentest_domain::models::AssetIntelPivotKind::CompanyName
+        )
+        .unwrap());
+        request.applicable_pivot_kinds.clear();
+        assert_eq!(
+            request_applies_to_semantic_pivot(
+                &request,
+                golish_pentest_domain::models::AssetIntelPivotKind::Domain
+            ),
+            Err("INTEL_HTTP_SEMANTIC_METADATA_MISSING")
+        );
     }
 
     #[test]

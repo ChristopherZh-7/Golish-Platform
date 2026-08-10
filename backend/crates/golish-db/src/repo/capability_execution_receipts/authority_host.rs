@@ -187,7 +187,7 @@ impl<'guard> CheckedToolTruthAuthorityBundle<'guard> {
     }
 
     pub fn is_all_fresh(&self) -> bool {
-        self.state.roots.len() == ToolTruthRootFamilyV1::ALL.len()
+        self.state.roots.len() == ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len()
             && self.state.roots.iter().all(|root| {
                 root.member_status == ToolTruthAuthorityBundleMemberStatusV1::ConsistentFresh
             })
@@ -226,6 +226,7 @@ pub type ToolTruthAuthorityBundleFuture<'guard, T> =
 
 #[derive(Debug, sqlx::FromRow)]
 struct RootRow {
+    operation_id: Uuid,
     denominator_id: Uuid,
     execution_authority_id: Uuid,
     denominator_hash: String,
@@ -233,6 +234,24 @@ struct RootRow {
     project_scope_id: Uuid,
     project_path_at_freeze: String,
     scope_snapshot_id: Uuid,
+}
+
+fn root_matches_bundle_scope(
+    root: &RootRow,
+    request_operation_id: Uuid,
+    bundle_scope_snapshot_id: Uuid,
+    bundle_project_scope_id: Uuid,
+    bundle_project_path: &str,
+    is_stage_fork: bool,
+) -> bool {
+    root.project_scope_id == bundle_project_scope_id
+        && root.project_path_at_freeze == bundle_project_path
+        && if is_stage_fork {
+            root.operation_id != request_operation_id
+                || root.scope_snapshot_id == bundle_scope_snapshot_id
+        } else {
+            root.scope_snapshot_id == bundle_scope_snapshot_id
+        }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -342,18 +361,47 @@ async fn load_roots(
     tx: &mut Transaction<'static, Postgres>,
     request: &CheckToolTruthAuthorityBundle,
 ) -> Result<Vec<RootRow>> {
-    let stage_kinds = ToolTruthRootFamilyV1::ALL
+    let stage_kinds = ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
         .map(|family| family.stage_kind().to_string())
         .to_vec();
     let candidates = sqlx::query_as::<_, RootRow>(
-        r#"SELECT d.id AS denominator_id,d.execution_authority_id,d.denominator_hash,
+        r#"SELECT d.operation_id,d.id AS denominator_id,d.execution_authority_id,d.denominator_hash,
                   d.stage_kind,d.project_scope_id,d.project_path_at_freeze,
                   d.scope_snapshot_id
              FROM coverage_denominators d
-            WHERE d.operation_id=$1 AND d.organization_id=$2
+             JOIN tool_truth_execution_authorities authority
+               ON authority.id=d.execution_authority_id
+            WHERE d.organization_id=$2
               AND d.denominator_kind='root' AND d.sealed_at IS NOT NULL
+              AND authority.execution_owner_kind='host_stage'
               AND d.stage_kind=ANY($3)
-            ORDER BY d.stage_kind,d.created_at DESC,d.id DESC FOR SHARE"#,
+              AND (
+                   d.operation_id=$1
+                   OR EXISTS (
+                       SELECT 1
+                         FROM operation_stage_forks fork
+                         JOIN operation_stage_fork_inputs input
+                           ON input.operation_id=fork.operation_id
+                          AND input.source_operation_id=fork.source_operation_id
+                          AND input.source_scope_snapshot_id=fork.source_scope_snapshot_id
+                          AND input.organization_id=$2
+                          AND input.source_stage_kind=d.stage_kind
+                         JOIN operation_state source_operation
+                           ON source_operation.operation_id=input.source_operation_id
+                          AND source_operation.superseded_by IS NULL
+                         JOIN stage_handoffs source_handoff
+                           ON source_handoff.id=input.source_handoff_id
+                          AND source_handoff.operation_id=input.source_operation_id
+                          AND source_handoff.organization_id=input.organization_id
+                          AND source_handoff.from_stage_kind=input.source_stage_kind
+                          AND source_handoff.invalidated_at IS NULL
+                        WHERE fork.operation_id=$1
+                          AND input.source_operation_id=d.operation_id
+                          AND input.source_scope_snapshot_id=d.scope_snapshot_id
+                   )
+              )
+            ORDER BY d.stage_kind,(d.operation_id=$1) DESC,d.created_at DESC,d.id DESC
+            FOR SHARE OF d,authority"#,
     )
     .bind(request.operation_id)
     .bind(request.organization_id)
@@ -366,14 +414,14 @@ async fn load_roots(
             .map_err(|_| fail(CONTRACT_INVALID))?;
         by_family.entry(family).or_insert(candidate);
     }
-    if by_family.len() != ToolTruthRootFamilyV1::ALL.len()
-        || ToolTruthRootFamilyV1::ALL
+    if by_family.len() != ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len()
+        || ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
             .iter()
             .any(|family| !by_family.contains_key(family))
     {
         return Err(fail(BUNDLE_ROOT_CENSUS_INCOMPLETE));
     }
-    Ok(ToolTruthRootFamilyV1::ALL
+    Ok(ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
         .into_iter()
         .map(|family| {
             by_family
@@ -917,6 +965,13 @@ async fn record_root_obligations(
     request: &CheckToolTruthAuthorityBundle,
     root: &mut RootState,
 ) -> Result<()> {
+    // A stage fork may consume an immutable predecessor root through its exact
+    // operation_stage_fork_inputs manifest.  The target analysis records that
+    // root as a typed residual, but must not append revalidation obligations
+    // into the adopted source operation.
+    if root.root.operation_id != request.operation_id {
+        return Ok(());
+    }
     if root.member_status == ToolTruthAuthorityBundleMemberStatusV1::ConsistentFresh {
         return Ok(());
     }
@@ -977,10 +1032,44 @@ async fn seal_bundle(
     let scope = roots
         .first()
         .ok_or_else(|| fail(BUNDLE_ROOT_CENSUS_INCOMPLETE))?;
+    let fork_scope = sqlx::query_as::<_, (Uuid, Uuid, String)>(
+        r#"SELECT scope.id,scope.project_scope_id,scope.project_path_at_freeze
+             FROM operation_stage_forks fork
+             JOIN operation_org_scope_snapshots scope
+               ON scope.id=fork.target_scope_snapshot_id
+              AND scope.operation_id=fork.operation_id
+             JOIN operation_org_scope_units unit
+               ON unit.snapshot_id=scope.id AND unit.organization_id=$2
+            WHERE fork.operation_id=$1 AND scope.sealed_at IS NOT NULL
+            FOR SHARE OF fork,scope,unit"#,
+    )
+    .bind(request.operation_id)
+    .bind(request.organization_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let is_stage_fork = fork_scope.is_some();
+    let (bundle_scope_snapshot_id, bundle_project_scope_id, bundle_project_path) = fork_scope
+        .unwrap_or_else(|| {
+            (
+                scope.root.scope_snapshot_id,
+                scope.root.project_scope_id,
+                scope.root.project_path_at_freeze.clone(),
+            )
+        });
+    // `load_roots` already proves every cross-operation root against its exact
+    // immutable fork input and source handoff. A formal fork therefore
+    // legitimately combines those source snapshots with roots produced under
+    // the target snapshot. Only target-operation roots must carry the target
+    // snapshot itself.
     if roots.iter().any(|root| {
-        root.root.project_scope_id != scope.root.project_scope_id
-            || root.root.project_path_at_freeze != scope.root.project_path_at_freeze
-            || root.root.scope_snapshot_id != scope.root.scope_snapshot_id
+        !root_matches_bundle_scope(
+            &root.root,
+            request.operation_id,
+            bundle_scope_snapshot_id,
+            bundle_project_scope_id,
+            &bundle_project_path,
+            is_stage_fork,
+        )
     }) {
         return Err(fail(AUTHORITY_STALE));
     }
@@ -1061,9 +1150,9 @@ async fn seal_bundle(
     )
     .bind(bundle_id)
     .bind(request.operation_id)
-    .bind(scope.root.project_scope_id)
-    .bind(&scope.root.project_path_at_freeze)
-    .bind(scope.root.scope_snapshot_id)
+    .bind(bundle_project_scope_id)
+    .bind(&bundle_project_path)
+    .bind(bundle_scope_snapshot_id)
     .bind(request.organization_id)
     .bind(request.consumer_kind.as_str())
     .bind(request.stable_consumer_request_id)
@@ -1145,38 +1234,20 @@ async fn derive_and_seal_bundle(
         .await?;
     let roots = load_roots(tx, request).await?;
     let mut states = Vec::with_capacity(roots.len());
-    for (family, root) in ToolTruthRootFamilyV1::ALL.into_iter().zip(roots) {
+    for (family, root) in ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
+        .into_iter()
+        .zip(roots)
+    {
         states.push(derive_root_state(tx, request, family, root, transaction_now).await?);
     }
-    let bundle_window_started = states
-        .iter()
-        .filter_map(|state| state.observation_window_started_at)
-        .min();
-    let bundle_window_completed = states
-        .iter()
-        .filter_map(|state| state.observation_window_completed_at)
-        .max();
-    let bundle_max_skew_ms = states
-        .iter()
-        .flat_map(|state| state.temporal_policies.iter())
-        .map(|policy| policy.max_cross_observation_skew_ms)
-        .min();
-    let bundle_skew_exceeded = bundle_window_started
-        .zip(bundle_window_completed)
-        .zip(bundle_max_skew_ms)
-        .is_some_and(|((start, end), max_skew)| {
-            u64::try_from((end - start).num_milliseconds()).map_or(true, |skew| skew > max_skew)
-        });
-    if bundle_skew_exceeded {
-        for state in &mut states {
-            if state.semantic_status == "consistent"
-                && state.temporal_status == TemporalValidityStatus::Fresh
-            {
-                state.temporal_status = TemporalValidityStatus::SkewExceeded;
-                state.member_status = ToolTruthAuthorityBundleMemberStatusV1::SkewExceeded;
-            }
-        }
-    }
+    // Each temporal policy belongs to one execution authority/root. Its
+    // cross-observation skew bounds the receipts inside that root and is
+    // already enforced by `derive_root_state`. EAS, Enumeration and Vuln are
+    // sequential stages, so comparing their aggregate wall-clock window to a
+    // single root's skew budget would deterministically make every normal
+    // multi-stage bundle stale. The aggregate window remains sealed below as
+    // descriptive authority; freshness is the exact conjunction of the
+    // independently validated root states and their target-state epochs.
     for state in &mut states {
         record_root_obligations(tx, request, state).await?;
     }
@@ -1290,6 +1361,50 @@ mod compile_tests {
     #[test]
     fn checked_bundle_exposes_only_borrowed_census_views() {
         let _ = guards_have_no_owned_escape_or_public_constructor;
-        assert_eq!(ToolTruthRootFamilyV1::ALL.len(), 4);
+        assert_eq!(ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS.len(), 3);
+    }
+
+    #[test]
+    fn formal_fork_accepts_adopted_source_snapshot_but_not_target_drift() {
+        let target_operation_id = Uuid::new_v4();
+        let target_scope_snapshot_id = Uuid::new_v4();
+        let project_scope_id = Uuid::new_v4();
+        let mut root = RootRow {
+            operation_id: Uuid::new_v4(),
+            denominator_id: Uuid::new_v4(),
+            execution_authority_id: Uuid::new_v4(),
+            denominator_hash: format!("sha256:{}", "1".repeat(64)),
+            stage_kind: "enumeration".to_string(),
+            project_scope_id,
+            project_path_at_freeze: "/tmp/project".to_string(),
+            scope_snapshot_id: Uuid::new_v4(),
+        };
+        assert!(root_matches_bundle_scope(
+            &root,
+            target_operation_id,
+            target_scope_snapshot_id,
+            project_scope_id,
+            "/tmp/project",
+            true,
+        ));
+
+        root.operation_id = target_operation_id;
+        assert!(!root_matches_bundle_scope(
+            &root,
+            target_operation_id,
+            target_scope_snapshot_id,
+            project_scope_id,
+            "/tmp/project",
+            true,
+        ));
+        root.scope_snapshot_id = target_scope_snapshot_id;
+        assert!(root_matches_bundle_scope(
+            &root,
+            target_operation_id,
+            target_scope_snapshot_id,
+            project_scope_id,
+            "/tmp/project",
+            true,
+        ));
     }
 }

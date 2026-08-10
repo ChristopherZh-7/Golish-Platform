@@ -1,0 +1,34 @@
+{
+  "tool": {
+    "id": "schemathesis",
+    "pentestPhase": ["vuln_id"],
+    "name": "Schemathesis",
+    "description": "Schema-driven OpenAPI and GraphQL testing; automated Investigation use is disabled by default.",
+    "executable": "schemathesis",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "version": "4.24.3",
+    "category": "web",
+    "subcategory": "api",
+    "tier": "optional",
+    "tags": ["openapi", "graphql", "stateful-fuzz", "disabled-by-default", "mit"],
+    "install": {
+      "method": "pip",
+      "source": "schemathesis",
+      "macos": {"method": "pip", "source": "schemathesis"},
+      "linux": {"method": "pip", "source": "schemathesis"},
+      "windows": {"method": "pip", "source": "schemathesis"}
+    },
+    "params": [
+      {"label": "Schema", "flag": "", "type": "string", "required": true, "description": "Exact local schema file or authorized schema URL.", "placeholder": "openapi.json"},
+      {"label": "Base URL", "flag": "--url", "type": "string", "required": true, "description": "Exact authorized API origin.", "placeholder": "https://target.example/api"},
+      {"label": "Workers", "flag": "--workers", "type": "string", "description": "Host-bounded worker count.", "default": "1"},
+      {"label": "JUnit output", "flag": "--report", "type": "string", "description": "Raw report artifact destination.", "placeholder": "schemathesis-report"}
+    ],
+    "skills": [
+      {"id": "local-version", "name": "Local version smoke", "description": "No-target executable smoke only; no fuzz preset is exposed.", "args": "--version", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "text", "produces": ["api_case", "observation", "info"], "patterns": [], "fields": {}, "detect": "Schemathesis|schema-driven"}
+  }
+}

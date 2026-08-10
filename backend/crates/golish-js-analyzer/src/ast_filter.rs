@@ -67,18 +67,23 @@ impl CallSiteRanges {
     }
 
     /// Is `offset` inside any recorded range?
+    #[cfg(test)]
     pub(crate) fn contains_offset(&self, offset: usize) -> bool {
-        match self.ranges.binary_search_by(|(s, _)| s.cmp(&offset)) {
-            Ok(idx) => offset < self.ranges[idx].1,
-            Err(idx) => {
-                if idx == 0 {
-                    false
-                } else {
-                    let (s, e) = self.ranges[idx - 1];
-                    s <= offset && offset < e
-                }
-            }
-        }
+        self.range_containing(offset).is_some()
+    }
+
+    /// Return the narrowest AST call/new-expression containing `offset`.
+    ///
+    /// Nested calls are common in request configs (`JSON.stringify(...)`).
+    /// Choosing the narrowest containing range makes the endpoint callee's
+    /// own start offset authoritative while avoiding a neighbouring or parent
+    /// expression that merely contains it.
+    pub(crate) fn range_containing(&self, offset: usize) -> Option<(usize, usize)> {
+        self.ranges
+            .iter()
+            .copied()
+            .filter(|(start, end)| *start <= offset && offset < *end)
+            .min_by_key(|(start, end)| end.saturating_sub(*start))
     }
 
     /// Number of recorded ranges (debug / tests only).

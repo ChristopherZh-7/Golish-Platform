@@ -31,6 +31,10 @@ pub struct TaskOperationConfig {
     pub include_subsidiaries: bool,
     pub subsidiary_threshold: u8,
     pub cli_runtime_scope: Option<CliRuntimeScope>,
+    /// Canonical company label carried only by a typed confirmed organization
+    /// intake. The orchestrator freezes its evidence-backed Company Identity
+    /// receipt before the first Scoping model turn.
+    pub trusted_company_identity_label: Option<String>,
     /// `Some(true)` only when this fresh typed launch supplied exact target
     /// intake; `Some(false)` for confirmed-organization-only intake; `None` for
     /// interactive/unconfirmed adapters. Exact resume may restore a persisted
@@ -49,6 +53,7 @@ impl Default for TaskOperationConfig {
             include_subsidiaries: false,
             subsidiary_threshold: 51,
             cli_runtime_scope: None,
+            trusted_company_identity_label: None,
             current_invocation_target_authority: None,
             continuity_adoption: None,
             stage_fork: None,
@@ -451,6 +456,7 @@ impl StageForkTaskOperationLaunch {
             include_subsidiaries: self.subsidiary_policy.include_subsidiaries,
             subsidiary_threshold: self.subsidiary_policy.ownership_threshold_percent,
             cli_runtime_scope,
+            trusted_company_identity_label: None,
             current_invocation_target_authority,
             continuity_adoption: None,
             stage_fork: Some(StageForkCreate {
@@ -601,20 +607,38 @@ impl FreshTaskOperationLaunch {
 
     fn task_operation_config(&self) -> Result<TaskOperationConfig> {
         self.validate()?;
-        let (harness_org_id, cli_runtime_scope, current_invocation_target_authority) =
-            match &self.scope {
-                FreshOperationScope::UnconfirmedSubject { .. } => (None, None, None),
-                FreshOperationScope::ConfirmedTargetIntake {
-                    organization_id,
-                    runtime_scope,
-                    ..
-                } => (*organization_id, runtime_scope.clone(), Some(true)),
-                FreshOperationScope::ConfirmedOrganizationIntake {
-                    organization_id,
-                    runtime_scope,
-                    ..
-                } => (Some(*organization_id), runtime_scope.clone(), Some(false)),
-            };
+        let (
+            harness_org_id,
+            cli_runtime_scope,
+            current_invocation_target_authority,
+            trusted_company_identity_label,
+        ) = match &self.scope {
+            FreshOperationScope::UnconfirmedSubject { .. } => (None, None, None, None),
+            FreshOperationScope::ConfirmedTargetIntake {
+                subject_label,
+                organization_id,
+                runtime_scope,
+                ..
+            } => (
+                *organization_id,
+                runtime_scope.clone(),
+                Some(true),
+                organization_id
+                    .and_then(|_| subject_label.as_ref())
+                    .map(|label| label.trim().to_string()),
+            ),
+            FreshOperationScope::ConfirmedOrganizationIntake {
+                subject_label,
+                organization_id,
+                runtime_scope,
+                ..
+            } => (
+                Some(*organization_id),
+                runtime_scope.clone(),
+                Some(false),
+                Some(subject_label.trim().to_string()),
+            ),
+        };
         let config = TaskOperationConfig {
             profile_override: Some(self.profile_id.clone()),
             stage_allowlist: match &self.entry {
@@ -625,6 +649,7 @@ impl FreshTaskOperationLaunch {
             include_subsidiaries: self.subsidiary_policy.include_subsidiaries,
             subsidiary_threshold: self.subsidiary_policy.ownership_threshold_percent,
             cli_runtime_scope,
+            trusted_company_identity_label,
             current_invocation_target_authority,
             continuity_adoption: self.continuity_adoption.clone(),
             stage_fork: None,
@@ -675,6 +700,23 @@ impl FreshTaskOperationLaunch {
                 && config.cli_runtime_scope.as_ref() == expected_runtime_scope
                 && config.current_invocation_target_authority == expected_target_authority,
             "fresh operation config scope authority diverges from typed launch"
+        );
+        let expected_identity_label = match &self.scope {
+            FreshOperationScope::UnconfirmedSubject { .. } => None,
+            FreshOperationScope::ConfirmedTargetIntake {
+                subject_label,
+                organization_id,
+                ..
+            } => organization_id
+                .and_then(|_| subject_label.as_ref())
+                .map(|label| label.trim()),
+            FreshOperationScope::ConfirmedOrganizationIntake { subject_label, .. } => {
+                Some(subject_label.trim())
+            }
+        };
+        anyhow::ensure!(
+            config.trusted_company_identity_label.as_deref() == expected_identity_label,
+            "fresh operation config Company Identity authority diverges from typed launch"
         );
         Ok(())
     }
@@ -820,6 +862,7 @@ impl PreparedTaskOperation {
         orchestrator.set_harness_org_id(config.harness_org_id);
         orchestrator.set_subsidiary_scope(config.include_subsidiaries, config.subsidiary_threshold);
         orchestrator.set_cli_runtime_scope(config.cli_runtime_scope);
+        orchestrator.set_trusted_company_identity_label(config.trusted_company_identity_label);
         orchestrator
             .set_current_invocation_target_authority(config.current_invocation_target_authority);
         orchestrator.set_continuity_adoption(config.continuity_adoption);
@@ -992,11 +1035,18 @@ mod tests {
                 .current_invocation_target_authority,
             None
         );
+        let cli_config = cli.task_operation_config().expect("CLI config");
+        assert_eq!(cli_config.current_invocation_target_authority, Some(false));
         assert_eq!(
-            cli.task_operation_config()
-                .expect("CLI config")
-                .current_invocation_target_authority,
-            Some(false)
+            cli_config.trusted_company_identity_label.as_deref(),
+            Some(objective)
+        );
+        assert!(
+            gui.task_operation_config()
+                .expect("GUI config")
+                .trusted_company_identity_label
+                .is_none(),
+            "free-form GUI text must not become Company Identity authority"
         );
 
         assert!(matches!(&gui.entry, FreshOperationEntry::FullProfile));
@@ -1192,6 +1242,7 @@ mod tests {
             include_subsidiaries: false,
             subsidiary_threshold: 51,
             cli_runtime_scope: None,
+            trusted_company_identity_label: None,
             current_invocation_target_authority: None,
             continuity_adoption: None,
             stage_fork: None,

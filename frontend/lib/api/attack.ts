@@ -7,6 +7,11 @@ import type { AttackCandidateReviewRequest } from "@/lib/generated/AttackCandida
 import type { AttackCandidateReviewResponse } from "@/lib/generated/AttackCandidateReviewResponse";
 import type { AttackCandidateReviewScopeRequest } from "@/lib/generated/AttackCandidateReviewScopeRequest";
 import type { AttackCandidateReviewState } from "@/lib/generated/AttackCandidateReviewState";
+import type { AttackPreparedActionDecision } from "@/lib/generated/AttackPreparedActionDecision";
+import type { AttackPreparedActionDecisionRequest } from "@/lib/generated/AttackPreparedActionDecisionRequest";
+import type { AttackPreparedActionDecisionResponse } from "@/lib/generated/AttackPreparedActionDecisionResponse";
+import type { AttackPreparedActionReviewItem } from "@/lib/generated/AttackPreparedActionReviewItem";
+import type { AttackPreparedActionScopeRequest } from "@/lib/generated/AttackPreparedActionScopeRequest";
 import type { AttackVerificationPendingEnrichmentView } from "@/lib/generated/AttackVerificationPendingEnrichmentView";
 import type { AttackVerificationQueueState } from "@/lib/generated/AttackVerificationQueueState";
 import type { CandidateAttemptRow } from "@/lib/generated/CandidateAttemptRow";
@@ -23,6 +28,11 @@ export type {
   AttackVerificationPendingEnrichmentView,
   AttackVerificationQueueState,
   CandidateAttemptRow,
+  AttackPreparedActionDecision,
+  AttackPreparedActionDecisionRequest,
+  AttackPreparedActionDecisionResponse,
+  AttackPreparedActionReviewItem,
+  AttackPreparedActionScopeRequest,
 };
 
 export function listCandidateReviews(
@@ -59,4 +69,16 @@ export function resolveCandidateRecovery(
   request: AttackCandidateRecoveryResolveRequest
 ): Promise<AttackCandidateRecoveryResolveResponse> {
   return invoke("attack_resolve_candidate_recovery", { request });
+}
+
+export function listPendingPreparedActions(
+  request: AttackPreparedActionScopeRequest
+): Promise<AttackPreparedActionReviewItem[]> {
+  return invoke("attack_list_pending_prepared_actions", { request });
+}
+
+export function decidePreparedAction(
+  request: AttackPreparedActionDecisionRequest
+): Promise<AttackPreparedActionDecisionResponse> {
+  return invoke("attack_decide_prepared_action", { request });
 }

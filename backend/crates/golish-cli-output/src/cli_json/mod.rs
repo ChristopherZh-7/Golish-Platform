@@ -491,6 +491,11 @@ pub fn convert_to_cli_json(event: &AiEvent) -> CliJsonEvent {
             }),
         ),
 
+        AiEvent::InvestigationProjectionChanged { .. } => CliJsonEvent::new(
+            "investigation_projection_changed",
+            serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+        ),
+
         // ── observability ────────────────────────────────────────────────
         AiEvent::HarnessTrace { .. } => CliJsonEvent::new(
             "harness_trace",

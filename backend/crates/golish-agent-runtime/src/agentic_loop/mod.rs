@@ -84,6 +84,21 @@ pub use context::{
 pub use entry::{run_agentic_loop, run_agentic_loop_generic};
 pub use tool_execution::{execute_tool_direct_generic, execute_with_hitl_generic};
 
+/// Host-side Plan C send authority boundary. Re-exported from the otherwise
+/// private direct-tool implementation so the application persistence adapter
+/// can implement the trait without exposing the rest of tool dispatch.
+pub mod verification_campaign {
+    pub use super::tool_execution::direct::verification_campaign::{
+        authorize_next_pinned_send_from_host, execute_trusted_get_v1, AuthorizedPinnedSend,
+        BudgetAxisV1, BudgetHeadSnapshotV1, CampaignDispatchAuthoritySnapshotV1,
+        CredentialAuthoritySnapshotV1, FrozenSendAuthorizationV1, HierarchicalBudgetSnapshotV1,
+        HostCredentialInjector, HostNextSendRequestV1, HostPerHopAuthorityContextV1,
+        HostPerHopAuthorityRepository, HostPinnedResolver, PreparedActionSendSelectorV1,
+        SendAuthorityError, SystemPinnedResolver, TrustedGetLimitsV1, TrustedHttpHopObservationV1,
+        TrustedHttpObservationV1,
+    };
+}
+
 use context::{emit_event, emit_to_frontend};
 
 // Keep `estimate_message_tokens` in scope for the `tests` submodule that

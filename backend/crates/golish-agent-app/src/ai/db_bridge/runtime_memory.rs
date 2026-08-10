@@ -18,35 +18,46 @@ use golish_agent_kit::db_traits::{
     ClaimedCandidateAttemptView, ClaimedStageWorkItemView, ClaimedWorkerView,
     CloseAttackV2VerificationUnit, CloseStageRequestEpoch, CloseWaveGatePass,
     ClosedAttackV2VerificationUnitView, ClosedStageRequestEpochView, ClosedWaveGatePass,
-    CompleteStageWorker, CompletedStageWorkerView, ControlCandidateAttempt,
-    ConvergedCandidateRecoveryView, CreateRuntimeOperation, CreatedRuntimeOperation,
-    FinalizeScopingScope, FinalizeStageTeamUnit, FinalizeUnitPass, FinalizedScopingScope,
-    FinalizedStageTeamUnitView, FinalizedUnitPass, FinishWorkerAttempt, FinishedWorkerAttempt,
-    FrozenOrganizationScopeUnit, HeartbeatCandidateAttempt, LoadBoundWorkerChain,
-    LoadInheritedStageHandoffs, LoadStageTeamBarrier, LoadWorkerCheckpoint, LoadedBoundWorkerChain,
-    LoadedWorkerCheckpoint, NewStageDeliverableSubmission, OpenStageTeamRepair,
-    OpenedStageTeamRepairView, OperationStateView, ParkStageTeamFinalizerAfterFailure,
-    ParkStageTeamLeader, ParkedStageTeamFinalizerAfterFailureView, ParkedStageTeamLeaderView,
+    CompleteInvestigationTaskPrimary, CompleteStageWorker, CompleteTargetIntelReviewer,
+    CompletedInvestigationTaskPrimaryView, CompletedStageWorkerView,
+    CompletedTargetIntelReviewerView, ControlCandidateAttempt, ConvergedCandidateRecoveryView,
+    CreateRuntimeOperation, CreatedRuntimeOperation, EnsureInvestigationTaskPrimary,
+    FinalizeScopingScope, FinalizeStageTeamUnit, FinalizeTargetIntelGoalPass, FinalizeUnitPass,
+    FinalizedScopingScope, FinalizedStageTeamUnitView, FinalizedUnitPass, FinishWorkerAttempt,
+    FinishedWorkerAttempt, FreezeTargetIntelGoalUnitContract, FreezeTargetIntelReview,
+    FrozenOrganizationScopeUnit, FrozenTargetIntelGoalUnitContractView,
+    FrozenTargetIntelReviewView, HeartbeatCandidateAttempt, InvestigationRuntimeCursorPhase,
+    InvestigationRuntimeCursorView, LoadBoundWorkerChain, LoadInheritedStageHandoffs,
+    LoadInvestigationRuntimeCursor, LoadInvestigationTaskPlanOutputs, LoadStageTeamBarrier,
+    LoadWorkerCheckpoint, LoadedBoundWorkerChain, LoadedWorkerCheckpoint,
+    NewStageDeliverableSubmission, OpenStageTeamRepair, OpenedStageTeamRepairView,
+    OperationStateView, ParkStageTeamFinalizerAfterFailure, ParkStageTeamLeader,
+    ParkedStageTeamFinalizerAfterFailureView, ParkedStageTeamLeaderView,
     PauseWorkerForContinuation, PersistedStageDeliverableSubmission, ProjectScopeRegistration,
-    ReapedRuntimeWorker, RecoverCandidateTerminalIntent, ReopenStageTeamLeaderAfterGateBlock,
+    ReadTargetIntelReviewSection, ReapedRuntimeWorker, RearmInvestigationTaskPrimary,
+    RearmedInvestigationTaskPrimaryView, RecordTargetIntelReviewVerdict,
+    RecordedTargetIntelReviewView, RecoverCandidateTerminalIntent,
+    RecoverInvestigationAdvisoryPrimary, ReopenStageTeamLeaderAfterGateBlock,
     ReopenedStageTeamLeaderAfterGateBlockView, RequestStageWorker, RequestedStageWorkerView,
     ResolveCandidateRecovery, ResolveStageTeamRecovery, ResolvedCandidateRecoveryView,
     ResolvedStageTeamRecoveryView, RetriedStageWorkerView, RetryStageWorker,
     RuntimeExpiredWorkerDisposition, RuntimeMemoryError, RuntimeMemoryRecordSource,
     RuntimeMemoryRepository, RuntimeStageHandoffView, RuntimeStageTeamPlanStatus,
     RuntimeStageUnitStatus, RuntimeStageUnitView, RuntimeStageWorkItemStatus, RuntimeWorkerFence,
-    RuntimeWorkerStatus, RuntimeWorkerView, SealToolTruthDenominatorRequest, SeedStageRuntime,
+    RuntimeWorkerStatus, RuntimeWorkerView, SealExhaustedVulnResidualOutcomes,
+    SealToolTruthDenominatorRequest, SealedExhaustedVulnResidualOutcomesView, SeedStageRuntime,
     SeedStageTeamRuntime, SeededStageRuntime, SeededStageTeamRuntime, StageTeamBarrierView,
     StageTeamPlanView, StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
     StageWorkerRequestDecision, StageWorkerRequestView, SubmitCandidateAttempt,
-    SubmittedCandidateAttemptView, TaskView, TerminalizeCandidateAttempt,
-    TerminalizeCandidateIntent, TerminalizedCandidateAttemptView, ToolTruthDenominatorSourceRef,
-    WorkerToolMutation,
+    SubmittedCandidateAttemptView, TargetIntelReviewSectionView, TaskView,
+    TerminalizeCandidateAttempt, TerminalizeCandidateIntent, TerminalizedCandidateAttemptView,
+    ToolTruthDenominatorSourceRef, TrustedCompanyIdentityIntake, WorkerToolMutation,
 };
 use golish_agent_kit::harness::attack_execution::{
     select_attack_read, AttackDecisionSemantic, AttackDecisionSemanticKind, AttackReadSelection,
     AttackReadSource, AttackReviewCounts, AttackShadowComparison, CompleteAttackRead, V2AttackRead,
 };
+use golish_agent_kit::harness::org_gate::stage_pass_token;
 use golish_agent_kit::harness::{CanonicalFactKey, CanonicalFactRef, StageKind};
 use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
 use golish_agent_kit::task_orchestrator::stage_execution::{
@@ -59,17 +70,21 @@ use golish_db::repo::runtime_memory_tx::{
     BlockStageTeamUnitRow, CheckpointBoundWorkerChainRow, ClaimStageAggregatorRow,
     ClaimStageTeamLeaderRow, ClaimStageWorkItemRow, ClaimWorkerAndBindChainRow,
     CloseStageRequestEpochRow, CloseWaveGatePassRow, ClosedWaveGatePassRow,
-    CompleteTerminalStageExecutionRow, CreateRuntimeOperationRow, CreatedRuntimeOperationRow,
-    FinalizeScopingScopeRow, FinalizeStageTeamUnitRow, FinalizeUnitPassRow,
-    FinalizedScopingScopeRow, FinishWorkerAttemptRow, LoadBoundWorkerChainRow,
-    LoadStageTeamBarrierRow, LoadWorkerCheckpointRow, OpenStageTeamRepairRow,
-    ParkStageTeamFinalizerAfterFailureRow, ParkStageTeamLeaderRow, PauseWorkerForContinuationRow,
-    ReopenStageTeamLeaderAfterGateBlockRow, RequestStageWorkerRow, RuntimeMemoryStoreError,
-    RuntimeMemoryTxFence, SeedStageRuntimeRow, SeedStageTeamRuntimeRow, StageTeamPlanSeedRow,
-    StageWorkItemSeedRow, TransitionStageExecutionRow,
+    CompleteTargetIntelReviewerRow, CompleteTerminalStageExecutionRow, CreateRuntimeOperationRow,
+    CreatedRuntimeOperationRow, EnsureInvestigationTaskPrimaryRow, FinalizeScopingScopeRow,
+    FinalizeStageTeamUnitRow, FinalizeTargetIntelGoalPassRow, FinalizeUnitPassRow,
+    FinalizedScopingScopeRow, FinishWorkerAttemptRow, InvestigationRuntimeCursorPhaseRow,
+    LoadBoundWorkerChainRow, LoadInvestigationRuntimeCursorRow, LoadStageTeamBarrierRow,
+    LoadWorkerCheckpointRow, OpenStageTeamRepairRow, ParkStageTeamFinalizerAfterFailureRow,
+    ParkStageTeamLeaderRow, PauseWorkerForContinuationRow, RearmInvestigationTaskPrimaryRow,
+    RecoverInvestigationAdvisoryPrimaryRow, ReopenStageTeamLeaderAfterGateBlockRow,
+    RequestStageWorkerRow, RuntimeMemoryStoreError, RuntimeMemoryTxFence,
+    SealExhaustedVulnResidualOutcomesRow, SeedStageRuntimeRow, SeedStageTeamRuntimeRow,
+    StageTeamPlanSeedRow, StageWorkItemSeedRow, TransitionStageExecutionRow,
 };
 use golish_db::repo::stage_teams::{
-    CompleteStageWorkerRow, ResolveStageTeamRecoveryRow, RetryStageWorkerRow,
+    CompleteInvestigationTaskPrimaryRow, CompleteStageWorkerRow, ResolveStageTeamRecoveryRow,
+    RetryStageWorkerRow,
 };
 
 use super::convert::{convert_agent_type_back, convert_task_status};
@@ -267,7 +282,7 @@ fn finalized_scoping_scope_from_db(row: FinalizedScopingScopeRow) -> FinalizedSc
     }
 }
 
-fn runtime_stage_unit_from_db(
+pub(super) fn runtime_stage_unit_from_db(
     row: golish_db::repo::stage_run_units::StageRunUnitRow,
 ) -> Result<RuntimeStageUnitView, RuntimeMemoryError> {
     let status = RuntimeStageUnitStatus::try_parse(&row.status).ok_or_else(|| {
@@ -289,7 +304,7 @@ fn runtime_stage_unit_from_db(
     })
 }
 
-fn runtime_worker_from_db(
+pub(super) fn runtime_worker_from_db(
     row: golish_db::repo::stage_worker_runs::StageWorkerRunRow,
 ) -> Result<RuntimeWorkerView, RuntimeMemoryError> {
     let status = RuntimeWorkerStatus::try_parse(&row.status).ok_or_else(|| {
@@ -478,7 +493,7 @@ fn converged_candidate_recovery_from_db(
     }
 }
 
-fn stage_team_plan_from_db(
+pub(super) fn stage_team_plan_from_db(
     row: golish_db::repo::stage_teams::StageTeamPlanRow,
 ) -> Result<StageTeamPlanView, RuntimeMemoryError> {
     let allowed_roles = row
@@ -527,7 +542,7 @@ fn stage_team_plan_from_db(
     })
 }
 
-fn stage_work_item_from_db(
+pub(super) fn stage_work_item_from_db(
     row: golish_db::repo::stage_teams::StageWorkItemRow,
     aggregator_role: Option<&str>,
 ) -> Result<StageWorkItemView, RuntimeMemoryError> {
@@ -563,6 +578,7 @@ fn claim_stage_work_item_to_db(input: ClaimStageWorkItem) -> ClaimStageWorkItemR
         stage_execution_id: input.stage_execution_id,
         stage_run_unit_id: input.stage_run_unit_id,
         stage_team_plan_id: input.stage_team_plan_id,
+        exact_work_item_id: input.exact_work_item_id,
         lease_owner: input.lease_owner,
         lease_seconds: input.lease_seconds,
         session_id: input.session_id,
@@ -607,7 +623,7 @@ fn stage_team_barrier_from_db(
     }
 }
 
-fn stage_worker_output_from_db(
+pub(super) fn stage_worker_output_from_db(
     output: golish_db::repo::stage_teams::StageWorkerOutputRow,
 ) -> Result<StageWorkerOutputView, RuntimeMemoryError> {
     let disposition = StageWorkerOutputDisposition::try_parse(&output.business_disposition)
@@ -641,6 +657,22 @@ fn stage_worker_output_from_db(
         output_sha256: output.output_hash,
         created_at: output.created_at,
     })
+}
+
+fn validate_investigation_task_plan_dispatch_counts(
+    dispatch_count: i64,
+    distinct_receipt_count: i64,
+    distinct_binding_count: i64,
+) -> Result<(), RuntimeMemoryError> {
+    if dispatch_count < 0
+        || dispatch_count != distinct_receipt_count
+        || dispatch_count != distinct_binding_count
+    {
+        return Err(RuntimeMemoryError::Conflict {
+            code: "investigation_task_plan_output_dispatch_duplicate",
+        });
+    }
+    Ok(())
 }
 
 fn stage_worker_request_from_db(
@@ -721,7 +753,7 @@ fn runtime_worker_status_to_db(
     }
 }
 
-fn runtime_worker_fence_to_db(fence: RuntimeWorkerFence) -> RuntimeMemoryTxFence {
+pub(super) fn runtime_worker_fence_to_db(fence: RuntimeWorkerFence) -> RuntimeMemoryTxFence {
     RuntimeMemoryTxFence {
         operation_id: fence.operation_id,
         stage_execution_id: fence.stage_execution_id,
@@ -847,6 +879,9 @@ fn canonical_fact_key_to_db(
         CanonicalFactKey::AttackCandidateWorkItem { work_item_id } => {
             Db::AttackCandidateWorkItem { work_item_id }
         }
+        CanonicalFactKey::ApplicationModelRevision { revision_id } => {
+            Db::ApplicationModelRevision { revision_id }
+        }
         CanonicalFactKey::Finding { finding_id } => Db::Finding { finding_id },
     }
 }
@@ -906,6 +941,9 @@ fn canonical_fact_key_from_db(
         },
         Db::AttackCandidateWorkItem { work_item_id } => {
             CanonicalFactKey::AttackCandidateWorkItem { work_item_id }
+        }
+        Db::ApplicationModelRevision { revision_id } => {
+            CanonicalFactKey::ApplicationModelRevision { revision_id }
         }
         Db::Finding { finding_id } => CanonicalFactKey::Finding { finding_id },
     }
@@ -1162,7 +1200,7 @@ fn project_scope_registration_from_db(
     }
 }
 
-pub(super) fn operation_state_view_from_db(
+pub(crate) fn operation_state_view_from_db(
     row: golish_db::repo::operation_state::OperationStateRow,
 ) -> Result<OperationStateView, RuntimeMemoryError> {
     let runtime_memory_contract =
@@ -1177,6 +1215,13 @@ pub(super) fn operation_state_view_from_db(
     .map_err(|error| {
         RuntimeMemoryError::Storage(format!("decode persisted Tool Truth contract: {error}"))
     })?;
+    let application_model_contract =
+        golish_core::ApplicationModelContract::try_from(row.application_model_contract.as_str())
+            .map_err(|error| {
+                RuntimeMemoryError::Storage(format!(
+                    "decode persisted application-model contract: {error}"
+                ))
+            })?;
     let investigation_contract_version = golish_core::InvestigationContractVersion::try_from(
         row.investigation_contract_version.as_str(),
     )
@@ -1190,6 +1235,31 @@ pub(super) fn operation_state_view_from_db(
                     "decode persisted investigation rollout mode: {error}"
                 ))
             })?;
+    let stage_topology =
+        golish_core::StageTopologyContract::try_parse(row.stage_topology_contract.as_str())
+            .map_err(|error| {
+                RuntimeMemoryError::Storage(format!(
+                    "decode persisted stage topology contract: {error}"
+                ))
+            })?;
+    let stage_topology_freeze_source = golish_core::StageTopologyFreezeSource::try_parse(
+        row.stage_topology_freeze_source.as_str(),
+    )
+    .map_err(|error| {
+        RuntimeMemoryError::Storage(format!(
+            "decode persisted stage topology freeze source: {error}"
+        ))
+    })?;
+    let stage_topology_contract = golish_core::FrozenStageTopologyContractMaterial {
+        topology: stage_topology,
+        canonical_json: row.stage_topology_canonical_json,
+        sha256: row.stage_topology_sha256,
+    };
+    stage_topology_contract
+        .validate_for_operation(stage_topology_freeze_source, investigation_rollout_mode)
+        .map_err(|error| {
+            RuntimeMemoryError::Storage(format!("decode persisted stage topology witness: {error}"))
+        })?;
     golish_db::repo::operation_rollout::validate_joint_pair(
         tool_truth_contract,
         investigation_contract_version,
@@ -1204,8 +1274,10 @@ pub(super) fn operation_state_view_from_db(
         current_stage: row.current_stage,
         runtime_memory_contract,
         tool_truth_contract,
+        application_model_contract,
         investigation_contract_version,
         investigation_rollout_mode,
+        stage_topology_contract,
         project_scope_id: row.project_scope_id,
         engagement_org_id: row.engagement_org_id,
         state_blob: row.state_blob,
@@ -1249,6 +1321,42 @@ fn created_runtime_operation_from_db(
 
 #[async_trait]
 impl RuntimeMemoryRepository for GolishDbRepoProvider {
+    async fn load_investigation_coordinator_pass_token(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<Option<String>, RuntimeMemoryError> {
+        let publication = golish_db::repo::unified_investigation_runtime::PgUnifiedInvestigationRuntimeRepository::new(
+            self.pool.clone(),
+        )
+        .load_closure_publication_for_operation(operation_id)
+        .await
+        .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        let Some(publication) = publication else {
+            return Ok(None);
+        };
+        if publication.publication.operation_id != operation_id
+            || publication.members.is_empty()
+            || i64::try_from(publication.members.len()).ok()
+                != Some(publication.publication.member_count)
+        {
+            return Err(RuntimeMemoryError::IdentityMismatch {
+                code: "investigation_coordinator_publication_identity_mismatch",
+            });
+        }
+        let completion_authority = publication
+            .members
+            .iter()
+            .map(|member| (member.organization_id, member.passed_at))
+            .collect::<Vec<_>>();
+        let token = stage_pass_token(StageKind::Investigation, &completion_authority);
+        if token.is_empty() {
+            return Err(RuntimeMemoryError::IdentityMismatch {
+                code: "investigation_coordinator_pass_token_empty",
+            });
+        }
+        Ok(Some(token))
+    }
+
     async fn project_scope_register_first_open(
         &self,
         canonical_path: &str,
@@ -1344,6 +1452,7 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             input: input.input,
             profile: input.profile,
             entry_stage: input.entry_stage,
+            application_model_contract: input.application_model_contract,
             project_scope_id: expected_project_scope_id,
             cli_scope,
         };
@@ -1364,6 +1473,25 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             expected_project_scope_id,
             expected_initial_stage_execution_id,
         )
+    }
+
+    async fn freeze_trusted_company_identity(
+        &self,
+        input: TrustedCompanyIdentityIntake,
+    ) -> Result<(), RuntimeMemoryError> {
+        golish_db::repo::scoping_company_identities::freeze_trusted_intake(
+            &self.pool,
+            &golish_db::repo::scoping_company_identities::TrustedCompanyIdentityIntake {
+                operation_id: input.operation_id,
+                stage_execution_id: input.stage_execution_id,
+                organization_id: input.organization_id,
+                canonical_legal_name: input.canonical_legal_name,
+                session_id: input.session_id,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))
     }
 
     async fn active_stage_execution(
@@ -1554,6 +1682,9 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
     ) -> Result<Vec<SeededStageTeamRuntime>, RuntimeMemoryError> {
         let operation_id = input.base.operation_id;
         let stage_execution_id = input.base.stage_execution_id;
+        let stage_kind = StageKind::try_parse(&input.base.stage_kind).ok_or_else(|| {
+            RuntimeMemoryError::Storage("TOOL_TRUTH_STAGE_KIND_INVALID".to_string())
+        })?;
         let base = SeedStageRuntimeRow {
             operation_id: input.base.operation_id,
             stage_execution_id: input.base.stage_execution_id,
@@ -1615,7 +1746,11 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
                 .ok_or_else(|| {
                     RuntimeMemoryError::Storage("TOOL_TRUTH_OPERATION_CONTRACT_MISSING".to_string())
                 })?;
-        if contract.writes_receipts() {
+        if contract.writes_receipts()
+            && golish_agent_kit::harness::tool_truth::requires_fixed_tool_truth_denominator(
+                stage_kind,
+            )
+        {
             for unit in &seeded {
                 self.tool_truth_seal_denominator_impl(SealToolTruthDenominatorRequest {
                     stable_seal_request_id: super::tool_truth::stable_denominator_seal_request(
@@ -1682,6 +1817,124 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         .map_err(runtime_memory_error_from_db)?
         .map(claimed_stage_work_item_from_db)
         .transpose()
+    }
+
+    async fn recover_investigation_advisory_primary(
+        &self,
+        input: RecoverInvestigationAdvisoryPrimary,
+    ) -> Result<Option<ClaimedStageWorkItemView>, RuntimeMemoryError> {
+        golish_db::repo::runtime_memory_tx::recover_investigation_advisory_primary(
+            &self.pool,
+            &RecoverInvestigationAdvisoryPrimaryRow {
+                claim: claim_stage_work_item_to_db(input.claim),
+                verification_task_id: input.verification_task_id,
+                subject_fingerprint_sha256: input.subject_fingerprint_sha256,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?
+        .map(claimed_stage_work_item_from_db)
+        .transpose()
+    }
+
+    async fn rearm_investigation_task_primary(
+        &self,
+        input: RearmInvestigationTaskPrimary,
+    ) -> Result<RearmedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let rearmed = golish_db::repo::runtime_memory_tx::rearm_investigation_task_primary(
+            &self.pool,
+            &RearmInvestigationTaskPrimaryRow {
+                previous_primary_fence: runtime_worker_fence_to_db(input.previous_primary_fence),
+                stage_team_plan_id: input.stage_team_plan_id,
+                previous_primary_work_item_id: input.previous_primary_work_item_id,
+                verification_task_id: input.verification_task_id,
+                subject_fingerprint_sha256: input.subject_fingerprint_sha256,
+                expected_plan_row_version: input.expected_plan_row_version,
+                expected_previous_work_item_row_version: input
+                    .expected_previous_work_item_row_version,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        let plan = stage_team_plan_from_db(rearmed.plan)?;
+        let aggregator_role = plan.aggregator_role.as_deref();
+        Ok(RearmedInvestigationTaskPrimaryView {
+            previous_primary_work_item: stage_work_item_from_db(
+                rearmed.previous_primary_work_item,
+                aggregator_role,
+            )?,
+            primary_work_item: stage_work_item_from_db(rearmed.primary_work_item, aggregator_role)?,
+            primary_worker: runtime_worker_from_db(rearmed.primary_worker)?,
+            message_chain_id: rearmed.message_chain_id,
+            replayed: rearmed.replayed,
+            plan,
+        })
+    }
+
+    async fn load_investigation_runtime_cursor(
+        &self,
+        input: LoadInvestigationRuntimeCursor,
+    ) -> Result<InvestigationRuntimeCursorView, RuntimeMemoryError> {
+        let cursor = golish_db::repo::runtime_memory_tx::load_investigation_runtime_cursor(
+            &self.pool,
+            &LoadInvestigationRuntimeCursorRow {
+                operation_id: input.operation_id,
+                stage_execution_id: input.stage_execution_id,
+                stage_run_unit_id: input.stage_run_unit_id,
+                stage_team_plan_id: input.stage_team_plan_id,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        Ok(InvestigationRuntimeCursorView {
+            phase: match cursor.phase {
+                InvestigationRuntimeCursorPhaseRow::Analysis => {
+                    InvestigationRuntimeCursorPhase::Analysis
+                }
+                InvestigationRuntimeCursorPhaseRow::VerificationTask => {
+                    InvestigationRuntimeCursorPhase::VerificationTask
+                }
+                InvestigationRuntimeCursorPhaseRow::Campaigns => {
+                    InvestigationRuntimeCursorPhase::Campaigns
+                }
+            },
+            verification_task_id: cursor.verification_task_id,
+            analysis_read_session_sealed: cursor.analysis_read_session_sealed,
+            dispatch_epoch: cursor.dispatch_epoch,
+            plan_row_version: cursor.plan_row_version,
+        })
+    }
+
+    async fn ensure_investigation_task_primary(
+        &self,
+        input: EnsureInvestigationTaskPrimary,
+    ) -> Result<RearmedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let rearmed = golish_db::repo::runtime_memory_tx::ensure_investigation_task_primary(
+            &self.pool,
+            &EnsureInvestigationTaskPrimaryRow {
+                operation_id: input.operation_id,
+                stage_execution_id: input.stage_execution_id,
+                stage_run_unit_id: input.stage_run_unit_id,
+                stage_team_plan_id: input.stage_team_plan_id,
+                verification_task_id: input.verification_task_id,
+                subject_fingerprint_sha256: input.subject_fingerprint_sha256,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        let plan = stage_team_plan_from_db(rearmed.plan)?;
+        let aggregator_role = plan.aggregator_role.as_deref();
+        Ok(RearmedInvestigationTaskPrimaryView {
+            previous_primary_work_item: stage_work_item_from_db(
+                rearmed.previous_primary_work_item,
+                aggregator_role,
+            )?,
+            primary_work_item: stage_work_item_from_db(rearmed.primary_work_item, aggregator_role)?,
+            primary_worker: runtime_worker_from_db(rearmed.primary_worker)?,
+            message_chain_id: rearmed.message_chain_id,
+            replayed: rearmed.replayed,
+            plan,
+        })
     }
 
     async fn park_stage_team_leader(
@@ -1754,6 +2007,28 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
             adopted_cells: adopted.adopted_cells,
             source_stage_execution_id: adopted.source_stage_execution_id,
             source_stage_started_at: adopted.source_stage_started_at,
+        })
+    }
+
+    async fn seal_exhausted_vuln_residual_outcomes(
+        &self,
+        input: SealExhaustedVulnResidualOutcomes,
+    ) -> Result<SealedExhaustedVulnResidualOutcomesView, RuntimeMemoryError> {
+        let sealed = golish_db::repo::runtime_memory_tx::seal_exhausted_vuln_residual_outcomes(
+            &self.pool,
+            &SealExhaustedVulnResidualOutcomesRow {
+                fence: runtime_worker_fence_to_db(input.fence),
+                stage_team_plan_id: input.stage_team_plan_id,
+                leader_work_item_id: input.leader_work_item_id,
+                expected_attempt_ordinal: input.expected_attempt_ordinal,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        Ok(SealedExhaustedVulnResidualOutcomesView {
+            sealed_cells: sealed.sealed_cells,
+            found_cells: sealed.found_cells,
+            blocked_cells: sealed.blocked_cells,
         })
     }
 
@@ -1929,6 +2204,191 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         golish_db::repo::stage_teams::list_outputs_with_executor(&mut *connection, plan.id)
             .await
             .map_err(runtime_memory_error_from_db)?
+            .into_iter()
+            .map(stage_worker_output_from_db)
+            .collect()
+    }
+
+    async fn load_investigation_task_plan_outputs(
+        &self,
+        input: LoadInvestigationTaskPlanOutputs,
+    ) -> Result<Vec<StageWorkerOutputView>, RuntimeMemoryError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+
+        let owner_is_exact: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM investigation_pentagi_task_plans task_plan
+                     JOIN stage_team_plans team_plan
+                       ON team_plan.id=task_plan.stage_team_plan_id
+                      AND team_plan.operation_id=task_plan.operation_id
+                      AND team_plan.stage_execution_id=task_plan.stage_execution_id
+                      AND team_plan.stage_run_unit_id=task_plan.stage_run_unit_id
+                      AND team_plan.scope_snapshot_id=task_plan.scope_snapshot_id
+                      AND team_plan.organization_id=task_plan.organization_id
+                    WHERE task_plan.task_plan_id=$1
+                      AND task_plan.operation_id=$2
+                      AND task_plan.stage_execution_id=$3
+                      AND task_plan.stage_run_unit_id=$4
+                      AND task_plan.organization_id=$5
+                      AND task_plan.stage_team_plan_id=$6
+                      AND team_plan.dispatch_epoch=$7
+               )"#,
+        )
+        .bind(input.task_plan_id)
+        .bind(input.operation_id)
+        .bind(input.stage_execution_id)
+        .bind(input.stage_run_unit_id)
+        .bind(input.organization_id)
+        .bind(input.stage_team_plan_id)
+        .bind(input.dispatch_epoch)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        if !owner_is_exact {
+            return Err(RuntimeMemoryError::IdentityMismatch {
+                code: "investigation_task_plan_output_owner_mismatch",
+            });
+        }
+
+        let (dispatch_count, distinct_receipt_count, distinct_binding_count) =
+            sqlx::query_as::<_, (i64, i64, i64)>(
+                r#"SELECT COUNT(*),
+                          COUNT(DISTINCT dispatch.dispatch_receipt_id),
+                          COUNT(DISTINCT dispatch.stage_work_item_id)
+                     FROM pentagi_logical_dispatch_receipts dispatch
+                     JOIN investigation_pentagi_task_plans task_plan
+                       ON task_plan.task_plan_id=dispatch.task_plan_id
+                      AND task_plan.operation_id=dispatch.operation_id
+                      AND task_plan.stage_execution_id=dispatch.stage_execution_id
+                      AND task_plan.stage_run_unit_id=dispatch.stage_run_unit_id
+                      AND task_plan.organization_id=dispatch.organization_id
+                     JOIN stage_team_plans team_plan
+                       ON team_plan.id=task_plan.stage_team_plan_id
+                      AND team_plan.operation_id=task_plan.operation_id
+                      AND team_plan.stage_execution_id=task_plan.stage_execution_id
+                      AND team_plan.stage_run_unit_id=task_plan.stage_run_unit_id
+                      AND team_plan.scope_snapshot_id=task_plan.scope_snapshot_id
+                      AND team_plan.organization_id=task_plan.organization_id
+                    WHERE task_plan.task_plan_id=$1
+                      AND task_plan.operation_id=$2
+                      AND task_plan.stage_execution_id=$3
+                      AND task_plan.stage_run_unit_id=$4
+                      AND task_plan.organization_id=$5
+                      AND task_plan.stage_team_plan_id=$6
+                      AND team_plan.dispatch_epoch=$7
+                      AND dispatch.actor_kind IN ('worker','nested_worker')"#,
+            )
+            .bind(input.task_plan_id)
+            .bind(input.operation_id)
+            .bind(input.stage_execution_id)
+            .bind(input.stage_run_unit_id)
+            .bind(input.organization_id)
+            .bind(input.stage_team_plan_id)
+            .bind(input.dispatch_epoch)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        validate_investigation_task_plan_dispatch_counts(
+            dispatch_count,
+            distinct_receipt_count,
+            distinct_binding_count,
+        )?;
+
+        let outputs = sqlx::query_as::<_, golish_db::repo::stage_teams::StageWorkerOutputRow>(
+            r#"SELECT output.id,output.team_plan_id,output.work_item_id,
+                      output.worker_run_id,output.operation_id,output.stage_execution_id,
+                      output.stage_run_unit_id,output.scope_snapshot_id,output.organization_id,
+                      output.output_schema,output.output_version,output.business_disposition,
+                      output.canonical_output,output.canonical_fact_refs,output.evidence_ids,
+                      output.checked_empty_cells,output.blocker_codes,output.output_hash,
+                      output.created_at
+                 FROM pentagi_logical_dispatch_receipts dispatch
+                 JOIN investigation_pentagi_task_plans task_plan
+                   ON task_plan.task_plan_id=dispatch.task_plan_id
+                  AND task_plan.operation_id=dispatch.operation_id
+                  AND task_plan.stage_execution_id=dispatch.stage_execution_id
+                  AND task_plan.stage_run_unit_id=dispatch.stage_run_unit_id
+                  AND task_plan.scope_snapshot_id=dispatch.scope_snapshot_id
+                  AND task_plan.organization_id=dispatch.organization_id
+                 JOIN stage_team_plans team_plan
+                   ON team_plan.id=task_plan.stage_team_plan_id
+                  AND team_plan.operation_id=task_plan.operation_id
+                  AND team_plan.stage_execution_id=task_plan.stage_execution_id
+                  AND team_plan.stage_run_unit_id=task_plan.stage_run_unit_id
+                  AND team_plan.scope_snapshot_id=task_plan.scope_snapshot_id
+                  AND team_plan.organization_id=task_plan.organization_id
+                 JOIN stage_work_items item
+                   ON item.id=dispatch.stage_work_item_id
+                  AND item.team_plan_id=task_plan.stage_team_plan_id
+                  AND item.operation_id=task_plan.operation_id
+                  AND item.stage_execution_id=task_plan.stage_execution_id
+                  AND item.stage_run_unit_id=task_plan.stage_run_unit_id
+                  AND item.scope_snapshot_id=task_plan.scope_snapshot_id
+                  AND item.organization_id=task_plan.organization_id
+                 JOIN stage_worker_outputs output
+                   ON output.work_item_id=dispatch.stage_work_item_id
+                  AND output.team_plan_id=task_plan.stage_team_plan_id
+                  AND output.operation_id=task_plan.operation_id
+                  AND output.stage_execution_id=task_plan.stage_execution_id
+                  AND output.stage_run_unit_id=task_plan.stage_run_unit_id
+                  AND output.scope_snapshot_id=task_plan.scope_snapshot_id
+                  AND output.organization_id=task_plan.organization_id
+                 JOIN stage_worker_runs output_worker
+                   ON output_worker.id=output.worker_run_id
+                  AND output_worker.work_item_id=dispatch.stage_work_item_id
+                  AND output_worker.operation_id=task_plan.operation_id
+                  AND output_worker.stage_execution_id=task_plan.stage_execution_id
+                  AND output_worker.stage_run_unit_id=task_plan.stage_run_unit_id
+                  AND output_worker.organization_id=task_plan.organization_id
+                  AND output_worker.terminal_at IS NOT NULL
+                  AND output_worker.active_tool_call_id IS NULL
+                  AND item.terminal_at IS NOT NULL
+                  AND (
+                      (output_worker.status='passed' AND item.status='completed')
+                      OR (
+                          output_worker.status='failed'
+                          AND item.status='exhausted'
+                          AND output.business_disposition='blocked'
+                      )
+                  )
+                WHERE task_plan.task_plan_id=$1
+                  AND task_plan.operation_id=$2
+                  AND task_plan.stage_execution_id=$3
+                  AND task_plan.stage_run_unit_id=$4
+                  AND task_plan.organization_id=$5
+                  AND task_plan.stage_team_plan_id=$6
+                  AND team_plan.dispatch_epoch=$7
+                  AND dispatch.actor_kind IN ('worker','nested_worker')
+                ORDER BY dispatch.dispatch_ordinal,dispatch.dispatch_receipt_id"#,
+        )
+        .bind(input.task_plan_id)
+        .bind(input.operation_id)
+        .bind(input.stage_execution_id)
+        .bind(input.stage_run_unit_id)
+        .bind(input.organization_id)
+        .bind(input.stage_team_plan_id)
+        .bind(input.dispatch_epoch)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        if i64::try_from(outputs.len()).ok() != Some(dispatch_count) {
+            return Err(RuntimeMemoryError::IdentityMismatch {
+                code: "investigation_task_plan_output_missing_or_foreign",
+            });
+        }
+        tx.commit()
+            .await
+            .map_err(|error| RuntimeMemoryError::Storage(error.to_string()))?;
+        outputs
             .into_iter()
             .map(stage_worker_output_from_db)
             .collect()
@@ -2834,6 +3294,36 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         })
     }
 
+    async fn complete_investigation_task_primary(
+        &self,
+        input: CompleteInvestigationTaskPrimary,
+    ) -> Result<CompletedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let completed = golish_db::repo::stage_teams::complete_investigation_task_primary(
+            &self.pool,
+            CompleteInvestigationTaskPrimaryRow {
+                fence: runtime_worker_fence_to_db(input.fence),
+                team_plan_id: input.stage_team_plan_id,
+                primary_work_item_id: input.primary_work_item_id,
+                expected_work_item_row_version: input.expected_work_item_row_version,
+                expected_plan_row_version: input.expected_plan_row_version,
+                expected_dispatch_epoch: input.expected_dispatch_epoch,
+                expected_barrier_manifest_hash: input.expected_barrier_manifest_sha256,
+                terminal_checkpoint: input.terminal_checkpoint,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        let plan = stage_team_plan_from_db(completed.plan)?;
+        let aggregator_role = plan.aggregator_role.clone();
+        Ok(CompletedInvestigationTaskPrimaryView {
+            unit: runtime_stage_unit_from_db(completed.unit)?,
+            plan,
+            work_item: stage_work_item_from_db(completed.work_item, aggregator_role.as_deref())?,
+            worker: runtime_worker_from_db(completed.worker)?,
+            replayed: completed.replayed,
+        })
+    }
+
     async fn retry_stage_worker(
         &self,
         input: RetryStageWorker,
@@ -3169,6 +3659,135 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         })
         .map_err(runtime_memory_error_from_db)
     }
+
+    async fn freeze_target_intel_review(
+        &self,
+        input: FreezeTargetIntelReview,
+    ) -> Result<FrozenTargetIntelReviewView, RuntimeMemoryError> {
+        crate::ai::target_intel_goal_cutover::TargetIntelGoalCutoverService::new(self.pool.clone())
+            .freeze_review(input)
+            .await
+    }
+
+    async fn freeze_target_intel_goal_unit_contract(
+        &self,
+        input: FreezeTargetIntelGoalUnitContract,
+    ) -> Result<FrozenTargetIntelGoalUnitContractView, RuntimeMemoryError> {
+        crate::ai::target_intel_goal_cutover::TargetIntelGoalCutoverService::new(self.pool.clone())
+            .freeze_production_unit_contract(input)
+            .await
+    }
+
+    async fn read_target_intel_review_section(
+        &self,
+        input: ReadTargetIntelReviewSection,
+    ) -> Result<TargetIntelReviewSectionView, RuntimeMemoryError> {
+        crate::ai::target_intel_goal_cutover::TargetIntelGoalCutoverService::new(self.pool.clone())
+            .read_review_section(input)
+            .await
+    }
+
+    async fn record_target_intel_review_verdict(
+        &self,
+        input: RecordTargetIntelReviewVerdict,
+    ) -> Result<RecordedTargetIntelReviewView, RuntimeMemoryError> {
+        crate::ai::target_intel_goal_cutover::TargetIntelGoalCutoverService::new(self.pool.clone())
+            .record_review_verdict(input)
+            .await
+    }
+
+    async fn complete_target_intel_reviewer(
+        &self,
+        input: CompleteTargetIntelReviewer,
+    ) -> Result<CompletedTargetIntelReviewerView, RuntimeMemoryError> {
+        let completed = golish_db::repo::runtime_memory_tx::complete_target_intel_reviewer(
+            &self.pool,
+            &CompleteTargetIntelReviewerRow {
+                fence: runtime_worker_fence_to_db(input.fence),
+                stage_team_plan_id: input.stage_team_plan_id,
+                reviewer_work_item_id: input.reviewer_work_item_id,
+                review_id: input.review_id,
+                expected_work_item_row_version: input.expected_work_item_row_version,
+                expected_bundle_hash: input.expected_bundle_sha256,
+                terminal_checkpoint: input.terminal_checkpoint,
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        Ok(CompletedTargetIntelReviewerView {
+            review_id: completed.review_id,
+            work_item: stage_work_item_from_db(completed.work_item, None)?,
+            worker: runtime_worker_from_db(completed.worker)?,
+            review_row_version: completed.review_row_version,
+            decision: match completed.decision.as_str() {
+                "pass" => golish_agent_kit::harness::IntelReviewDecision::Pass,
+                "rework" => golish_agent_kit::harness::IntelReviewDecision::Rework,
+                "needs_human" => golish_agent_kit::harness::IntelReviewDecision::NeedsHuman,
+                _ => {
+                    return Err(RuntimeMemoryError::IdentityMismatch {
+                        code: "TARGET_INTEL_REVIEW_DECISION_UNKNOWN",
+                    })
+                }
+            },
+            bundle_sha256: completed.bundle_sha256,
+            verdict_sha256: completed.verdict_sha256,
+            operation_contract_sha256: completed.operation_contract_sha256,
+            replayed: completed.replayed,
+        })
+    }
+
+    async fn finalize_target_intel_goal_pass(
+        &self,
+        input: FinalizeTargetIntelGoalPass,
+    ) -> Result<FinalizedStageTeamUnitView, RuntimeMemoryError> {
+        let decision = crate::ai::target_intel_goal_cutover::TargetIntelGoalCutoverService::new(
+            self.pool.clone(),
+        )
+        .authorize_finalizer(&input)
+        .await?;
+        match decision {
+            golish_agent_kit::harness::IntelGoalFinalizerDecision::Block {
+                code, reason, ..
+            } => Err(RuntimeMemoryError::Storage(format!("{code}: {reason}"))),
+            golish_agent_kit::harness::IntelGoalFinalizerDecision::Pass { .. } => {
+                let stage_team = input.stage_team;
+                let finalized =
+                    golish_db::repo::runtime_memory_tx::finalize_target_intel_goal_pass(
+                        &self.pool,
+                        &FinalizeTargetIntelGoalPassRow {
+                            operation_id: input.operation_id,
+                            organization_id: input.organization_id,
+                            review_id: input.review_id,
+                            expected_review_row_version: input.expected_review_row_version,
+                            expected_bundle_hash: input.expected_bundle_sha256,
+                            expected_verdict_hash: input.expected_verdict_sha256,
+                            expected_operation_contract_hash: input
+                                .expected_operation_contract_sha256,
+                            stage_team: FinalizeStageTeamUnitRow {
+                                stage_team_plan_id: stage_team.stage_team_plan_id,
+                                aggregator_work_item_id: stage_team.aggregator_work_item_id,
+                                expected_dispatch_epoch: stage_team.expected_dispatch_epoch,
+                                expected_manifest_hash: stage_team.expected_manifest_sha256,
+                                final_seal: finalize_unit_pass_to_db(stage_team.final_seal)?,
+                            },
+                        },
+                    )
+                    .await
+                    .map_err(runtime_memory_error_from_db)?;
+                let mut plan = stage_team_plan_from_db(finalized.plan)?;
+                plan.status = RuntimeStageTeamPlanStatus::Passed;
+                let aggregator_role = plan.aggregator_role.clone();
+                Ok(FinalizedStageTeamUnitView {
+                    plan,
+                    aggregator_work_item: stage_work_item_from_db(
+                        finalized.aggregator_work_item,
+                        aggregator_role.as_deref(),
+                    )?,
+                    finalized: finalized_unit_pass_from_db(finalized.finalized)?,
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3197,7 +3816,45 @@ mod tests {
     }
 
     #[test]
-    fn stage_team_seed_seals_each_unit_before_return() {
+    fn investigation_task_plan_output_manifest_rejects_duplicate_dispatch_bindings() {
+        validate_investigation_task_plan_dispatch_counts(2, 2, 2)
+            .expect("two exact dispatch bindings are valid");
+        let duplicate = validate_investigation_task_plan_dispatch_counts(2, 2, 1)
+            .expect_err("a shared output binding must fail closed");
+        assert!(matches!(
+            duplicate,
+            RuntimeMemoryError::Conflict {
+                code: "investigation_task_plan_output_dispatch_duplicate"
+            }
+        ));
+    }
+
+    #[test]
+    fn investigation_task_plan_output_query_is_receipt_bounded_and_excludes_primary() {
+        let source = include_str!("runtime_memory.rs");
+        let start = source
+            .find("async fn load_investigation_task_plan_outputs(")
+            .expect("exact Investigation output API exists");
+        let end = source[start..]
+            .find("async fn claim_stage_aggregator(")
+            .map(|offset| start + offset)
+            .expect("next repository method bounds the implementation");
+        let body = &source[start..end];
+        assert!(body.contains("investigation_pentagi_task_plans task_plan"));
+        assert!(body.contains("team_plan.dispatch_epoch=$7"));
+        assert!(body.contains("dispatch.actor_kind IN ('worker','nested_worker')"));
+        assert!(body.contains("task_plan.scope_snapshot_id=dispatch.scope_snapshot_id"));
+        assert!(body.contains("output.work_item_id=dispatch.stage_work_item_id"));
+        assert!(body.contains("output_worker.id=output.worker_run_id"));
+        assert!(body.contains("output_worker.work_item_id=dispatch.stage_work_item_id"));
+        assert!(body.contains("output_worker.terminal_at IS NOT NULL"));
+        assert!(!body.contains("output.worker_run_id=dispatch.worker_run_id"));
+        assert!(!body.contains("list_outputs_with_executor"));
+        assert!(!body.contains("actor_kind='primary'"));
+    }
+
+    #[test]
+    fn stage_team_seed_seals_only_fixed_denominator_stages_before_return() {
         let source = include_str!("runtime_memory.rs");
         let start = source
             .find("async fn seed_stage_team_runtime(")
@@ -3208,11 +3865,14 @@ mod tests {
             .expect("durable team seed happens first");
         let seal = body
             .find("tool_truth_seal_denominator_impl")
-            .expect("every seeded unit is sealed");
+            .expect("fixed-denominator units are sealed");
+        let stage_guard = body
+            .find("requires_fixed_tool_truth_denominator")
+            .expect("semantic Goal stages bypass the technique denominator");
         let map_return = body
             .find("seeded\n            .into_iter()")
             .expect("bridge maps its return only after sealing");
-        assert!(durable_seed < seal && seal < map_return);
+        assert!(durable_seed < stage_guard && stage_guard < seal && seal < map_return);
     }
 
     #[test]
@@ -3271,14 +3931,21 @@ mod tests {
         project_scope_id: Uuid,
         contract: &str,
     ) -> golish_db::repo::operation_state::OperationStateRow {
+        let topology =
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1.freeze_material();
         golish_db::repo::operation_state::OperationStateRow {
             operation_id,
             profile: "assessment".to_string(),
             current_stage: "scoping".to_string(),
             runtime_memory_contract: contract.to_string(),
             tool_truth_contract: "legacy_v1".to_string(),
+            application_model_contract: "legacy_no_model".to_string(),
             investigation_contract_version: "legacy_candidate_v1".to_string(),
             investigation_rollout_mode: "legacy_only".to_string(),
+            stage_topology_contract: topology.topology.as_str().to_string(),
+            stage_topology_canonical_json: topology.canonical_json,
+            stage_topology_sha256: topology.sha256,
+            stage_topology_freeze_source: "legacy_backfill_v1".to_string(),
             project_scope_id: Some(project_scope_id),
             stage_started_at: Utc::now(),
             last_evidence_audit_id: None,
@@ -3470,6 +4137,10 @@ mod tests {
                 view.operation.investigation_rollout_mode,
                 golish_core::InvestigationRolloutMode::LegacyOnly
             );
+            assert_eq!(
+                view.operation.stage_topology_contract.topology,
+                golish_core::StageTopologyContract::LegacyCandidateVerificationV1
+            );
             assert_eq!(view.operation.project_scope_id, Some(project_scope_id));
             assert_eq!(view.initial_stage_execution_id, initial_stage_execution_id);
         }
@@ -3546,6 +4217,40 @@ mod tests {
         assert!(matches!(
             unknown_investigation,
             RuntimeMemoryError::Storage(message) if message.contains("future_mode")
+        ));
+
+        let mut corrupt_topology = db_operation(operation_id, project_scope_id, "legacy_v1");
+        corrupt_topology.stage_topology_sha256 = "sha256:corrupt".to_string();
+        let corrupt_topology = created_runtime_operation_from_db(
+            CreatedRuntimeOperationRow {
+                task: db_task(operation_id),
+                operation: corrupt_topology,
+                initial_stage_execution_id,
+            },
+            project_scope_id,
+            initial_stage_execution_id,
+        )
+        .expect_err("mixed topology witness must fail closed");
+        assert!(matches!(
+            corrupt_topology,
+            RuntimeMemoryError::Storage(message) if message.contains("canonical material/hash mismatch")
+        ));
+
+        let mut unknown_topology = db_operation(operation_id, project_scope_id, "legacy_v1");
+        unknown_topology.stage_topology_contract = "future_topology".to_string();
+        let unknown_topology = created_runtime_operation_from_db(
+            CreatedRuntimeOperationRow {
+                task: db_task(operation_id),
+                operation: unknown_topology,
+                initial_stage_execution_id,
+            },
+            project_scope_id,
+            initial_stage_execution_id,
+        )
+        .expect_err("unknown topology must fail closed");
+        assert!(matches!(
+            unknown_topology,
+            RuntimeMemoryError::Storage(message) if message.contains("future_topology")
         ));
 
         let wrong_scope = created_runtime_operation_from_db(

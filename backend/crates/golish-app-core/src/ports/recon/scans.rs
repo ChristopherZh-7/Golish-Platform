@@ -21,6 +21,13 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use golish_db::models::{ApiEndpoint, Fingerprint, JsAnalysisResult, PassiveScanLog};
+use golish_db::repo::capability_execution_receipts::{
+    CapabilityReceiptInputRef, EvidenceAuthorityRef, ToolTruthExecutionAuthorityRef,
+};
+use golish_db::repo::enumeration_endpoint_occurrences::{
+    CandidateDescriptorWrite, EndpointGroupProjectionSummary, EndpointOccurrenceWrite,
+    JsAnalysisDescriptorWrite, ParameterAssessmentWrite, PersistedEndpointOccurrence,
+};
 use golish_db::repo::scoped::TargetWriteGuard;
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +52,52 @@ pub struct ReconPassiveScanGlobal {
 /// Outbound port for recon scan-derived findings (read + write).
 #[async_trait]
 pub trait ReconScansPort: Send + Sync {
+    async fn enumeration_persist_js_analysis_descriptor(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        input: &CapabilityReceiptInputRef,
+        draft: &JsAnalysisDescriptorWrite,
+    ) -> anyhow::Result<Uuid>;
+
+    async fn enumeration_bind_js_analysis_terminal_receipt(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        descriptor_id: Uuid,
+        input: &CapabilityReceiptInputRef,
+    ) -> anyhow::Result<()>;
+
+    async fn enumeration_persist_candidate_descriptor(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        input: &CapabilityReceiptInputRef,
+        draft: &CandidateDescriptorWrite,
+    ) -> anyhow::Result<Uuid>;
+
+    /// Persist one immutable V2 occurrence through the closed Tool Truth
+    /// authority tuple. The adapter owns the SQL transaction; no pool or
+    /// connection crosses this remote-ready boundary.
+    async fn enumeration_persist_endpoint_occurrence(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        candidate: &CapabilityReceiptInputRef,
+        draft: &EndpointOccurrenceWrite,
+        evidence_authorities: &[EvidenceAuthorityRef],
+    ) -> anyhow::Result<PersistedEndpointOccurrence>;
+
+    async fn enumeration_persist_parameter_assessment(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        input: &CapabilityReceiptInputRef,
+        draft: &ParameterAssessmentWrite,
+    ) -> anyhow::Result<Uuid>;
+
+    async fn enumeration_project_endpoint_groups(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        browser_receipt_id: Uuid,
+        js_api_receipt_id: Uuid,
+    ) -> anyhow::Result<EndpointGroupProjectionSummary>;
+
     async fn api_endpoints_insert(
         &self,
         target_id: Uuid,
@@ -62,6 +115,13 @@ pub trait ReconScansPort: Send + Sync {
     async fn api_endpoints_list_by_target(
         &self,
         target_id: Uuid,
+    ) -> anyhow::Result<Vec<ApiEndpoint>>;
+
+    async fn enumeration_list_endpoints_for_operation_target_origin(
+        &self,
+        operation_id: Uuid,
+        target_id: Uuid,
+        exact_origin: &str,
     ) -> anyhow::Result<Vec<ApiEndpoint>>;
 
     /// Insert an endpoint or, on `(target_id, url, method)` conflict, merge
@@ -84,6 +144,24 @@ pub trait ReconScansPort: Send + Sync {
 
     /// Atomic target-authorized variant for active Enumeration producers.
     async fn api_endpoints_upsert_merge_params_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        method: &str,
+        path: &str,
+        params: &serde_json::Value,
+        headers: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
+    ) -> anyhow::Result<ApiEndpoint>;
+
+    /// Idempotent target-authorized insert that reuses an existing endpoint
+    /// without mutating its shared legacy payload. Enumeration v2 producers
+    /// use this seam because operation-specific observations/parameters are
+    /// their authority and an older operation may already have sealed a
+    /// projection linked to the same global endpoint row.
+    async fn api_endpoints_insert_or_ignore_guarded(
         &self,
         guard: &TargetWriteGuard,
         url: &str,
@@ -249,6 +327,108 @@ impl PgReconScansAdapter {
 
 #[async_trait]
 impl ReconScansPort for PgReconScansAdapter {
+    async fn enumeration_persist_js_analysis_descriptor(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        input: &CapabilityReceiptInputRef,
+        draft: &JsAnalysisDescriptorWrite,
+    ) -> anyhow::Result<Uuid> {
+        let mut tx = self.pool.begin().await?;
+        let id = golish_db::repo::enumeration_endpoint_occurrences::persist_js_analysis_descriptor(
+            &mut tx, authority, input, draft,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    async fn enumeration_bind_js_analysis_terminal_receipt(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        descriptor_id: Uuid,
+        input: &CapabilityReceiptInputRef,
+    ) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        golish_db::repo::enumeration_endpoint_occurrences::bind_js_analysis_terminal_receipt(
+            &mut tx,
+            authority,
+            descriptor_id,
+            input,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn enumeration_persist_candidate_descriptor(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        input: &CapabilityReceiptInputRef,
+        draft: &CandidateDescriptorWrite,
+    ) -> anyhow::Result<Uuid> {
+        let mut tx = self.pool.begin().await?;
+        let id = golish_db::repo::enumeration_endpoint_occurrences::persist_candidate_descriptor(
+            &mut tx, authority, input, draft,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    async fn enumeration_persist_endpoint_occurrence(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        candidate: &CapabilityReceiptInputRef,
+        draft: &EndpointOccurrenceWrite,
+        evidence_authorities: &[EvidenceAuthorityRef],
+    ) -> anyhow::Result<PersistedEndpointOccurrence> {
+        let mut tx = self.pool.begin().await?;
+        let persisted =
+            golish_db::repo::enumeration_endpoint_occurrences::persist_endpoint_occurrence(
+                &mut tx,
+                authority,
+                candidate,
+                draft,
+                evidence_authorities,
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(persisted)
+    }
+
+    async fn enumeration_persist_parameter_assessment(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        input: &CapabilityReceiptInputRef,
+        draft: &ParameterAssessmentWrite,
+    ) -> anyhow::Result<Uuid> {
+        let mut tx = self.pool.begin().await?;
+        let id = golish_db::repo::enumeration_endpoint_occurrences::persist_parameter_assessment(
+            &mut tx, authority, input, draft,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    async fn enumeration_project_endpoint_groups(
+        &self,
+        authority: &ToolTruthExecutionAuthorityRef,
+        browser_receipt_id: Uuid,
+        js_api_receipt_id: Uuid,
+    ) -> anyhow::Result<EndpointGroupProjectionSummary> {
+        let mut tx = self.pool.begin().await?;
+        let summary = golish_db::repo::enumeration_endpoint_occurrences::project_endpoint_groups(
+            &mut tx,
+            authority,
+            browser_receipt_id,
+            js_api_receipt_id,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(summary)
+    }
+
     async fn api_endpoints_insert(
         &self,
         target_id: Uuid,
@@ -334,6 +514,33 @@ impl ReconScansPort for PgReconScansAdapter {
         .await?)
     }
 
+    async fn api_endpoints_insert_or_ignore_guarded(
+        &self,
+        guard: &TargetWriteGuard,
+        url: &str,
+        method: &str,
+        path: &str,
+        params: &serde_json::Value,
+        headers: &serde_json::Value,
+        auth_type: Option<&str>,
+        source: &str,
+        risk_level: &str,
+    ) -> anyhow::Result<ApiEndpoint> {
+        Ok(golish_db::repo::api_endpoints::insert_or_ignore_guarded(
+            self.pool.as_ref(),
+            guard,
+            url,
+            method,
+            path,
+            params,
+            headers,
+            auth_type,
+            source,
+            risk_level,
+        )
+        .await?)
+    }
+
     async fn api_endpoints_update_response_evidence_guarded(
         &self,
         guard: &TargetWriteGuard,
@@ -364,6 +571,23 @@ impl ReconScansPort for PgReconScansAdapter {
             golish_db::repo::api_endpoints::list_by_current_target_owner(
                 self.pool.as_ref(),
                 target_id,
+            )
+            .await?,
+        )
+    }
+
+    async fn enumeration_list_endpoints_for_operation_target_origin(
+        &self,
+        operation_id: Uuid,
+        target_id: Uuid,
+        exact_origin: &str,
+    ) -> anyhow::Result<Vec<ApiEndpoint>> {
+        Ok(
+            golish_db::repo::enumeration_surface_manifest::list_endpoints_for_operation_target_origin(
+                self.pool.as_ref(),
+                operation_id,
+                target_id,
+                exact_origin,
             )
             .await?,
         )

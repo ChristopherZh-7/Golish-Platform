@@ -7,3 +7,11 @@
 //! consumers (`state`, `app/mcp_bootstrap`, `mcp/commands`, `cli/bootstrap`)
 //! and for the `commands_facade::ai` re-export feeding `generate_handler!`.
 pub use golish_agent_app::ai::*;
+
+/// Single desktop composition seam for the process-owned Investigation
+/// projector and its commit-visible refresh publisher.
+pub fn compose_investigation_projection_event_bridge(
+    pool: std::sync::Arc<sqlx::PgPool>,
+) -> InvestigationProjectionEventBridge {
+    InvestigationProjectionEventBridge::new(pool)
+}

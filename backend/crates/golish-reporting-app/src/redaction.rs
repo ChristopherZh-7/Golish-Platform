@@ -4,9 +4,35 @@ use crate::ReportingAppError;
 
 fn is_secret_key(key: &str) -> bool {
     matches!(
-        key.to_ascii_lowercase().as_str(),
-        "password" | "secret" | "token" | "api_key" | "private_key" | "cookie"
+        key.to_ascii_lowercase().replace('-', "_").as_str(),
+        "password"
+            | "secret"
+            | "token"
+            | "api_key"
+            | "private_key"
+            | "cookie"
+            | "authorization"
+            | "credential"
+            | "request_body"
+            | "response_body"
+            | "stdout"
+            | "stderr"
+            | "raw_request"
+            | "raw_response"
+            | "payload"
+            | "email"
+            | "phone"
+            | "session_id"
     )
+}
+
+fn string_is_forbidden(value: &str) -> bool {
+    value.len() > 16 * 1024
+        || value.chars().any(|character| {
+            character == '\0'
+                || matches!(character, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+                || (character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+        })
 }
 
 pub fn redact_report_value(value: Value) -> Result<Value, ReportingAppError> {
@@ -15,10 +41,11 @@ pub fn redact_report_value(value: Value) -> Result<Value, ReportingAppError> {
             let mut redacted = Map::new();
             for (key, value) in map {
                 if is_secret_key(&key) {
-                    redacted.insert(key, Value::String("[REDACTED]".to_string()));
-                } else {
-                    redacted.insert(key, redact_report_value(value)?);
+                    return Err(ReportingAppError::Validation(
+                        "report_projection_forbidden_value".to_owned(),
+                    ));
                 }
+                redacted.insert(key, redact_report_value(value)?);
             }
             Ok(Value::Object(redacted))
         }
@@ -27,6 +54,9 @@ pub fn redact_report_value(value: Value) -> Result<Value, ReportingAppError> {
             .map(redact_report_value)
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
+        Value::String(value) if string_is_forbidden(&value) => Err(ReportingAppError::Validation(
+            "report_projection_forbidden_value".to_owned(),
+        )),
         other => Ok(other),
     }
 }
@@ -38,13 +68,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removes_secret_value_but_preserves_vault_reference() {
-        let redacted = redact_report_value(json!({
+    fn rejects_secret_value_instead_of_publishing_a_replacement() {
+        let error = redact_report_value(json!({
             "password": "hunter2",
-            "credentialRef": "vault_ref:00000000-0000-0000-0000-000000000021"
+            "safeReferenceHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         }))
-        .expect("redaction");
-        assert!(!redacted.to_string().contains("hunter2"));
-        assert!(redacted.to_string().contains("vault_ref:"));
+        .expect_err("secret-bearing projection must fail closed");
+        assert_eq!(
+            error,
+            ReportingAppError::Validation("report_projection_forbidden_value".to_owned())
+        );
     }
 }

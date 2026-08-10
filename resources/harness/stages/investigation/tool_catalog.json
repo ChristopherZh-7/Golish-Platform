@@ -1,0 +1,115 @@
+{
+  "contract_version": "investigation_operator_tools_v1",
+  "tools": [
+    {
+      "tool_config_id": "arjun",
+      "capability": "http_parameter_discovery",
+      "execution_class": "active_bounded",
+      "default_availability": "jit_only",
+      "contract_status": "contract_pending",
+      "target_kinds": ["web_origin", "endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "kiterunner",
+      "capability": "api_route_discovery",
+      "execution_class": "active_bounded",
+      "default_availability": "jit_only",
+      "contract_status": "contract_pending",
+      "target_kinds": ["web_origin", "endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "schemathesis",
+      "capability": "schema_driven_api_testing",
+      "execution_class": "stateful_fuzz",
+      "default_availability": "disabled",
+      "contract_status": "disabled",
+      "target_kinds": ["api_schema", "endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "jwt-tool",
+      "capability": "jwt_hypothesis_analysis",
+      "execution_class": "local_then_active",
+      "default_availability": "jit_only",
+      "contract_status": "contract_pending",
+      "target_kinds": ["token", "endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "graphql-cop",
+      "capability": "graphql_security_assessment",
+      "execution_class": "active_bounded",
+      "default_availability": "jit_only",
+      "contract_status": "contract_pending",
+      "target_kinds": ["graphql_endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "testssl-sh",
+      "capability": "tls_configuration_observation",
+      "execution_class": "network_observe",
+      "default_availability": "automatic_exact_target",
+      "contract_status": "contract_pending",
+      "target_kinds": ["endpoint"],
+      "credential_mode": "none",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "ssh-audit",
+      "capability": "ssh_configuration_observation",
+      "execution_class": "network_observe",
+      "default_availability": "automatic_exact_target",
+      "contract_status": "contract_pending",
+      "target_kinds": ["endpoint"],
+      "credential_mode": "none",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "enum4linux-ng",
+      "capability": "smb_ad_enumeration",
+      "execution_class": "active_bounded",
+      "default_availability": "jit_only",
+      "contract_status": "contract_pending",
+      "target_kinds": ["host", "endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "trivy",
+      "capability": "artifact_container_iac_assessment",
+      "execution_class": "local_or_registry_read",
+      "default_availability": "jit_only",
+      "contract_status": "contract_pending",
+      "target_kinds": ["local_artifact", "container_image", "registry_image"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": false,
+      "terminal_truth": "typed_adapter_required"
+    },
+    {
+      "tool_config_id": "interactsh-client",
+      "capability": "external_oast_interaction",
+      "execution_class": "external_oast",
+      "default_availability": "disabled",
+      "contract_status": "disabled",
+      "target_kinds": ["endpoint"],
+      "credential_mode": "none_or_exact_grant",
+      "external_service": true,
+      "terminal_truth": "typed_adapter_required"
+    }
+  ]
+}

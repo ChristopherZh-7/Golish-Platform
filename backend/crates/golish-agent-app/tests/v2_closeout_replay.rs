@@ -34,11 +34,14 @@ use golish_reporting_app::{
     ReportArtifactStore, ReportFinalizer, ReportFormat, ReportReadModelBuilder, ReportingAppError,
     StagedArtifact,
 };
-use golish_reporting_domain::{PublicationStatus, ValidationStatus};
+use golish_reporting_domain::{PublicationStatus, ReportSourceKind, ValidationStatus};
 use serde_json::json;
 use serial_test::serial;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+#[path = "../../golish-db/tests/support/tool_truth_authority_fixture.rs"]
+mod tool_truth_authority_fixture;
 
 const FORGED_TOOL_PROJECT_PATH: &str = "/tmp/golish-v2-closeout-contract";
 const REPORT_ARTIFACT_ORPHAN_GRACE: StdDuration = StdDuration::from_secs(24 * 60 * 60);
@@ -1805,6 +1808,43 @@ async fn candidate_to_report_closeout_is_replay_safe() {
         2
     );
 
+    let closeout_origin_id = Uuid::new_v4();
+    sqlx::query(
+        r#"INSERT INTO web_origins(
+               id,organization_id,project_path,scheme,host,host_type,port,origin,
+               source,confidence,last_confirmed_at
+           ) VALUES(
+               $1,$2,$3,'https','closeout.example.test','domain',443,
+               'https://closeout.example.test:443','httpx',1.0,NOW()
+           )"#,
+    )
+    .bind(closeout_origin_id)
+    .bind(scope.organization_id)
+    .bind(project_path)
+    .execute(db.pool())
+    .await
+    .expect("insert exact closeout target origin for Tool Truth roots");
+    sqlx::query(
+        r#"INSERT INTO web_origin_observations(
+               id,organization_id,project_path,web_origin_id,target_id,status_code,
+               confidence,source,raw
+           ) VALUES($1,$2,$3,$4,$5,200,1.0,'httpx','{}')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(scope.organization_id)
+    .bind(project_path)
+    .bind(closeout_origin_id)
+    .bind(scope.target_id)
+    .execute(db.pool())
+    .await
+    .expect("bind closeout target to its exact origin");
+    tool_truth_authority_fixture::seed_all_fresh_tool_truth_roots(
+        db.pool(),
+        scope.operation_id,
+        scope.organization_id,
+        project_path,
+    )
+    .await;
     let pool = Arc::new(db.pool().clone());
     let built = ReportReadModelBuilder::new(PgReportTruthPort::new(pool.clone()))
         .build_and_validate(scope.operation_id)
@@ -1818,11 +1858,44 @@ async fn candidate_to_report_closeout_is_replay_safe() {
             .iter()
             .any(|source| source.kind.as_str() == expected));
     }
-    assert!(built
+    for evidence_backed_kind in [
+        ReportSourceKind::Finding,
+        ReportSourceKind::CandidateAttempt,
+        ReportSourceKind::PostExploitAction,
+    ] {
+        let citations = built
+            .model
+            .citations
+            .iter()
+            .filter(|citation| citation.source.kind == evidence_backed_kind)
+            .collect::<Vec<_>>();
+        assert!(
+            !citations.is_empty(),
+            "expected at least one {evidence_backed_kind:?} citation"
+        );
+        assert!(
+            citations
+                .iter()
+                .all(|citation| citation.evidence_audit_id.is_some()),
+            "{evidence_backed_kind:?} citations must retain audit evidence"
+        );
+    }
+    let mut compound_authority_kinds = built
         .model
         .citations
         .iter()
-        .all(|citation| citation.evidence_audit_id.is_some()));
+        .filter(|citation| citation.evidence_audit_id.is_none())
+        .map(|citation| citation.source.kind)
+        .collect::<Vec<_>>();
+    compound_authority_kinds.sort();
+    assert_eq!(
+        compound_authority_kinds,
+        vec![
+            ReportSourceKind::LegacyAttemptAuthorityReceipt,
+            ReportSourceKind::LegacyReportAuthoritySeal,
+        ],
+        "only the two sealed compound-authority citations may omit a scalar audit id"
+    );
     let report_store = TestProjectReportArtifactStore::new(canonical_project_root.clone());
     let rendered_markdown = format!(
         "# Evidence-backed closeout\n\nRevision: `{}`\n",

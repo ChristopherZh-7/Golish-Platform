@@ -827,6 +827,35 @@ pub(super) async fn verify(project_root: &Path, artifact: &StoredReportArtifact)
         .context("report_artifact_verify_join_failed")?
 }
 
+fn read_verified_blocking(project_root: &Path, artifact: &StoredReportArtifact) -> Result<Vec<u8>> {
+    let filename = validate_stored(artifact)?;
+    let root = AnchoredDirectory::open_project_root(project_root)?;
+    let blobs = root
+        .descendant(&[".golish", "reports", "blobs", "sha256"], false)?
+        .ok_or_else(|| anyhow::anyhow!("report_blob_missing"))?;
+    let file = open_regular(&blobs, &filename, read_options())?
+        .ok_or_else(|| anyhow::anyhow!("report_blob_missing"))?;
+    let bytes = read_all(&file)?;
+    verify_named_file(&blobs, &filename, &file)?;
+    if sha256_hex(&bytes) != artifact.sha256
+        || u64::try_from(bytes.len()).ok() != Some(artifact.byte_len)
+    {
+        anyhow::bail!("report_blob_identity_conflict");
+    }
+    Ok(bytes)
+}
+
+pub(super) async fn read_verified(
+    project_root: &Path,
+    artifact: &StoredReportArtifact,
+) -> Result<Vec<u8>> {
+    let project_root = project_root.to_path_buf();
+    let artifact = artifact.clone();
+    tokio::task::spawn_blocking(move || read_verified_blocking(&project_root, &artifact))
+        .await
+        .context("report_artifact_read_join_failed")?
+}
+
 fn discard_blocking(
     project_root: &Path,
     staged: &StagedReportArtifact,

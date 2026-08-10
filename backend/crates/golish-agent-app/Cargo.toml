@@ -16,6 +16,7 @@ golish-cleanup-domain = { workspace = true }
 # surface + bridges thread agent-kit/runtime trait objects.
 golish-agent-bridge = { workspace = true }
 golish-agent-kit = { workspace = true }
+golish-pentest-app = { workspace = true }
 golish-agent-runtime = { workspace = true }
 golish-sub-agents = { path = "../golish-sub-agents" }
 
@@ -66,6 +67,7 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 ring = { workspace = true }
 url = { workspace = true }
+reqwest = { workspace = true }
 regex = "1"
 tracing = { workspace = true }
 rig-core = { workspace = true }
@@ -76,6 +78,5 @@ dotenvy = { workspace = true }
 ts-rs = { workspace = true }
 
 [dev-dependencies]
-golish-pentest-app = { workspace = true }
 serial_test.workspace = true
 tempfile = { workspace = true }

@@ -272,7 +272,8 @@ public_ts_catalog!(
         CoverageInvalidated => "coverage_invalidated",
         ReportInserted => "report_inserted",
         ReportClosed => "report_closed",
-        ReportSuperseded => "report_superseded"
+        ReportSuperseded => "report_superseded",
+        ReportInvalidated => "report_invalidated"
     ]
 );
 
@@ -698,6 +699,7 @@ pub const fn projection_timeline_event_kind(
         (Entity::Report, Insert) => Some(Event::ReportInserted),
         (Entity::Report, Close) => Some(Event::ReportClosed),
         (Entity::Report, Supersede) => Some(Event::ReportSuperseded),
+        (Entity::Report, Invalidate) => Some(Event::ReportInvalidated),
         _ => None,
     }
 }
@@ -833,7 +835,8 @@ plan_c_routes!(
     CoverageInvalidated => ("coverage.invalidate", Coverage, Invalidate, CoverageInvalidated),
     ReportInserted => ("report.insert", Report, Insert, ReportInserted),
     ReportClosed => ("report.close", Report, Close, ReportClosed),
-    ReportSuperseded => ("report.supersede", Report, Supersede, ReportSuperseded)
+    ReportSuperseded => ("report.supersede", Report, Supersede, ReportSuperseded),
+    ReportInvalidated => ("report.invalidate", Report, Invalidate, ReportInvalidated)
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1882,6 +1885,7 @@ mod tests {
                     "report_inserted",
                     "report_closed",
                     "report_superseded",
+                    "report_invalidated",
                 ],
             )
         );

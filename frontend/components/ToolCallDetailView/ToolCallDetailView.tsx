@@ -23,7 +23,12 @@ import {
 } from "@/components/Engagement/AttackCandidateStageRunRows";
 import { CandidateAttemptRows } from "@/components/Engagement/CandidateAttemptRows";
 import { CleanupObligationList } from "@/components/Engagement/CleanupObligationList";
-import { HypothesisRegistryAudit } from "@/components/Engagement/HypothesisRegistryAudit";
+import { InvestigationWorkspaceRoute } from "@/components/Engagement/InvestigationWorkspaceRoute";
+import {
+  type InvestigationStageIdentity,
+  InvestigationWorkspaceView,
+} from "@/components/Engagement/InvestigationWorkspaceView";
+import { PendingPreparedActionPanel } from "@/components/Engagement/PendingPreparedActionPanel";
 import { ReportReadModelView } from "@/components/Engagement/ReportReadModelView";
 import {
   isCompanyControllerStageRunRows,
@@ -116,6 +121,138 @@ function stageFromToolValue(value: unknown): string | null {
   return typeof stage === "string" && stage.trim() ? stage.trim() : null;
 }
 
+interface InvestigationResolverRow {
+  stage?: string;
+  operationId?: string;
+  stageExecutionId?: string | null;
+  agentRequestId?: string | null;
+  owningStageRunRequestId?: string | null;
+}
+
+export type InvestigationStageRunResolution =
+  | { kind: "not-investigation" }
+  | { kind: "invalid"; message: string }
+  | { kind: "exact"; identity: InvestigationStageIdentity & { stageExecutionId: string } }
+  | {
+      kind: "live-only";
+      identity: InvestigationStageIdentity & { stageExecutionId: null };
+    };
+
+function exactString(record: Record<string, unknown> | null, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function uniqueIdentity(values: Array<string | null | undefined>): string | "conflict" | null {
+  const present = values
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .map((value) => value.trim());
+  if (present.length === 0) return null;
+  return present.every((value) => value === present[0]) ? present[0] : "conflict";
+}
+
+function owningStageRunRequestIdFromActor(actorRequestId?: string | null): string | null {
+  if (!actorRequestId) return null;
+  const indexes = ["::org::", "::team::"]
+    .map((marker) => actorRequestId.indexOf(marker))
+    .filter((index) => index > 0);
+  return indexes.length > 0 ? actorRequestId.slice(0, Math.min(...indexes)) : null;
+}
+
+/**
+ * Resolve only the selected stage_run. It never falls back to a session-global
+ * latest Investigation, and an identity disagreement is terminal for routing.
+ */
+export function resolveInvestigationStageRun({
+  toolName,
+  args,
+  result,
+  selectedRequestId,
+  rows,
+}: {
+  toolName: string | null;
+  args: unknown;
+  result: unknown;
+  selectedRequestId: string | null;
+  rows: readonly InvestigationResolverRow[];
+}): InvestigationStageRunResolution {
+  if (toolName !== null && toolName !== "stage_run") return { kind: "not-investigation" };
+
+  const argsRecord = normalizedRecord(args);
+  const resultRecord = normalizedRecord(result);
+  const stages = [
+    exactString(argsRecord, ["stage", "stage_id"]),
+    exactString(resultRecord, ["stage", "stage_id"]),
+    ...rows.map((row) => row.stage?.trim() || null),
+  ].filter((stage): stage is string => stage !== null);
+  if (!stages.includes("investigation")) return { kind: "not-investigation" };
+  if (stages.some((stage) => stage !== "investigation")) {
+    return { kind: "invalid", message: "Conflicting Investigation stage identity." };
+  }
+  if (rows.some((row) => !row.stage?.trim() || !row.operationId?.trim())) {
+    return { kind: "invalid", message: "Investigation row identity is incomplete." };
+  }
+
+  const operationId = uniqueIdentity([
+    exactString(argsRecord, ["operationId", "operation_id"]),
+    exactString(resultRecord, ["operationId", "operation_id"]),
+    ...rows.map((row) => row.operationId),
+  ]);
+  if (operationId === "conflict") {
+    return { kind: "invalid", message: "Conflicting Investigation operation identity." };
+  }
+  if (!operationId) {
+    return { kind: "invalid", message: "Investigation operation identity is unavailable." };
+  }
+
+  const stageExecutionId = uniqueIdentity([
+    exactString(argsRecord, ["stageExecutionId", "stage_execution_id"]),
+    exactString(resultRecord, ["stageExecutionId", "stage_execution_id"]),
+    ...rows.map((row) => row.stageExecutionId),
+  ]);
+  if (stageExecutionId === "conflict") {
+    return { kind: "invalid", message: "Conflicting Investigation execution identity." };
+  }
+
+  const stageRunRequestId = uniqueIdentity([
+    selectedRequestId,
+    exactString(argsRecord, [
+      "stageRunRequestId",
+      "stage_run_request_id",
+      "owningStageRunRequestId",
+      "owning_stage_run_request_id",
+    ]),
+    exactString(resultRecord, [
+      "stageRunRequestId",
+      "stage_run_request_id",
+      "owningStageRunRequestId",
+      "owning_stage_run_request_id",
+    ]),
+    ...rows.map(
+      (row) => row.owningStageRunRequestId ?? owningStageRunRequestIdFromActor(row.agentRequestId)
+    ),
+  ]);
+  if (stageRunRequestId === "conflict") {
+    return { kind: "invalid", message: "Conflicting Investigation stage_run request identity." };
+  }
+  if (!stageRunRequestId) {
+    return { kind: "invalid", message: "Investigation stage_run request identity is unavailable." };
+  }
+
+  return stageExecutionId
+    ? {
+        kind: "exact",
+        identity: { operationId, stageExecutionId, stageRunRequestId },
+      }
+    : {
+        kind: "live-only",
+        identity: { operationId, stageExecutionId: null, stageRunRequestId },
+      };
+}
+
 export function isAttackCandidateStageRun(
   toolName: string,
   args: unknown,
@@ -150,6 +287,21 @@ export function getCandidateStageRunOperationId(
   const operationId = operationIds[0];
   if (!operationId || operationIds.some((candidate) => candidate !== operationId)) return null;
   return operationId;
+}
+
+export function getPreparedActionOperationIdFromRows(
+  rows: readonly { stage?: string; operationId?: string }[]
+): string | null {
+  if (
+    rows.length === 0 ||
+    rows.some((row) => !["attack_candidate", "verification"].includes(row.stage ?? ""))
+  ) {
+    return null;
+  }
+  const operationIds = rows.map((row) => row.operationId?.trim() ?? "");
+  return operationIds[0] && operationIds.every((value) => value === operationIds[0])
+    ? operationIds[0]
+    : null;
 }
 
 export function isCleanupStageRun(toolName: string, args: unknown): boolean {
@@ -534,14 +686,27 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   // matching tool row — when the run's requestId is known and differs, skip.
   const stageRun = useStore((s) => {
     const session = s.sessions[sessionId];
-    const sr = targetRequestId
-      ? (session?.stageRuns?.[targetRequestId] ?? session?.stageRun ?? null)
-      : (session?.stageRun ?? null);
+    const keyed = targetRequestId ? session?.stageRuns?.[targetRequestId] : undefined;
+    const sr = keyed ?? session?.stageRun ?? null;
     if (!sr) return null;
-    if (sr.requestId && targetRequestId && sr.requestId !== targetRequestId) return null;
+    // A keyed entry is owned by the selected tool row. The legacy singleton is
+    // usable only when it also carries that exact request identity; an
+    // unkeyed singleton must never be treated as the selected/latest run.
+    if (!keyed && targetRequestId && sr.requestId !== targetRequestId) return null;
     return sr;
   });
   const candidateReviewHint = useStore((s) => s.sessions[sessionId]?.candidateReviewHint);
+  const investigationResolution = useMemo(
+    () =>
+      resolveInvestigationStageRun({
+        toolName: execution?.toolName ?? null,
+        args: execution?.args ?? null,
+        result: execution?.result ?? null,
+        selectedRequestId: targetRequestId,
+        rows: stageRun?.rows ?? [],
+      }),
+    [execution?.args, execution?.result, execution?.toolName, stageRun?.rows, targetRequestId]
+  );
 
   const navigateBack = () => setDetailViewMode(sessionId, "timeline");
 
@@ -567,6 +732,65 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     [execution]
   );
 
+  if (investigationResolution.kind === "invalid") {
+    return (
+      <div className="flex h-full flex-col bg-card">
+        <div className="border-b border-border/25 px-3 py-2">
+          <button
+            type="button"
+            onClick={navigateBack}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t("ai.toolDetail.backToTerminal")}
+          </button>
+        </div>
+        <div className="flex flex-1 items-center justify-center p-6">
+          <div
+            role="alert"
+            className="max-w-lg rounded border border-red-500/30 bg-red-500/[0.06] p-4 text-xs text-red-200"
+          >
+            {investigationResolution.message} Exact Investigation details are unavailable; no latest
+            execution was guessed.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (investigationResolution.kind === "exact" || investigationResolution.kind === "live-only") {
+    const liveActors = (stageRun?.rows ?? [])
+      .filter((row) => Boolean(row.agentRequestId?.trim()))
+      .map((row) => ({
+        label: `${row.name} live actor`,
+        transcriptRequestId: row.agentRequestId!.trim(),
+        owningStageRunRequestId: investigationResolution.identity.stageRunRequestId,
+        status: row.status,
+      }));
+    if (investigationResolution.kind === "exact") {
+      return (
+        <InvestigationWorkspaceRoute
+          sessionId={sessionId}
+          identity={investigationResolution.identity}
+          liveRows={stageRun?.rows ?? []}
+          onBack={navigateBack}
+        />
+      );
+    }
+    return (
+      <InvestigationWorkspaceView
+        identity={investigationResolution.identity}
+        onBack={navigateBack}
+        state={{
+          status: "live-only",
+          actors: liveActors,
+          message:
+            "The live Investigation actor is visible while the exact stage execution projection is still starting. No latest DB execution is inferred.",
+        }}
+      />
+    );
+  }
+
   if (!execution) {
     // The tool execution block can lag the Details click — `stage_run` is
     // loop-routed and long-running, so its requestId / timeline block may not
@@ -579,6 +803,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     const candidateStageRunReady = Boolean(
       stageRun && isAttackCandidateStageRunRows(stageRun.rows)
     );
+    const preparedActionOperationId = getPreparedActionOperationIdFromRows(stageRun?.rows ?? []);
     return (
       <div className="h-full flex flex-col bg-card">
         <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
@@ -591,8 +816,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             {t("ai.toolDetail.backToTerminal")}
           </button>
         </div>
-        {(companyStageRunReady || candidateStageRunReady) && stageRun ? (
-          <div className="flex-1 overflow-y-auto px-4 py-3">
+        {(companyStageRunReady || candidateStageRunReady || preparedActionOperationId) &&
+        stageRun ? (
+          <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               {candidateStageRunReady ? "Attack Analysts" : "Company Controllers"}
             </div>
@@ -608,6 +834,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
                 agentRequestIdsByWorker={stageTeamAgentRequestIds}
                 onDrillIn={handleDrillIntoOrg}
               />
+            )}
+            {preparedActionOperationId && (
+              <PendingPreparedActionPanel operationId={preparedActionOperationId} />
             )}
           </div>
         ) : (
@@ -678,6 +907,10 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     execution.result,
     stageRun?.rows ?? []
   );
+  const preparedActionOperationId =
+    candidateOperationId ??
+    getPreparedActionOperationIdFromRows(stageRun?.rows ?? []) ??
+    (candidateStageRun ? (candidateReviewHint?.operationId ?? null) : null);
   const backgroundJob = execution.backgroundRun
     ? (backgroundJobs.find((job) => job.jobId === execution.backgroundRun?.jobId) ?? null)
     : null;
@@ -797,9 +1030,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {candidateOperationId && (
+        {preparedActionOperationId && (
           <div className="border-b border-border/20 px-4 py-3">
-            <HypothesisRegistryAudit sessionId={sessionId} operationId={candidateOperationId} />
+            <PendingPreparedActionPanel operationId={preparedActionOperationId} />
           </div>
         )}
 

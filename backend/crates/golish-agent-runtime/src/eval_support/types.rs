@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use golish_core::events::AiEvent;
 
+use super::target_intel_goal_shadow::TargetIntelGoalShadowFixture;
+
 /// A tool call captured during eval execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalToolCall {
@@ -40,7 +42,7 @@ pub struct EvalAgentOutput {
 }
 
 /// Configuration for eval execution.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EvalConfig {
     /// Provider name for capability detection (e.g., "openai", "anthropic")
     pub provider_name: String,
@@ -52,6 +54,32 @@ pub struct EvalConfig {
     pub workspace: PathBuf,
     /// Whether to print live output (tool calls, reasoning, etc.)
     pub verbose: bool,
+    /// Explicit eval-only Target Intel Goal shadow. Production constructors
+    /// and ordinary eval defaults leave this absent.
+    pub target_intel_goal_shadow: Option<TargetIntelGoalShadowFixture>,
+    /// Optional fake-only host evidence adapter shared by fixture root and
+    /// SubAgent execution. Production configuration has no corresponding
+    /// constructor or environment fallback.
+    pub intel_public_adapter:
+        Option<std::sync::Arc<dyn golish_agent_kit::tool_executors::IntelPublicEvidenceAdapter>>,
+}
+
+impl std::fmt::Debug for EvalConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EvalConfig")
+            .field("provider_name", &self.provider_name)
+            .field("model_name", &self.model_name)
+            .field("require_hitl", &self.require_hitl)
+            .field("workspace", &self.workspace)
+            .field("verbose", &self.verbose)
+            .field("target_intel_goal_shadow", &self.target_intel_goal_shadow)
+            .field(
+                "intel_public_adapter_configured",
+                &self.intel_public_adapter.is_some(),
+            )
+            .finish()
+    }
 }
 
 impl Default for EvalConfig {
@@ -62,6 +90,8 @@ impl Default for EvalConfig {
             require_hitl: false,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             verbose: false,
+            target_intel_goal_shadow: None,
+            intel_public_adapter: None,
         }
     }
 }
@@ -75,6 +105,8 @@ impl EvalConfig {
             require_hitl: false,
             workspace,
             verbose: false,
+            target_intel_goal_shadow: None,
+            intel_public_adapter: None,
         }
     }
 
@@ -86,6 +118,8 @@ impl EvalConfig {
             require_hitl: false,
             workspace,
             verbose: false,
+            target_intel_goal_shadow: None,
+            intel_public_adapter: None,
         }
     }
 
@@ -97,12 +131,33 @@ impl EvalConfig {
             require_hitl: false,
             workspace,
             verbose: false,
+            target_intel_goal_shadow: None,
+            intel_public_adapter: None,
         }
     }
 
     /// Enable verbose output.
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
+        self
+    }
+
+    /// Enables the strictly passive fake-transport shadow fixture. This
+    /// method exists only on eval configuration and cannot reinterpret a
+    /// production or already-created operation.
+    pub fn with_target_intel_goal_shadow_fixture(mut self) -> Self {
+        self.target_intel_goal_shadow = Some(TargetIntelGoalShadowFixture::strict_passive());
+        self
+    }
+
+    /// Inject the fake transport/evidence adapter used by the explicit shadow
+    /// fixture. Construction of the adapter itself rejects real transports.
+    pub fn with_intel_public_fixture_adapter(
+        mut self,
+        adapter: std::sync::Arc<dyn golish_agent_kit::tool_executors::IntelPublicEvidenceAdapter>,
+    ) -> Self {
+        self.target_intel_goal_shadow = Some(TargetIntelGoalShadowFixture::strict_passive());
+        self.intel_public_adapter = Some(adapter);
         self
     }
 }

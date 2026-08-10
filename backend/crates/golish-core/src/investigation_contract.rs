@@ -351,6 +351,26 @@ mod tests {
     }
 
     #[test]
+    fn investigation_rollout_consumers_share_the_single_mode_policy() {
+        for mode in InvestigationRolloutMode::ALL {
+            let policy = mode.policy();
+            let campaign_is_canonical =
+                policy.campaign_write_policy == CampaignWritePolicy::Canonical;
+            let registry_is_authoritative =
+                policy.canonical_writer == InvestigationAuthority::Registry;
+
+            assert_eq!(policy.gate_authority, policy.canonical_writer);
+            assert_eq!(campaign_is_canonical, registry_is_authoritative);
+            assert_eq!(policy.allow_prepared_action_jit, registry_is_authoritative);
+            assert_eq!(policy.allow_legacy_mutation, !registry_is_authoritative);
+            assert_eq!(
+                policy.legacy_projection == LegacyProjectionPolicy::HistoricalReadOnly,
+                mode == InvestigationRolloutMode::NewOnly,
+            );
+        }
+    }
+
+    #[test]
     fn legal_contract_mode_pairs_are_closed() {
         assert!(InvestigationContractVersion::LegacyCandidateV1
             .allows(InvestigationRolloutMode::LegacyOnly));

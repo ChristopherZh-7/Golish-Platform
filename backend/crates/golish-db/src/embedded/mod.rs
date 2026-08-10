@@ -85,6 +85,12 @@ impl EmbeddedPg {
                 if !Self::is_recoverable_setup_error(&first_err) {
                     return Err(first_err);
                 }
+                if !Self::automatic_pgdata_purge_allowed(&config.pg_data_dir) {
+                    return Err(anyhow::anyhow!(
+                        "PostgreSQL startup failed, and automatic recovery refused to replace an initialized data directory ({}). Stop the existing postmaster or recover this pgdata explicitly. Original error: {first_err}",
+                        config.pg_data_dir.display()
+                    ));
+                }
 
                 warn!(
                     error = %first_err,
@@ -212,6 +218,10 @@ impl EmbeddedPg {
             || msg.contains("PgStartFailure")
             // pg-embed wraps zip errors here when the cached download is partial.
             || msg.contains("invalid zip archive")
+    }
+
+    fn automatic_pgdata_purge_allowed(pg_data_dir: &std::path::Path) -> bool {
+        !pg_data_dir.join("PG_VERSION").is_file()
     }
 
     /// Delete the pg-embed binary cache and the pgdata directory so the
@@ -530,5 +540,25 @@ impl EmbeddedPg {
         if let Err(e) = self.pg.stop_db().await {
             warn!(error = %e, "Error stopping embedded PostgreSQL");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EmbeddedPg;
+
+    #[test]
+    fn automatic_recovery_never_replaces_initialized_pgdata() {
+        let initialized = tempfile::tempdir().expect("initialized pgdata fixture");
+        std::fs::write(initialized.path().join("PG_VERSION"), b"17\n")
+            .expect("write PG_VERSION marker");
+        assert!(!EmbeddedPg::automatic_pgdata_purge_allowed(
+            initialized.path()
+        ));
+
+        let half_initialized = tempfile::tempdir().expect("half-initialized pgdata fixture");
+        assert!(EmbeddedPg::automatic_pgdata_purge_allowed(
+            half_initialized.path()
+        ));
     }
 }

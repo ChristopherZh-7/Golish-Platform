@@ -1,8 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use uuid::Uuid;
 
 use golish_agent_kit::db_traits::{
-    RecordToolTruthShadowAssessment, SealToolTruthDenominatorRequest,
-    ToolTruthDenominatorSourceRef, ToolTruthDenominatorView,
+    EnumerationFrozenRootMemberView, RecordToolTruthShadowAssessment,
+    SealToolTruthDenominatorRequest, ToolTruthDenominatorSourceRef, ToolTruthDenominatorView,
 };
 use golish_agent_kit::harness::tool_truth::{
     build_denominator_items, evaluate_shadow_tool_truth, DenominatorAsset, ToolTruthReceiptCoverage,
@@ -11,11 +13,415 @@ use golish_agent_kit::harness::StageKind;
 
 use super::GolishDbRepoProvider;
 
+#[derive(Debug, sqlx::FromRow)]
+struct HostStageRootItem {
+    denominator_id: Uuid,
+    project_path_at_freeze: String,
+    input_key: String,
+    target_id: Uuid,
+    exact_asset: String,
+    target_type: String,
+    technique: String,
+    expected_capability: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct HostStageOutcome {
+    asset: String,
+    technique: String,
+    outcome: String,
+    source: Option<String>,
+    evidence_ids: Vec<i64>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    seq: i64,
+}
+
+fn host_stage_terminal_observation(outcome: Option<&HostStageOutcome>) -> Option<&'static str> {
+    let outcome = outcome.filter(|row| !row.evidence_ids.is_empty())?;
+    match outcome.outcome.as_str() {
+        "found" => Some("found"),
+        // A producer-owned blocked result is terminal execution truth only when
+        // it carries current-run evidence.  The receipt records that the
+        // producer returned no positive match, while typed_landing and the raw
+        // witness retain the blocked outcome and its inconclusive residual.
+        "empty" | "not_applicable" | "blocked" => Some("no_match"),
+        _ => None,
+    }
+}
+
+fn host_stage_outcome_is_fresh(
+    outcome: &HostStageOutcome,
+    stage_started_at: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    outcome.updated_at >= stage_started_at
+}
+
+fn host_stage_outcome_for_item<'a>(
+    stage_kind: &str,
+    item: &HostStageRootItem,
+    items: &[HostStageRootItem],
+    outcomes: &'a [HostStageOutcome],
+) -> Option<&'a HostStageOutcome> {
+    let latest = |candidates: Vec<&'a HostStageOutcome>| {
+        candidates
+            .into_iter()
+            .max_by_key(|outcome| (outcome.updated_at, outcome.seq, outcome.asset.as_str()))
+    };
+    let exact = outcomes
+        .iter()
+        .filter(|outcome| outcome.technique == item.technique && outcome.asset == item.exact_asset)
+        .collect::<Vec<_>>();
+    if !exact.is_empty() {
+        return latest(exact);
+    }
+
+    if matches!(stage_kind, "enumeration" | "vuln_triage") {
+        if let Some(item_origin) = golish_pentest_domain::canonical_web_origin(&item.exact_asset) {
+            let canonical = outcomes
+                .iter()
+                .filter(|outcome| {
+                    outcome.technique == item.technique
+                        && golish_pentest_domain::canonical_web_origin(&outcome.asset)
+                            .is_some_and(|origin| origin.key == item_origin.key)
+                })
+                .collect::<Vec<_>>();
+            if !canonical.is_empty() {
+                return latest(canonical);
+            }
+        }
+    }
+
+    if stage_kind != "vuln_triage" || !item.target_type.eq_ignore_ascii_case("domain") {
+        return None;
+    }
+    let domain_key = golish_pentest_domain::canonical_asset_key(&item.exact_asset)?.key;
+    let sibling_origins = items
+        .iter()
+        .filter(|sibling| sibling.target_type.eq_ignore_ascii_case("url"))
+        .filter(|sibling| {
+            golish_pentest_domain::canonical_asset_key(&sibling.exact_asset)
+                .is_some_and(|key| key.key == domain_key)
+        })
+        .filter_map(|sibling| {
+            golish_pentest_domain::canonical_web_origin(&sibling.exact_asset)
+                .map(|origin| origin.key)
+        })
+        .collect::<BTreeSet<_>>();
+    if sibling_origins.len() != 1 {
+        return None;
+    }
+    let sibling_origin = sibling_origins.first()?;
+    latest(
+        outcomes
+            .iter()
+            .filter(|outcome| {
+                outcome.technique == item.technique
+                    && golish_pentest_domain::canonical_web_origin(&outcome.asset)
+                        .is_some_and(|origin| origin.key == *sibling_origin)
+            })
+            .collect(),
+    )
+}
+
 pub(super) fn stable_denominator_seal_request(stage_execution_id: Uuid, source_id: Uuid) -> Uuid {
     Uuid::new_v5(&stage_execution_id, source_id.as_bytes())
 }
 
 impl GolishDbRepoProvider {
+    pub(super) async fn tool_truth_finalize_stage_root_impl(
+        &self,
+        mut request: golish_agent_kit::db_traits::FinalizeStageToolTruthRequest,
+    ) -> anyhow::Result<golish_agent_kit::db_traits::StageToolTruthCloseoutView> {
+        anyhow::ensure!(
+            matches!(
+                request.stage_kind.as_str(),
+                "external_attack_surface" | "enumeration" | "vuln_triage"
+            ),
+            "TOOL_TRUTH_HOST_STAGE_KIND_UNSUPPORTED"
+        );
+        request
+            .outcome_run_ids
+            .push(request.operation_id.to_string());
+        request.outcome_run_ids.sort();
+        request.outcome_run_ids.dedup();
+        anyhow::ensure!(
+            !request.outcome_run_ids.is_empty()
+                && request
+                    .outcome_run_ids
+                    .iter()
+                    .all(|run_id| !run_id.trim().is_empty()),
+            "TOOL_TRUTH_HOST_STAGE_OUTCOME_RUN_INVALID"
+        );
+
+        let items = sqlx::query_as::<_, HostStageRootItem>(
+            r#"SELECT denominator.id AS denominator_id,
+                      denominator.project_path_at_freeze,
+                      item.input_key,item.target_id,item.exact_asset,
+                      target.target_type::text AS target_type,item.technique,
+                      item.expected_capability
+                 FROM coverage_denominators denominator
+                 JOIN tool_truth_execution_authorities authority
+                   ON authority.id=denominator.execution_authority_id
+                 JOIN coverage_denominator_items item
+                   ON item.denominator_id=denominator.id
+                 JOIN targets target ON target.id=item.target_id
+                WHERE denominator.operation_id=$1
+                  AND denominator.organization_id=$2
+                  AND denominator.stage_execution_id=$3
+                  AND denominator.stage_kind=$4
+                  AND denominator.denominator_kind='root'
+                  AND denominator.sealed_at IS NOT NULL
+                  AND authority.execution_owner_kind='host_stage'
+                  AND authority.execution_source_kind='stage_unit'
+                  AND authority.stage_run_unit_id=$5
+                ORDER BY item.ordinal"#,
+        )
+        .bind(request.operation_id)
+        .bind(request.organization_id)
+        .bind(request.stage_execution_id)
+        .bind(&request.stage_kind)
+        .bind(request.stage_run_unit_id)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        anyhow::ensure!(!items.is_empty(), "TOOL_TRUTH_HOST_STAGE_ROOT_MISSING");
+        let denominator_ids = items
+            .iter()
+            .map(|item| item.denominator_id)
+            .collect::<BTreeSet<_>>();
+        let project_paths = items
+            .iter()
+            .map(|item| item.project_path_at_freeze.as_str())
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            denominator_ids.len() == 1 && project_paths.len() == 1,
+            "TOOL_TRUTH_HOST_STAGE_ROOT_AMBIGUOUS"
+        );
+        let denominator_id = *denominator_ids
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_HOST_STAGE_ROOT_MISSING"))?;
+        let project_root = std::fs::canonicalize(
+            project_paths
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_HOST_STAGE_PROJECT_MISSING"))?,
+        )?;
+        let assets = items
+            .iter()
+            .map(|item| item.exact_asset.clone())
+            .collect::<Vec<_>>();
+        let target_types = items
+            .iter()
+            .map(|item| item.target_type.clone())
+            .collect::<Vec<_>>();
+        let found = golish_db::repo::coverage_truth::coverage_truth_facts(
+            self.pool.as_ref(),
+            Some(request.organization_id),
+            &assets,
+            &target_types,
+            Some(request.stage_started_at),
+        )
+        .await?
+        .into_iter()
+        .map(|(asset, technique)| (asset, technique.to_string()))
+        .collect::<BTreeSet<_>>();
+        let outcomes = sqlx::query_as::<_, HostStageOutcome>(
+            r#"SELECT DISTINCT ON (asset,technique)
+                      asset,technique,outcome,source,evidence_ids,updated_at,seq
+                 FROM technique_outcomes
+                WHERE organization_id=$1
+                  AND run_id=ANY($2)
+                ORDER BY asset,technique,updated_at DESC,seq DESC"#,
+        )
+        .bind(request.organization_id)
+        .bind(&request.outcome_run_ids)
+        .fetch_all(self.pool.as_ref())
+        .await?
+        .into_iter()
+        .filter(|outcome| host_stage_outcome_is_fresh(outcome, request.stage_started_at))
+        .collect::<Vec<_>>();
+
+        let resolved_outcomes = items
+            .iter()
+            .map(|item| host_stage_outcome_for_item(&request.stage_kind, item, &items, &outcomes))
+            .collect::<Vec<_>>();
+
+        let mut observations = Vec::with_capacity(items.len());
+        let mut witness_items = Vec::with_capacity(items.len());
+        let mut gaps = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let outcome = resolved_outcomes[index];
+            let observation_state =
+                if found.contains(&(item.exact_asset.clone(), item.technique.clone())) {
+                    "found"
+                } else {
+                    host_stage_terminal_observation(outcome).unwrap_or("indeterminate")
+                };
+            if observation_state == "indeterminate" {
+                gaps.push(format!(
+                    "{}:{}:{}",
+                    item.exact_asset, item.technique, item.expected_capability
+                ));
+            }
+            observations.push(
+                golish_db::repo::capability_execution_receipts::TargetIntelInputObservation {
+                    input_key: item.input_key.clone(),
+                    technique: item.technique.clone(),
+                    observation_state: observation_state.to_string(),
+                },
+            );
+            witness_items.push(serde_json::json!({
+                "input_key": item.input_key,
+                "target_id": item.target_id,
+                "exact_asset": item.exact_asset,
+                "target_type": item.target_type,
+                "technique": item.technique,
+                "expected_capability": item.expected_capability,
+                "observation_state": observation_state,
+                "producer_outcome": outcome.map(|row| row.outcome.as_str()),
+                "producer_source": outcome.and_then(|row| row.source.as_deref()),
+                "evidence_ids": outcome.map(|row| row.evidence_ids.as_slice()).unwrap_or(&[]),
+            }));
+        }
+        anyhow::ensure!(
+            gaps.is_empty(),
+            "TOOL_TRUTH_HOST_STAGE_INCOMPLETE: {}",
+            gaps.join(",")
+        );
+
+        let mut receipt_ids = Vec::new();
+        let mut by_capability = BTreeMap::<String, Vec<usize>>::new();
+        for (index, item) in items.iter().enumerate() {
+            by_capability
+                .entry(item.expected_capability.clone())
+                .or_default()
+                .push(index);
+        }
+        for (capability, indexes) in by_capability {
+            let blocked_input_count = indexes
+                .iter()
+                .filter(|index| {
+                    resolved_outcomes[**index].is_some_and(|outcome| {
+                        outcome.outcome == "blocked" && !outcome.evidence_ids.is_empty()
+                    })
+                })
+                .count();
+            let policy = golish_db::repo::capability_execution_receipts::seal_host_stage_reconciliation_policy(
+                self.pool.as_ref(),
+                &golish_db::repo::capability_execution_receipts::SealHostStageReconciliationPolicy {
+                    denominator_id,
+                    capability: capability.clone(),
+                },
+            )
+            .await?;
+            let receipt_id = Uuid::new_v5(
+                &denominator_id,
+                format!("host-stage-reconciliation:{capability}:v1").as_bytes(),
+            );
+            let receipt = match golish_db::repo::capability_execution_receipts::begin_managed_claim(
+                self.pool.as_ref(),
+                &golish_db::repo::capability_execution_receipts::BeginManagedCapabilityReceipt {
+                    id: receipt_id,
+                    denominator_id,
+                    capability: capability.clone(),
+                    attempt_ordinal: 1,
+                    destination_policy_id: policy.id,
+                },
+            )
+            .await?
+            {
+                golish_db::repo::capability_execution_receipts::ManagedReceiptBeginOutcome::Created(row)
+                | golish_db::repo::capability_execution_receipts::ManagedReceiptBeginOutcome::InFlight(row) => row,
+                golish_db::repo::capability_execution_receipts::ManagedReceiptBeginOutcome::TerminalReplay(row) => {
+                    anyhow::ensure!(
+                        row.reconciliation_state == "consistent"
+                            && row.coverage_extent == "complete",
+                        "TOOL_TRUTH_HOST_STAGE_RECEIPT_REPLAY_INVALID"
+                    );
+                    receipt_ids.push(row.id);
+                    continue;
+                }
+            };
+            let capability_witness = serde_json::to_vec(&serde_json::json!({
+                "schema": "tool_truth_host_stage_reconciliation_v1",
+                "operation_id": request.operation_id,
+                "organization_id": request.organization_id,
+                "stage_execution_id": request.stage_execution_id,
+                "stage_run_unit_id": request.stage_run_unit_id,
+                "stage_kind": request.stage_kind,
+                "denominator_id": denominator_id,
+                "capability": capability,
+                "items": indexes
+                    .iter()
+                    .map(|index| witness_items[*index].clone())
+                    .collect::<Vec<_>>(),
+            }))?;
+            let byte_count = i64::try_from(capability_witness.len())?;
+            let raw_witness = super::recon::seal_tool_truth_witness(
+                &project_root,
+                request.operation_id,
+                receipt.id,
+                &capability_witness,
+                byte_count,
+                false,
+            )?;
+            let input_observations = indexes
+                .iter()
+                .map(|index| observations[*index].clone())
+                .collect::<Vec<_>>();
+            let normalized_record_count = i64::try_from(
+                input_observations
+                    .iter()
+                    .filter(|observation| observation.observation_state == "found")
+                    .count(),
+            )?;
+            let finalized =
+                golish_db::repo::capability_execution_receipts::finalize_host_stage_receipt(
+                    self.pool.as_ref(),
+                    &golish_db::repo::capability_execution_receipts::FinalizeTargetIntelReceipt {
+                        receipt_id: receipt.id,
+                        expected_row_version: receipt.row_version,
+                        attempt_fence: None,
+                        raw_witness: raw_witness.clone(),
+                        network_hops: Vec::new(),
+                        request_count: 0,
+                        response_byte_count: raw_witness.stored_byte_count,
+                        wall_clock_ms: 0,
+                        retry_count: 0,
+                        parser_complete: true,
+                        normalized_record_count,
+                        input_observations,
+                        typed_landing: serde_json::json!({
+                        "schema": "tool_truth_host_stage_reconciliation_v1",
+                        "stage_kind": request.stage_kind,
+                        "denominator_id": denominator_id,
+                        "capability": capability,
+                            "state": "reconciled",
+                            "blocked_input_count": blocked_input_count,
+                            "security_interpretation": if blocked_input_count > 0 {
+                                "inconclusive"
+                            } else {
+                                "not_assessed"
+                            },
+                        }),
+                        failure_reason_code: None,
+                    },
+                )
+                .await?;
+            anyhow::ensure!(
+                finalized.reconciliation_state == "consistent"
+                    && finalized.coverage_extent == "complete",
+                "TOOL_TRUTH_HOST_STAGE_RECEIPT_NOT_FRESH"
+            );
+            receipt_ids.push(finalized.id);
+        }
+        receipt_ids.sort();
+        Ok(golish_agent_kit::db_traits::StageToolTruthCloseoutView {
+            denominator_id,
+            expected_input_count: i64::try_from(items.len())?,
+            finalized_receipt_count: i64::try_from(receipt_ids.len())?,
+            receipt_ids,
+        })
+    }
+
     pub(super) async fn tool_truth_seal_denominator_impl(
         &self,
         request: SealToolTruthDenominatorRequest,
@@ -81,6 +487,111 @@ impl GolishDbRepoProvider {
                 .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_DENOMINATOR_UNSEALED"))?,
             denominator_hash: row.denominator_hash,
         })
+    }
+
+    pub(super) async fn enumeration_frozen_root_members_impl(
+        &self,
+        operation_id: Uuid,
+        organization_id: Uuid,
+        stage_execution_id: Uuid,
+        stage_run_unit_id: Uuid,
+    ) -> anyhow::Result<Vec<EnumerationFrozenRootMemberView>> {
+        let stable_seal_request_id =
+            stable_denominator_seal_request(stage_execution_id, stage_run_unit_id);
+        let mut tx = self.pool.begin().await?;
+        let (denominator_id, member_count) = sqlx::query_as::<_, (Uuid, Option<i64>)>(
+            r#"SELECT denominator.id,denominator.member_count
+                  FROM coverage_denominators denominator
+                  JOIN tool_truth_execution_authorities authority
+                    ON authority.id=denominator.execution_authority_id
+                  JOIN stage_run_units unit
+                    ON unit.id=$4
+                   AND unit.operation_id=denominator.operation_id
+                   AND unit.stage_execution_id=denominator.stage_execution_id
+                   AND unit.scope_snapshot_id=denominator.scope_snapshot_id
+                   AND unit.organization_id=denominator.organization_id
+                   AND unit.stage_kind=denominator.stage_kind
+                 WHERE denominator.operation_id=$1
+                   AND denominator.organization_id=$2
+                   AND denominator.stage_execution_id=$3
+                   AND denominator.stage_kind='enumeration'
+                   AND denominator.stable_seal_request_id=$5
+                   AND denominator.denominator_kind='root'
+                   AND denominator.sealed_at IS NOT NULL
+                   AND authority.stage_run_unit_id=$4
+                   AND authority.execution_owner_kind='host_stage'
+                 FOR SHARE OF denominator,authority,unit"#,
+        )
+        .bind(operation_id)
+        .bind(organization_id)
+        .bind(stage_execution_id)
+        .bind(stage_run_unit_id)
+        .bind(stable_seal_request_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("ENUMERATION_FROZEN_ROOT_MISSING"))?;
+        let rows = sqlx::query_as::<_, (Option<Uuid>, String, String, String)>(
+            r#"SELECT target_id,exact_asset,technique,expected_capability
+                  FROM coverage_denominator_items
+                 WHERE denominator_id=$1
+                 ORDER BY target_id,exact_asset,technique
+                 FOR SHARE"#,
+        )
+        .bind(denominator_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        anyhow::ensure!(
+            member_count == i64::try_from(rows.len()).ok(),
+            "ENUMERATION_FROZEN_ROOT_MEMBER_COUNT_DRIFT"
+        );
+
+        let required_axes = [
+            "GOLISH-ENUM-DIR",
+            "GOLISH-ENUM-JS",
+            "GOLISH-ENUM-JSAPI",
+            "GOLISH-ENUM-PARAM",
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        let mut axes_by_subject =
+            std::collections::BTreeMap::<(Uuid, String), std::collections::BTreeSet<String>>::new();
+        let mut members = Vec::with_capacity(rows.len());
+        for (target_id, exact_origin, technique, expected_capability) in rows {
+            let target_id = target_id
+                .filter(|target_id| !target_id.is_nil())
+                .ok_or_else(|| anyhow::anyhow!("ENUMERATION_FROZEN_ROOT_TARGET_MISSING"))?;
+            let canonical = golish_pentest_domain::canonical_web_origin(&exact_origin)
+                .filter(|origin| origin.key == exact_origin)
+                .ok_or_else(|| anyhow::anyhow!("ENUMERATION_FROZEN_ROOT_ORIGIN_INVALID"))?;
+            anyhow::ensure!(
+                required_axes.contains(technique.as_str())
+                    && !expected_capability.trim().is_empty(),
+                "ENUMERATION_FROZEN_ROOT_AXIS_INVALID"
+            );
+            let inserted = axes_by_subject
+                .entry((target_id, canonical.key.clone()))
+                .or_default()
+                .insert(technique.clone());
+            anyhow::ensure!(inserted, "ENUMERATION_FROZEN_ROOT_DUPLICATE_AXIS");
+            members.push(EnumerationFrozenRootMemberView {
+                target_id,
+                exact_origin: canonical.key,
+                technique,
+                expected_capability,
+            });
+        }
+        anyhow::ensure!(
+            !axes_by_subject.is_empty()
+                && axes_by_subject.values().all(|axes| {
+                    axes.iter()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        == required_axes
+                }),
+            "ENUMERATION_FROZEN_ROOT_AXIS_CLOSURE_MISMATCH"
+        );
+        tx.commit().await?;
+        Ok(members)
     }
 
     pub(super) async fn seal_wave_before_dispatch(
@@ -393,6 +904,100 @@ mod tests {
             .local_addr()
             .expect("read reserved port")
             .port()
+    }
+
+    #[test]
+    fn host_stage_blocked_is_terminal_only_with_evidence() {
+        let updated_at = chrono::Utc::now();
+        let mut outcome = HostStageOutcome {
+            asset: "https://example.test".to_string(),
+            technique: "WSTG-INFO".to_string(),
+            outcome: "blocked".to_string(),
+            source: Some("vuln_nuclei_general".to_string()),
+            evidence_ids: Vec::new(),
+            updated_at,
+            seq: 1,
+        };
+        assert_eq!(host_stage_terminal_observation(Some(&outcome)), None);
+        outcome.evidence_ids.push(42);
+        assert_eq!(
+            host_stage_terminal_observation(Some(&outcome)),
+            Some("no_match")
+        );
+        outcome.outcome = "partial".to_string();
+        assert_eq!(host_stage_terminal_observation(Some(&outcome)), None);
+    }
+
+    #[test]
+    fn host_stage_recovery_uses_the_current_refresh_not_the_original_creation_time() {
+        let stage_started_at = chrono::Utc::now();
+        let outcome = HostStageOutcome {
+            asset: "https://example.test:443".to_string(),
+            technique: "GOLISH-ENUM-JS".to_string(),
+            outcome: "found".to_string(),
+            source: Some("browser_collect_js_api".to_string()),
+            evidence_ids: vec![42],
+            updated_at: stage_started_at + chrono::Duration::seconds(1),
+            seq: 1,
+        };
+
+        assert!(host_stage_outcome_is_fresh(&outcome, stage_started_at));
+        assert!(!host_stage_outcome_is_fresh(
+            &outcome,
+            outcome.updated_at + chrono::Duration::seconds(1),
+        ));
+    }
+
+    #[test]
+    fn vuln_host_stage_resolves_canonical_origin_and_only_one_domain_alias() {
+        let denominator_id = Uuid::new_v4();
+        let item = |exact_asset: &str, target_type: &str| HostStageRootItem {
+            denominator_id,
+            project_path_at_freeze: "/tmp/tool-truth-origin".to_string(),
+            input_key: format!("{target_type}:{exact_asset}"),
+            target_id: Uuid::new_v4(),
+            exact_asset: exact_asset.to_string(),
+            target_type: target_type.to_string(),
+            technique: "WSTG-INFO".to_string(),
+            expected_capability: "vuln.nuclei_general".to_string(),
+        };
+        let items = vec![
+            item("https://moresec.cn", "url"),
+            item("moresec.cn", "domain"),
+        ];
+        let outcomes = vec![HostStageOutcome {
+            asset: "https://moresec.cn:443".to_string(),
+            technique: "WSTG-INFO".to_string(),
+            outcome: "blocked".to_string(),
+            source: Some("vuln_nuclei_general".to_string()),
+            evidence_ids: vec![42],
+            updated_at: chrono::Utc::now(),
+            seq: 1,
+        }];
+
+        assert_eq!(
+            host_stage_outcome_for_item("vuln_triage", &items[0], &items, &outcomes)
+                .map(|outcome| outcome.asset.as_str()),
+            Some("https://moresec.cn:443")
+        );
+        assert_eq!(
+            host_stage_outcome_for_item("vuln_triage", &items[1], &items, &outcomes)
+                .map(|outcome| outcome.asset.as_str()),
+            Some("https://moresec.cn:443")
+        );
+
+        let ambiguous_items = vec![
+            item("https://moresec.cn", "url"),
+            item("http://moresec.cn", "url"),
+            item("moresec.cn", "domain"),
+        ];
+        assert!(host_stage_outcome_for_item(
+            "vuln_triage",
+            &ambiguous_items[2],
+            &ambiguous_items,
+            &outcomes,
+        )
+        .is_none());
     }
 
     #[test]

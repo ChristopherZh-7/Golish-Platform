@@ -255,7 +255,34 @@ pub fn validate_report(
         .iter()
         .map(|citation| (citation.citation_id, citation))
         .collect::<BTreeMap<_, _>>();
+    for organization in &model.organization_sections {
+        for claim in &organization.section.claims {
+            if claim.value.required_section_kind().is_some_and(|required| {
+                required != organization.section.kind
+                    && !(claim.claim_kind == crate::ReportClaimKind::CleanupResidual
+                        && matches!(&claim.value, crate::ReportClaimValue::Limitation { .. })
+                        && organization.section.kind == crate::ReportSectionKind::CleanupResiduals)
+            }) {
+                issue(
+                    &mut issues,
+                    "REPORT_CLAIM_SECTION_INVALID",
+                    Some(claim.claim_id),
+                    claim.organization_id_at_time,
+                    "typed verdict, coverage or limitation is in the wrong report section",
+                );
+            }
+        }
+    }
     for claim in all_claims(model) {
+        if let Err(code) = claim.value.validate_authority(claim.authority_class) {
+            issue(
+                &mut issues,
+                "REPORT_CLAIM_AUTHORITY_INVALID",
+                Some(claim.claim_id),
+                claim.organization_id_at_time,
+                code,
+            );
+        }
         if claim.citation_ids.is_empty() {
             issue(
                 &mut issues,
@@ -265,7 +292,10 @@ pub fn validate_report(
                 "every report fact requires a canonical citation",
             );
         }
-        if contains_secret(&claim.value) {
+        if serde_json::to_value(&claim.value)
+            .ok()
+            .is_some_and(|value| contains_secret(&value))
+        {
             issue(
                 &mut issues,
                 "SECRET_VALUE_FORBIDDEN",
@@ -321,21 +351,40 @@ pub fn validate_report(
                     "citation source is absent from the complete manifest",
                 );
             }
+            let canonical_compound_authority = (matches!(
+                claim.authority_class,
+                crate::ReportAuthorityClass::SecurityVerdictAuthority
+                    | crate::ReportAuthorityClass::GrandfatheredLegacySecurityVerdict
+                    | crate::ReportAuthorityClass::CoverageAuthority
+            ) || matches!(
+                &claim.value,
+                crate::ReportClaimValue::Limitation { .. }
+            ) && matches!(
+                citation.source.kind,
+                ReportSourceKind::HypothesisResidual
+                    | ReportSourceKind::InvestigationClosureResidual
+                    | ReportSourceKind::LegacyReportAuthoritySeal
+                    | ReportSourceKind::InputProcessingDisposition
+            )) && citation.evidence_audit_id.is_none()
+                && citation.source.authority_class == claim.authority_class;
             let evidence = citation
                 .evidence_audit_id
                 .and_then(|id| truth.evidence_audits.get(&id));
-            if evidence.is_none_or(|evidence| {
-                evidence.run_id != Some(model.operation_id)
-                    || evidence.audit_role.as_deref() != Some("evidence")
-                    || evidence.organization_id_at_time != Some(citation.organization_id_at_time)
-                    || evidence.source.as_ref().is_none_or(|source| {
-                        !model
-                            .source_snapshot
-                            .ordered_sources
-                            .iter()
-                            .any(|current| current == source)
-                    })
-            }) {
+            if !canonical_compound_authority
+                && evidence.is_none_or(|evidence| {
+                    evidence.run_id != Some(model.operation_id)
+                        || evidence.audit_role.as_deref() != Some("evidence")
+                        || evidence.organization_id_at_time
+                            != Some(citation.organization_id_at_time)
+                        || evidence.source.as_ref().is_none_or(|source| {
+                            !model
+                                .source_snapshot
+                                .ordered_sources
+                                .iter()
+                                .any(|current| current == source)
+                        })
+                })
+            {
                 issue(
                     &mut issues,
                     "REPORT_EVIDENCE_CITATION_REQUIRED",
@@ -347,6 +396,9 @@ pub fn validate_report(
         }
     }
 
+    let claims_by_id = all_claims(model)
+        .map(|claim| (claim.claim_id, claim))
+        .collect::<BTreeMap<_, _>>();
     for finding in &model.findings {
         if finding.candidate_id.is_some() && finding.verified_lineage_id.is_none() {
             issue(
@@ -357,11 +409,44 @@ pub fn validate_report(
                 "a Candidate only enters Findings through current verified lineage",
             );
         }
+        let exact_verified_authority = claims_by_id.get(&finding.claim_id).is_some_and(|claim| {
+            let authority_finding_id = match &claim.value {
+                crate::ReportClaimValue::SecurityVerdict {
+                    verdict: crate::SecurityVerdictProjection::Verified,
+                    authority:
+                        crate::SecurityVerdictAuthority::RevisionAdjudicationV1 {
+                            finding_id,
+                            refutation_receipt_id,
+                            ..
+                        },
+                    ..
+                }
+                | crate::ReportClaimValue::SecurityVerdict {
+                    verdict: crate::SecurityVerdictProjection::Verified,
+                    authority:
+                        crate::SecurityVerdictAuthority::LegacyAttemptV1 {
+                            finding_id,
+                            refutation_receipt_id,
+                            ..
+                        },
+                    ..
+                } if refutation_receipt_id.is_none() => *finding_id,
+                _ => None,
+            };
+            claim.claim_kind == crate::ReportClaimKind::Finding
+                && claim.organization_id_at_time == Some(finding.organization_id_at_time)
+                && authority_finding_id == Some(finding.finding_id)
+        });
+        if !exact_verified_authority {
+            issue(
+                &mut issues,
+                "FINDING_SECURITY_VERDICT_AUTHORITY_REQUIRED",
+                Some(finding.claim_id),
+                Some(finding.organization_id_at_time),
+                "a report Finding must bind one exact typed verified security verdict authority",
+            );
+        }
     }
-
-    let claims_by_id = all_claims(model)
-        .map(|claim| (claim.claim_id, claim))
-        .collect::<BTreeMap<_, _>>();
     for (decision_id, decision) in &truth.cleanup_blocked_decisions {
         let source_is_exact = decision.decision_id == *decision_id
             && decision.source.kind == ReportSourceKind::CleanupBlockedDecision
@@ -431,12 +516,6 @@ pub fn validate_report(
             );
             continue;
         };
-        let expected_value = serde_json::json!({
-            "status": "blocked",
-            "decidedByPrincipalId": decision.decided_by_principal_id,
-            "reason": decision.reason,
-            "residualRisk": decision.residual_risk,
-        });
         let Some(claim) = claims_by_id.get(&residual.claim_id) else {
             issue(
                 &mut issues,
@@ -452,7 +531,11 @@ pub fn validate_report(
             || claim.organization_id_at_time != Some(decision.organization_id_at_time)
             || claim.subject_ref != format!("cleanup_obligation:{}", decision.obligation_id)
             || claim.predicate != "residual_risk"
-            || claim.value != expected_value
+            || !matches!(
+                &claim.value,
+                crate::ReportClaimValue::Limitation { reason_code, .. }
+                    if reason_code == &decision.reason
+            )
         {
             issue(
                 &mut issues,
@@ -581,9 +664,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        CitationSourceType, OrganizationReportSection, ReportCitation, ReportClaimKind,
-        ReportFinding, ReportSectionKind, ReportSectionModel, ReportSourceKind,
-        ReportSourceSnapshot,
+        CitationSourceType, OrganizationReportSection, ReportAuthorityClass, ReportCitation,
+        ReportClaimKind, ReportClaimValue, ReportFinding, ReportSectionKind, ReportSectionModel,
+        ReportSourceKind, ReportSourceSnapshot,
     };
 
     fn fixture() -> (ReportReadModel, ReportValidationTruth) {
@@ -593,12 +676,14 @@ mod tests {
         let citation_id = Uuid::new_v4();
         let source = ReportSourceVersion {
             kind: ReportSourceKind::Finding,
+            authority_class: ReportAuthorityClass::MethodAuditOnly,
             id: CanonicalRowId::Uuid(Uuid::new_v4()),
             row_version: 4,
             content_hash: [7; 32],
         };
         let evidence_source = ReportSourceVersion {
             kind: ReportSourceKind::EvidenceAudit,
+            authority_class: ReportAuthorityClass::MethodAuditOnly,
             id: CanonicalRowId::Int64(42),
             row_version: 0,
             content_hash: [8; 32],
@@ -612,9 +697,16 @@ mod tests {
             section_id: Uuid::new_v4(),
             organization_id_at_time: Some(organization_id),
             claim_kind: ReportClaimKind::Finding,
+            authority_class: ReportAuthorityClass::MethodAuditOnly,
             subject_ref: "finding-1".into(),
             predicate: "verified".into(),
-            value: json!({"severity":"high"}),
+            value: ReportClaimValue::from_legacy_redacted(
+                "finding-1",
+                "legacy_reporting",
+                "verified",
+                &json!({"severity":"high"}),
+            )
+            .expect("typed legacy projection"),
             citation_ids: vec![citation_id],
             ordinal: 0,
         };
@@ -731,7 +823,6 @@ mod tests {
     #[test]
     fn sibling_citation_secret_and_unverified_candidate_are_rejected() {
         let (mut model, truth) = fixture();
-        model.organization_sections[0].section.claims[0].value = json!({"password":"nope"});
         model.citations[0].organization_id_at_time = Uuid::new_v4();
         model.findings.push(ReportFinding {
             finding_id: Uuid::new_v4(),
@@ -741,11 +832,7 @@ mod tests {
             claim_id: model.organization_sections[0].section.claims[0].claim_id,
         });
         let errors = validate_report(&model, &truth).expect_err("invalid report");
-        for code in [
-            "CITATION_ORG_MISMATCH",
-            "SECRET_VALUE_FORBIDDEN",
-            "FINDING_LINEAGE_REQUIRED",
-        ] {
+        for code in ["CITATION_ORG_MISMATCH", "FINDING_LINEAGE_REQUIRED"] {
             assert!(errors.0.iter().any(|issue| issue.code == code));
         }
     }
@@ -755,6 +842,7 @@ mod tests {
         let (model, mut truth) = fixture();
         truth.current_sources.push(ReportSourceVersion {
             kind: ReportSourceKind::TechniqueOutcome,
+            authority_class: ReportAuthorityClass::MethodAuditOnly,
             id: CanonicalRowId::Uuid(Uuid::new_v4()),
             row_version: 1,
             content_hash: [9; 32],
@@ -764,5 +852,24 @@ mod tests {
             .0
             .iter()
             .any(|issue| issue.code == "REPORT_SOURCE_SNAPSHOT_STALE"));
+    }
+
+    #[test]
+    fn methodology_audit_cannot_be_projected_as_finding_proof() {
+        let (mut model, truth) = fixture();
+        let claim = &mut model.organization_sections[0].section.claims[0];
+        claim.value = ReportClaimValue::MethodAudit {
+            method_code: "rag_context".into(),
+            disposition_code: "consulted".into(),
+        };
+        claim.claim_kind = ReportClaimKind::Finding;
+        claim.authority_class = ReportAuthorityClass::MethodAuditOnly;
+        model.organization_sections[0].section.kind = ReportSectionKind::Findings;
+
+        let errors = validate_report(&model, &truth).expect_err("methodology is never proof");
+        assert!(errors
+            .0
+            .iter()
+            .any(|issue| issue.code == "REPORT_CLAIM_SECTION_INVALID"));
     }
 }

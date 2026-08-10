@@ -22,8 +22,12 @@
         "kind": "native_provider",
         "provider_id": "shodan",
         "queries": [
-          { "query_type": "site", "template": "org:\"{{company_name}}\"" },
-          { "query_type": "domain", "template": "{{domain}}" }
+          { "query_type": "site", "template": "org:\"{{company_name}}\"", "applicable_pivot_kinds": ["company_name", "brand"], "wire_query_type": "org", "adapter_version": "semantic_literal.v1", "literal_encoder": "shodan_quoted_literal.v1" },
+          { "query_type": "domain", "template": "{{domain}}", "applicable_pivot_kinds": ["domain", "hostname"], "wire_query_type": "domain", "adapter_version": "semantic_literal.v1", "literal_encoder": "shodan_quoted_literal.v1" },
+          { "query_type": "site", "template": "{{company_name}}", "applicable_pivot_kinds": ["ip"], "wire_query_type": "site", "adapter_version": "semantic_literal.v1", "literal_encoder": "shodan_quoted_literal.v1" },
+          { "query_type": "cidr", "template": "{{company_name}}", "applicable_pivot_kinds": ["cidr"], "wire_query_type": "cidr", "adapter_version": "semantic_literal.v1", "literal_encoder": "shodan_quoted_literal.v1" },
+          { "query_type": "asn", "template": "{{company_name}}", "applicable_pivot_kinds": ["asn"], "wire_query_type": "asn", "adapter_version": "semantic_literal.v1", "literal_encoder": "shodan_quoted_literal.v1" },
+          { "query_type": "cert", "template": "{{company_name}}", "applicable_pivot_kinds": ["certificate"], "wire_query_type": "cert", "adapter_version": "semantic_literal.v1", "literal_encoder": "shodan_quoted_literal.v1" }
         ]
       }
     }

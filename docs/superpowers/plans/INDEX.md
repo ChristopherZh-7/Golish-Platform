@@ -52,6 +52,14 @@
 | 2026-07-29 | [hypothesis-registry-candidate-analysis](2026-07-29-hypothesis-registry-candidate-analysis.md) | ✅ |
 | 2026-07-29 | [verification-campaign-prepared-action-oracle](2026-07-29-verification-campaign-prepared-action-oracle.md) | ✅ |
 | 2026-07-29 | [investigation-workspace-reporting-rollout](2026-07-29-investigation-workspace-reporting-rollout.md) | ✅ |
+| 2026-08-02 | [au-bounded-third-recovery-and-output-headroom](2026-08-02-au-bounded-third-recovery-and-output-headroom.md) | ✅ |
+| 2026-08-02 | [candidate-technique-method-contracts](2026-08-02-candidate-technique-method-contracts.md) | 🚧 |
+| 2026-08-02 | [target-intel-goal-loop-shadow](2026-08-02-target-intel-goal-loop-shadow.md) | ✅ |
+| 2026-08-02 | [target-intel-goal-loop-audit-cutover](2026-08-02-target-intel-goal-loop-audit-cutover.md) | ✅ |
+| 2026-08-02 | [unified-visible-stage-workspace-mock](2026-08-02-unified-visible-stage-workspace-mock.md) | 🚧 |
+| 2026-08-02 | [enumeration-agent-team-js-api-analysis-v2](2026-08-02-enumeration-agent-team-js-api-analysis-v2.md) | 🚧 |
+| 2026-08-02 | [rag-first-unified-investigation-stage](2026-08-02-rag-first-unified-investigation-stage.md) | 🚧 |
+| 2026-08-04 | [unified-stage-smoke-closure](2026-08-04-unified-stage-smoke-closure.md) | 🚧 |
 
 ## 2. Crate-per-service / Servitization / 架构健康 / P0 契约
 
@@ -82,6 +90,7 @@
 
 | 日期 | 文档 | 状态 |
 |---|---|---|
+| 2026-08-04 | [scoping-and-autonomous-corporate-asset-discovery](2026-08-04-scoping-and-autonomous-corporate-asset-discovery.md) | 🚧 |
 | 2026-05-21 | [credential-capture-engine](2026-05-21-credential-capture-engine.md) | ✅ |
 | 2026-05-21 | [integrations](2026-05-21-integrations.md) | ✅ |
 | 2026-05-22 | [asset-intel-json-driven-providers](2026-05-22-asset-intel-json-driven-providers.md) | ⚠️ |

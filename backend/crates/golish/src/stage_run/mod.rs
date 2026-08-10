@@ -10,6 +10,7 @@
 //!
 //! See `docs/design/2026-06-06-headless-single-stage-runner.md`.
 
+mod campaign_authority;
 pub(crate) mod fleet;
 pub(crate) mod runtime_v2;
 /// Stage-agnostic per-org scheduling kernel (K-controlled concurrency, resume
@@ -17,8 +18,10 @@ pub(crate) mod runtime_v2;
 /// `stage_run`; exposed `pub` so its full tested API isn't flagged as crate-dead
 /// even though the CLI subsidiary fan-out currently drives only the checklist path.
 pub mod scheduler;
+mod scope_authority;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -58,11 +61,59 @@ fn resolve_slice(
     golish_agent_kit::harness::resolve_slice(profile_id, from, to).map_err(|e| anyhow!(e))
 }
 
+fn resolve_slice_for_topology(
+    profile_id: &str,
+    topology: golish_core::StageTopologyContract,
+    from: Option<StageKind>,
+    to: StageKind,
+) -> Result<(StageKind, HashSet<StageKind>)> {
+    golish_agent_kit::harness::resolve_slice_for_topology(profile_id, topology, from, to)
+        .map_err(|e| anyhow!(e))
+}
+
+/// Fresh operation creation freezes its topology inside the DB transaction.
+/// Preflight therefore accepts the union of the closed catalog without reading
+/// a mutable rollout default; execution immediately reloads and projects the
+/// one persisted topology.
+fn resolve_fresh_slice(
+    profile_id: &str,
+    from: Option<StageKind>,
+    to: StageKind,
+) -> Result<(StageKind, HashSet<StageKind>)> {
+    golish_agent_kit::harness::resolve_slice_for_any_topology(profile_id, from, to)
+        .map_err(|e| anyhow!(e))
+}
+
+fn validate_persisted_stage_topology(
+    topology: &str,
+    canonical_json: &str,
+    sha256: &str,
+    freeze_source: &str,
+    investigation_rollout_mode: &str,
+) -> Result<golish_core::FrozenStageTopologyContractMaterial> {
+    let topology = golish_core::StageTopologyContract::try_parse(topology)
+        .context("unknown persisted stage topology contract")?;
+    let freeze_source = golish_core::StageTopologyFreezeSource::try_parse(freeze_source)
+        .context("unknown persisted stage topology freeze source")?;
+    let rollout_mode = golish_core::InvestigationRolloutMode::try_from(investigation_rollout_mode)
+        .context("unknown persisted Investigation rollout mode")?;
+    let material = golish_core::FrozenStageTopologyContractMaterial {
+        topology,
+        canonical_json: canonical_json.to_string(),
+        sha256: sha256.to_string(),
+    };
+    material
+        .validate_for_operation(freeze_source, rollout_mode)
+        .context("invalid persisted operation stage topology witness")?;
+    Ok(material)
+}
+
 /// Resolve an explicit forward continuation for an exact resume. The default
 /// remains the persisted current stage only; callers must opt in to every
 /// wider testing slice without changing the operation's frozen profile/scope.
 fn resolve_resume_slice(
     profile_id: &str,
+    topology: golish_core::StageTopologyContract,
     current: StageKind,
     requested_to: Option<&str>,
 ) -> Result<(StageKind, HashSet<StageKind>)> {
@@ -72,8 +123,9 @@ fn resolve_resume_slice(
         })
         .transpose()?
         .unwrap_or(current);
-    let (entry, allowlist) = resolve_slice(profile_id, Some(current), terminal)
-        .context("resume refused: requested continuation is outside the frozen profile")?;
+    let (entry, allowlist) =
+        resolve_slice_for_topology(profile_id, topology, Some(current), terminal)
+            .context("resume refused: requested continuation is outside the frozen profile")?;
     anyhow::ensure!(
         entry == current,
         "resume refused: requested continuation does not begin at the persisted current stage"
@@ -83,6 +135,7 @@ fn resolve_resume_slice(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedForkSlice {
+    stage_topology_contract: golish_core::FrozenStageTopologyContractMaterial,
     entry_stage: StageKind,
     terminal_stage: StageKind,
     allowlist: HashSet<StageKind>,
@@ -93,7 +146,11 @@ struct ResolvedForkSlice {
 /// executed. A fork must name one exact stage or a fully-bounded forward
 /// range; its adopted inputs are the profile-DAG strict ancestors of the
 /// selected entry, in canonical graph order.
-fn resolve_stage_run_fork_slice(profile_id: &str, args: &Args) -> Result<ResolvedForkSlice> {
+fn resolve_stage_run_fork_slice(
+    profile_id: &str,
+    stage_topology_contract: golish_core::FrozenStageTopologyContractMaterial,
+    args: &Args,
+) -> Result<ResolvedForkSlice> {
     let parse =
         |value: &str| StageKind::try_parse(value).ok_or_else(|| anyhow!("unknown stage: {value}"));
     let (entry_stage, terminal_stage) = match (
@@ -115,7 +172,9 @@ fn resolve_stage_run_fork_slice(profile_id: &str, args: &Args) -> Result<Resolve
         "--stage-run-fork adopts Scoping from the source operation; use --stage-run to execute Scoping"
     );
 
-    let (resolved_entry, allowlist) = resolve_slice(profile_id, Some(entry_stage), terminal_stage)?;
+    let topology = stage_topology_contract.topology;
+    let (resolved_entry, allowlist) =
+        resolve_slice_for_topology(profile_id, topology, Some(entry_stage), terminal_stage)?;
     anyhow::ensure!(
         resolved_entry == entry_stage,
         "fork slice entry diverges from the requested stage"
@@ -123,9 +182,12 @@ fn resolve_stage_run_fork_slice(profile_id: &str, args: &Args) -> Result<Resolve
     let profile = golish_agent_kit::harness::load_embedded_profile(profile_id)
         .with_context(|| format!("load fork profile {profile_id}"))?
         .ok_or_else(|| anyhow!("unknown harness profile: {profile_id}"))?;
-    let graph = golish_agent_kit::harness::base_operation_graph()
-        .context("load operation graph for stage fork")?;
-    let dag = graph.project(&profile.allowed_stage_set());
+    let graph = golish_agent_kit::harness::operation_graph_for_topology(topology)
+        .context("load frozen operation graph for stage fork")?;
+    let allowed = profile
+        .allowed_stage_set_for_topology(topology)
+        .context("project fork profile through frozen topology")?;
+    let dag = graph.project(&allowed);
     let strict_ancestors = dag.ancestors_inclusive(entry_stage);
     let adopted_stage_kinds = dag
         .nodes
@@ -139,6 +201,7 @@ fn resolve_stage_run_fork_slice(profile_id: &str, args: &Args) -> Result<Resolve
     );
 
     Ok(ResolvedForkSlice {
+        stage_topology_contract,
         entry_stage,
         terminal_stage,
         allowlist,
@@ -284,6 +347,11 @@ struct ResumeCandidate {
     profile: String,
     current_stage: String,
     runtime_memory_contract: String,
+    investigation_rollout_mode: String,
+    stage_topology_contract: String,
+    stage_topology_canonical_json: String,
+    stage_topology_sha256: String,
+    stage_topology_freeze_source: String,
     engagement_org_id: Option<uuid::Uuid>,
     superseded_by: Option<uuid::Uuid>,
     state_blob: serde_json::Value,
@@ -330,6 +398,7 @@ struct ValidatedResumeTarget {
     model: Option<String>,
     operation_id: uuid::Uuid,
     runtime_memory_contract: golish_agent_kit::runtime_memory::RuntimeMemoryContract,
+    stage_topology_contract: golish_core::FrozenStageTopologyContractMaterial,
     authority: ResumeAuthorityKind,
     relational_stage_execution_id: Option<uuid::Uuid>,
     task_updated_at: chrono::DateTime<chrono::Utc>,
@@ -465,8 +534,21 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
             candidate.current_stage
         )
     })?;
-    resolve_slice(&candidate.profile, Some(stage), stage)
-        .context("resume refused: current stage is not allowed by the persisted profile")?;
+    let stage_topology_contract = validate_persisted_stage_topology(
+        &candidate.stage_topology_contract,
+        &candidate.stage_topology_canonical_json,
+        &candidate.stage_topology_sha256,
+        &candidate.stage_topology_freeze_source,
+        &candidate.investigation_rollout_mode,
+    )
+    .context("resume refused: persisted topology is invalid")?;
+    resolve_slice_for_topology(
+        &candidate.profile,
+        stage_topology_contract.topology,
+        Some(stage),
+        stage,
+    )
+    .context("resume refused: current stage is not allowed by the persisted profile")?;
     let runtime_memory_contract =
         runtime_v2::persisted_contract(&candidate.runtime_memory_contract)
             .context("resume refused: invalid frozen runtime-memory contract")?;
@@ -631,6 +713,7 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         model: candidate.model.clone(),
         operation_id: candidate.operation_id,
         runtime_memory_contract,
+        stage_topology_contract,
         authority,
         relational_stage_execution_id: candidate
             .relational_v2
@@ -812,6 +895,7 @@ async fn load_resume_rows(
 struct ValidatedStageForkSource {
     operation_id: uuid::Uuid,
     profile: String,
+    stage_topology_contract: golish_core::FrozenStageTopologyContractMaterial,
     project_scope_id: uuid::Uuid,
     source_scope_snapshot_id: uuid::Uuid,
     root_organization_id: uuid::Uuid,
@@ -929,8 +1013,21 @@ async fn validate_stage_fork_source(
         operation.superseded_by.is_none(),
         "stage fork source operation was superseded"
     );
-    resolve_slice(
+    let stage_topology_contract = validate_persisted_stage_topology(
+        &operation.stage_topology_contract,
+        &operation.stage_topology_canonical_json,
+        &operation.stage_topology_sha256,
+        &operation.stage_topology_freeze_source,
+        &operation.investigation_rollout_mode,
+    )
+    .context("stage fork source has an invalid frozen topology")?;
+    anyhow::ensure!(
+        stage_topology_contract == resolved.stage_topology_contract,
+        "stage fork source topology changed during preflight"
+    );
+    resolve_slice_for_topology(
         &operation.profile,
+        stage_topology_contract.topology,
         Some(resolved.entry_stage),
         resolved.terminal_stage,
     )
@@ -1032,6 +1129,7 @@ async fn validate_stage_fork_source(
     Ok(ValidatedStageForkSource {
         operation_id: operation.operation_id,
         profile: operation.profile,
+        stage_topology_contract,
         project_scope_id,
         source_scope_snapshot_id: frozen.snapshot.id,
         root_organization_id: frozen.snapshot.root_organization_id,
@@ -1143,6 +1241,11 @@ async fn resolve_stage_run_resume_target(
         profile: operation.profile,
         current_stage: operation.current_stage,
         runtime_memory_contract: operation.runtime_memory_contract,
+        investigation_rollout_mode: operation.investigation_rollout_mode,
+        stage_topology_contract: operation.stage_topology_contract,
+        stage_topology_canonical_json: operation.stage_topology_canonical_json,
+        stage_topology_sha256: operation.stage_topology_sha256,
+        stage_topology_freeze_source: operation.stage_topology_freeze_source,
         engagement_org_id: operation.engagement_org_id,
         superseded_by: operation.superseded_by,
         state_blob: operation.state_blob,
@@ -1269,6 +1372,818 @@ async fn repair_reaped_task(
     Ok(())
 }
 
+/// Test-database-only escape hatch for a stage whose sole Company Controller
+/// consumed its frozen producer retry budget while validating a code fix. The
+/// old execution is superseded atomically and its business facts are retained;
+/// normal resume authority then has to validate the newly seeded execution.
+/// This deliberately does not make terminal failed Workers generally
+/// resumable and cannot select the user's default database.
+#[allow(dead_code)]
+async fn restart_exhausted_test_stage_runtime(
+    pool: &sqlx::PgPool,
+    selector: &ResumeSelector,
+    expectations: &ResumeExpectations,
+    workspace: &Path,
+) -> Result<()> {
+    anyhow::ensure!(
+        expectations.has_complete_identity(),
+        "test exhausted-stage restart requires all expected identities"
+    );
+    let (session, task, operation) = load_resume_rows(pool, selector, expectations).await?;
+    let stage = StageKind::try_parse(&operation.current_stage).ok_or_else(|| {
+        anyhow!(
+            "test exhausted-stage restart refused unknown current stage {}",
+            operation.current_stage
+        )
+    })?;
+    let organization_id = operation.engagement_org_id.ok_or_else(|| {
+        anyhow!("test exhausted-stage restart requires an engagement organization")
+    })?;
+    anyhow::ensure!(
+        task.id == operation.operation_id && task.session_id == session.id,
+        "test exhausted-stage restart task/session/operation identity mismatch"
+    );
+    anyhow::ensure!(
+        operation.superseded_by.is_none()
+            && operation.runtime_memory_contract == "v2_only"
+            && matches!(
+                task.status,
+                golish_db::models::TaskStatus::Running | golish_db::models::TaskStatus::Waiting
+            ),
+        "test exhausted-stage restart requires one active V2-only operation"
+    );
+    let candidate = ResumeCandidate {
+        session_id: session.id,
+        chat_session_key: session.chat_session_key.clone(),
+        provider: session.provider.clone(),
+        model: session.model.clone(),
+        task_id: task.id,
+        task_session_id: task.session_id,
+        task_status: task.status,
+        task_result: task.result.clone(),
+        task_updated_at: task.updated_at,
+        operation_id: operation.operation_id,
+        profile: operation.profile.clone(),
+        current_stage: operation.current_stage.clone(),
+        runtime_memory_contract: operation.runtime_memory_contract.clone(),
+        investigation_rollout_mode: operation.investigation_rollout_mode.clone(),
+        stage_topology_contract: operation.stage_topology_contract.clone(),
+        stage_topology_canonical_json: operation.stage_topology_canonical_json.clone(),
+        stage_topology_sha256: operation.stage_topology_sha256.clone(),
+        stage_topology_freeze_source: operation.stage_topology_freeze_source.clone(),
+        engagement_org_id: operation.engagement_org_id,
+        superseded_by: operation.superseded_by,
+        state_blob: operation.state_blob.clone(),
+        worker_chains: Vec::new(),
+        relational_v2: None,
+        expectations: expectations.clone(),
+    };
+    validate_expected_identity(&candidate, stage, organization_id)?;
+
+    let frozen =
+        golish_db::repo::operation_org_scope::load_for_operation(pool, operation.operation_id)
+            .await
+            .map_err(anyhow::Error::new)?
+            .ok_or_else(|| anyhow!("test exhausted-stage restart requires frozen scope"))?;
+    let (canonical_workspace, _) =
+        golish_agent_kit::runtime_memory::canonical_workspace_identity(workspace)
+            .map_err(anyhow::Error::new)?;
+    anyhow::ensure!(
+        frozen.snapshot.sealed_at.is_some()
+            && frozen.snapshot.root_organization_id == organization_id
+            && frozen.snapshot.project_path_at_freeze == canonical_workspace
+            && !frozen.units.is_empty(),
+        "test exhausted-stage restart scope/workspace authority mismatch"
+    );
+
+    let executions =
+        golish_db::repo::stage_runs::list_for_operation(pool, operation.operation_id).await?;
+    let active = executions
+        .iter()
+        .filter(|execution| execution.status == "started")
+        .collect::<Vec<_>>();
+    let [active_execution] = active.as_slice() else {
+        anyhow::bail!(
+            "test exhausted-stage restart requires one active execution, found {}",
+            active.len()
+        );
+    };
+    anyhow::ensure!(
+        active_execution.stage_kind == stage.as_str(),
+        "test exhausted-stage restart active execution/stage mismatch"
+    );
+
+    let exhausted_controller_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM stage_team_plans plan
+             JOIN stage_run_units unit
+               ON unit.id=plan.stage_run_unit_id
+              AND unit.operation_id=plan.operation_id
+              AND unit.stage_execution_id=plan.stage_execution_id
+              AND unit.organization_id=plan.organization_id
+            WHERE plan.operation_id=$1
+              AND plan.stage_execution_id=$2
+              AND plan.stage_kind=$3
+              AND plan.dynamic_request_policy->>'coordination_mode'='company_controller'
+              AND (
+                (
+                  plan.requests_closed_at IS NULL
+                  AND unit.status='running'
+                  AND EXISTS (
+                    SELECT 1
+                      FROM stage_work_items item
+                      JOIN stage_worker_runs worker
+                        ON worker.work_item_id=item.id
+                       AND worker.operation_id=plan.operation_id
+                       AND worker.stage_execution_id=plan.stage_execution_id
+                       AND worker.stage_run_unit_id=plan.stage_run_unit_id
+                       AND worker.organization_id=plan.organization_id
+                      JOIN stage_worker_outputs output
+                        ON output.team_plan_id=plan.id
+                       AND output.work_item_id=item.id
+                       AND output.worker_run_id=worker.id
+                     WHERE item.team_plan_id=plan.id
+                       AND item.stable_key='leader:primary'
+                       AND item.role=plan.leader_role
+                       AND item.required_for_barrier=FALSE
+                       AND item.status='exhausted'
+                       AND item.terminal_at IS NOT NULL
+                       AND worker.status='failed'
+                       AND worker.lease_token IS NULL
+                       AND worker.active_tool_call_id IS NULL
+                       AND worker.checkpoint #>> '{stage_team_execution_failure,code}'=
+                           'stage_team_worker_lease_expired'
+                       AND output.business_disposition='blocked'
+                       AND output.canonical_output->>'kind'='stage_team_attempts_exhausted'
+                       AND output.canonical_output->>'failure_code'=
+                           'stage_team_worker_lease_expired'
+                       AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                           ANY(output.blocker_codes)
+                  )
+                )
+                OR
+                (
+                  plan.requests_closed_at IS NOT NULL
+                  AND plan.final_submitter_worker_run_id IS NULL
+                  AND unit.status='gate_blocked'
+                  AND EXISTS (
+                    SELECT 1 FROM stage_work_items leader
+                     WHERE leader.team_plan_id=plan.id
+                       AND leader.stable_key='leader:primary'
+                       AND leader.role=plan.leader_role
+                       AND leader.required_for_barrier=FALSE
+                       AND leader.status='superseded'
+                       AND leader.started_at IS NULL
+                       AND leader.terminal_at IS NOT NULL
+                       AND NOT EXISTS (
+                         SELECT 1 FROM stage_worker_runs leader_worker
+                          WHERE leader_worker.work_item_id=leader.id
+                       )
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                      FROM stage_work_items producer
+                      JOIN stage_worker_outputs output
+                        ON output.team_plan_id=plan.id
+                       AND output.work_item_id=producer.id
+                     WHERE producer.team_plan_id=plan.id
+                       AND producer.required_for_barrier=TRUE
+                       AND producer.status='exhausted'
+                       AND producer.terminal_at IS NOT NULL
+                       AND output.business_disposition='blocked'
+                       AND output.canonical_output->>'kind'='stage_team_attempts_exhausted'
+                       AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                           ANY(output.blocker_codes)
+                  )
+                )
+              )"#,
+    )
+    .bind(operation.operation_id)
+    .bind(active_execution.id)
+    .bind(stage.as_str())
+    .fetch_one(pool)
+    .await?;
+    let interrupted_investigation_count: i64 = if stage == StageKind::Investigation {
+        sqlx::query_scalar(
+            r#"SELECT COUNT(DISTINCT plan.id)
+                 FROM stage_team_plans plan
+                 JOIN stage_run_units unit
+                   ON unit.id=plan.stage_run_unit_id
+                  AND unit.operation_id=plan.operation_id
+                  AND unit.stage_execution_id=plan.stage_execution_id
+                  AND unit.organization_id=plan.organization_id
+                 JOIN stage_work_items item
+                   ON item.team_plan_id=plan.id
+                  AND item.stable_key='leader:primary'
+                  AND item.role=plan.leader_role
+                  AND item.required_for_barrier=FALSE
+                 JOIN stage_worker_runs worker
+                   ON worker.work_item_id=item.id
+                  AND worker.operation_id=plan.operation_id
+                  AND worker.stage_execution_id=plan.stage_execution_id
+                  AND worker.stage_run_unit_id=plan.stage_run_unit_id
+                  AND worker.organization_id=plan.organization_id
+                 JOIN investigation_stage_run_authorities authority
+                   ON authority.operation_id=plan.operation_id
+                  AND authority.stage_execution_id=plan.stage_execution_id
+                 JOIN investigation_main_session_sets session_set
+                   ON session_set.authority_id=authority.authority_id
+                  AND session_set.status='sealed'
+                 JOIN investigation_main_read_sessions read_session
+                   ON read_session.session_set_id=session_set.session_set_id
+                  AND read_session.stage_run_unit_id=unit.id
+                  AND read_session.organization_id=unit.organization_id
+                 JOIN investigation_main_read_session_receipts read_receipt
+                   ON read_receipt.main_read_session_id=read_session.main_read_session_id
+                 JOIN investigation_pentagi_task_plans task_plan
+                   ON task_plan.authority_id=authority.authority_id
+                  AND task_plan.stage_run_unit_id=unit.id
+                  AND task_plan.organization_id=unit.organization_id
+                  AND task_plan.status='open'
+                WHERE plan.operation_id=$1
+                  AND plan.stage_execution_id=$2
+                  AND plan.stage_kind='investigation'
+                  AND plan.dynamic_request_policy->>'coordination_mode'=
+                      'investigation_task_orchestrator'
+                  AND plan.requests_closed_at IS NULL
+                  AND plan.final_submitter_worker_run_id IS NULL
+                  AND unit.status='running'
+                  AND item.status='running'
+                  AND worker.status IN ('queued','running','gate_blocked','recovery_required')
+                  AND worker.active_tool_call_id IS NULL
+                  AND (worker.lease_token IS NULL
+                       OR worker.lease_expires_at<=clock_timestamp())
+                  AND EXISTS(
+                      SELECT 1 FROM investigation_run_work_items work
+                       WHERE work.authority_id=authority.authority_id
+                         AND work.stage_run_unit_id=unit.id
+                         AND work.organization_id=unit.organization_id
+                         AND work.work_kind='read_session'
+                         AND work.current_state='completed'
+                  )
+                  AND EXISTS(
+                      SELECT 1 FROM investigation_run_work_items work
+                       WHERE work.authority_id=authority.authority_id
+                         AND work.stage_run_unit_id=unit.id
+                         AND work.organization_id=unit.organization_id
+                         AND work.work_kind='analysis'
+                         AND work.current_state='running'
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM investigation_pentagi_subtasks subtask
+                       WHERE subtask.task_plan_id=task_plan.task_plan_id
+                  )"#,
+        )
+        .bind(operation.operation_id)
+        .bind(active_execution.id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        0
+    };
+    let sealed_unapplied_investigation_count: i64 = if stage == StageKind::Investigation {
+        sqlx::query_scalar(
+            r#"SELECT COUNT(DISTINCT plan.id)
+                 FROM stage_team_plans plan
+                 JOIN stage_run_units unit
+                   ON unit.id=plan.stage_run_unit_id
+                  AND unit.operation_id=plan.operation_id
+                  AND unit.stage_execution_id=plan.stage_execution_id
+                  AND unit.organization_id=plan.organization_id
+                 JOIN stage_work_items item
+                   ON item.team_plan_id=plan.id
+                  AND item.stable_key='leader:primary'
+                  AND item.role=plan.leader_role
+                  AND item.required_for_barrier=FALSE
+                 JOIN stage_worker_runs worker
+                   ON worker.work_item_id=item.id
+                  AND worker.operation_id=plan.operation_id
+                  AND worker.stage_execution_id=plan.stage_execution_id
+                  AND worker.stage_run_unit_id=plan.stage_run_unit_id
+                  AND worker.organization_id=plan.organization_id
+                 JOIN investigation_stage_run_authorities authority
+                   ON authority.operation_id=plan.operation_id
+                  AND authority.stage_execution_id=plan.stage_execution_id
+                 JOIN investigation_main_session_sets session_set
+                   ON session_set.authority_id=authority.authority_id
+                  AND session_set.status='sealed'
+                 JOIN investigation_main_read_sessions read_session
+                   ON read_session.session_set_id=session_set.session_set_id
+                  AND read_session.stage_run_unit_id=unit.id
+                  AND read_session.organization_id=unit.organization_id
+                 JOIN investigation_main_read_session_receipts read_receipt
+                   ON read_receipt.main_read_session_id=read_session.main_read_session_id
+                 JOIN investigation_pentagi_task_plans task_plan
+                   ON task_plan.authority_id=authority.authority_id
+                  AND task_plan.stage_run_unit_id=unit.id
+                  AND task_plan.organization_id=unit.organization_id
+                  AND task_plan.subject_kind='analysis_attempt'
+                  AND task_plan.status='sealed'
+                 JOIN investigation_pentagi_delegation_census_seals census
+                   ON census.task_plan_id=task_plan.task_plan_id
+                  AND census.primary_worker_run_id=worker.id
+                WHERE plan.operation_id=$1
+                  AND plan.stage_execution_id=$2
+                  AND plan.stage_kind='investigation'
+                  AND plan.dynamic_request_policy->>'coordination_mode'=
+                      'investigation_task_orchestrator'
+                  AND plan.requests_closed_at IS NOT NULL
+                  AND plan.final_submitter_worker_run_id IS NULL
+                  AND unit.status='running'
+                  AND (
+                    (
+                      item.status='running'
+                      AND worker.status IN
+                          ('queued','running','gate_blocked','recovery_required')
+                      AND worker.active_tool_call_id IS NULL
+                      AND (worker.lease_token IS NULL
+                           OR worker.lease_expires_at<=clock_timestamp())
+                    )
+                    OR
+                    (
+                      item.status='exhausted'
+                      AND item.terminal_at IS NOT NULL
+                      AND worker.status='failed'
+                      AND worker.terminal_at IS NOT NULL
+                      AND worker.lease_token IS NULL
+                      AND worker.active_tool_call_id IS NULL
+                      AND worker.checkpoint #>>
+                          '{stage_team_execution_failure,code}'=
+                          'stage_team_worker_lease_expired'
+                      AND EXISTS (
+                        SELECT 1
+                          FROM stage_worker_outputs output
+                         WHERE output.team_plan_id=plan.id
+                           AND output.work_item_id=item.id
+                           AND output.worker_run_id=worker.id
+                           AND output.business_disposition='blocked'
+                           AND output.canonical_output->>'kind'=
+                               'stage_team_attempts_exhausted'
+                           AND output.canonical_output->>'failure_code'=
+                               'stage_team_worker_lease_expired'
+                           AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                               ANY(output.blocker_codes)
+                      )
+                    )
+                  )
+                  AND EXISTS(
+                      SELECT 1 FROM investigation_pentagi_pipeline_events event
+                       WHERE event.task_plan_id=task_plan.task_plan_id
+                         AND event.event_kind='primary_synthesis'
+                         AND event.actor_worker_run_id=worker.id
+                  )
+                  AND EXISTS(
+                      SELECT 1
+                        FROM investigation_run_work_items work
+                        JOIN investigation_run_work_state_events event
+                          ON event.event_id=work.latest_event_id
+                       WHERE work.authority_id=authority.authority_id
+                         AND work.stage_run_unit_id=unit.id
+                         AND work.organization_id=unit.organization_id
+                         AND work.work_kind='analysis'
+                         AND work.current_state='blocked'
+                         AND event.to_state='blocked'
+                         AND event.reason_code=
+                             'investigation_analysis_host_authority_mismatch'
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1
+                        FROM investigation_hypothesis_compilation_decisions decision
+                       WHERE decision.operation_id=plan.operation_id
+                         AND decision.stage_execution_id=plan.stage_execution_id
+                         AND decision.stage_run_unit_id=plan.stage_run_unit_id
+                         AND decision.organization_id=plan.organization_id
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM hypothesis_verification_tasks task
+                       WHERE task.operation_id=plan.operation_id
+                         AND task.stage_execution_id=plan.stage_execution_id
+                         AND task.stage_run_unit_id=plan.stage_run_unit_id
+                         AND task.organization_id=plan.organization_id
+                  )"#,
+        )
+        .bind(operation.operation_id)
+        .bind(active_execution.id)
+        .fetch_one(pool)
+        .await?
+    } else {
+        0
+    };
+    let frozen_organization_count = i64::try_from(frozen.units.len()).unwrap_or(i64::MAX);
+    let sealed_synthesis_retry_rows: Vec<(
+        uuid::Uuid,
+        uuid::Uuid,
+        i64,
+        uuid::Uuid,
+        i64,
+        i64,
+        uuid::Uuid,
+    )> = if stage == StageKind::Investigation {
+        sqlx::query_as(
+            r#"SELECT plan.id,item.id,item.row_version,worker.id,worker.attempt_epoch,
+                      worker.checkpoint_version,output.id
+                 FROM stage_team_plans plan
+                 JOIN stage_run_units unit ON unit.id=plan.stage_run_unit_id
+                 JOIN stage_work_items item
+                   ON item.team_plan_id=plan.id
+                  AND item.stable_key='leader:primary'
+                  AND item.role=plan.leader_role
+                  AND item.required_for_barrier=FALSE
+                 JOIN stage_worker_runs worker ON worker.work_item_id=item.id
+                 JOIN stage_worker_outputs output
+                   ON output.team_plan_id=plan.id
+                  AND output.work_item_id=item.id
+                  AND output.worker_run_id=worker.id
+                 JOIN investigation_stage_run_authorities authority
+                   ON authority.operation_id=plan.operation_id
+                  AND authority.stage_execution_id=plan.stage_execution_id
+                 JOIN investigation_pentagi_task_plans task_plan
+                   ON task_plan.authority_id=authority.authority_id
+                  AND task_plan.stage_run_unit_id=unit.id
+                  AND task_plan.organization_id=unit.organization_id
+                  AND task_plan.subject_kind='analysis_attempt'
+                  AND task_plan.status='open'
+                 JOIN investigation_refiner_plan_ledger_seals refiner_seal
+                   ON refiner_seal.task_plan_id=task_plan.task_plan_id
+                WHERE plan.operation_id=$1
+                  AND plan.stage_execution_id=$2
+                  AND plan.stage_kind='investigation'
+                  AND plan.dynamic_request_policy->>'coordination_mode'=
+                      'investigation_task_orchestrator'
+                  AND plan.requests_closed_at IS NULL
+                  AND plan.final_submitter_worker_run_id IS NULL
+                  AND unit.status='running'
+                  AND item.status='exhausted'
+                  AND item.terminal_at IS NOT NULL
+                  AND worker.status='failed'
+                  AND worker.terminal_at IS NOT NULL
+                  AND worker.lease_token IS NULL
+                  AND worker.active_tool_call_id IS NULL
+                  AND worker.checkpoint #>>
+                      '{stage_team_execution_failure,code}'=
+                      'stage_team_worker_lease_expired'
+                  AND output.business_disposition='blocked'
+                  AND output.canonical_output->>'kind'=
+                      'stage_team_attempts_exhausted'
+                  AND output.canonical_output->>'failure_code'=
+                      'stage_team_worker_lease_expired'
+                  AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                      ANY(output.blocker_codes)
+                  AND EXISTS(
+                      SELECT 1 FROM investigation_run_work_items work
+                       WHERE work.authority_id=authority.authority_id
+                         AND work.stage_run_unit_id=unit.id
+                         AND work.organization_id=unit.organization_id
+                         AND work.work_kind='analysis'
+                         AND work.current_state='running'
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM investigation_pentagi_pipeline_events event
+                       WHERE event.task_plan_id=task_plan.task_plan_id
+                         AND event.event_kind='primary_synthesis'
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM investigation_hypothesis_compilation_decisions decision
+                       WHERE decision.operation_id=plan.operation_id
+                         AND decision.stage_execution_id=plan.stage_execution_id
+                         AND decision.stage_run_unit_id=plan.stage_run_unit_id
+                         AND decision.organization_id=plan.organization_id
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1 FROM hypothesis_verification_tasks task
+                       WHERE task.operation_id=plan.operation_id
+                         AND task.stage_execution_id=plan.stage_execution_id
+                         AND task.stage_run_unit_id=plan.stage_run_unit_id
+                         AND task.organization_id=plan.organization_id
+                  )"#,
+        )
+        .bind(operation.operation_id)
+        .bind(active_execution.id)
+        .fetch_all(pool)
+        .await?
+    } else {
+        Vec::new()
+    };
+    if i64::try_from(sealed_synthesis_retry_rows.len()).unwrap_or(i64::MAX)
+        == frozen_organization_count
+    {
+        let mut tx = pool.begin().await?;
+        for (plan_id, item_id, _, _, _, _, _) in sealed_synthesis_retry_rows {
+            let recovery_v1_item_id = uuid::Uuid::new_v5(
+                &item_id,
+                b"sealed-investigation-synthesis-recovery-primary-v1",
+            );
+            let recovery_stable_key = format!("leader:synthesis-recovery:{item_id}");
+            let recovery_v1 = sqlx::query_as::<_, (String, String)>(
+                "SELECT kind,status FROM stage_work_items WHERE id=$1 AND team_plan_id=$2 FOR UPDATE",
+            )
+            .bind(recovery_v1_item_id)
+            .bind(plan_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let (recovery_item_id, recovery_kind, recovery_generation) = match recovery_v1 {
+                None => (recovery_v1_item_id, None, "v1"),
+                Some((kind, status)) if status == "queued" || status == "running" => {
+                    anyhow::ensure!(
+                        kind != "investigation_primary_recovery",
+                        "sealed Investigation synthesis recovery v1 kind drifted"
+                    );
+                    (recovery_v1_item_id, None, "v1")
+                }
+                Some((_kind, status)) if status == "exhausted" => {
+                    let recovery_v1_failure_exact: bool = sqlx::query_scalar(
+                        r#"SELECT EXISTS(
+                               SELECT 1
+                                 FROM stage_work_items recovery
+                                 JOIN stage_work_items source
+                                   ON source.id=$2 AND source.team_plan_id=recovery.team_plan_id
+                                 JOIN stage_worker_runs worker
+                                   ON worker.work_item_id=recovery.id
+                                 JOIN stage_worker_outputs output
+                                   ON output.team_plan_id=recovery.team_plan_id
+                                  AND output.work_item_id=recovery.id
+                                  AND output.worker_run_id=worker.id
+                                WHERE recovery.id=$1 AND recovery.team_plan_id=$3
+                                  AND recovery.kind=source.kind
+                                  AND recovery.stable_key=$4
+                                  AND recovery.role=source.role
+                                  AND recovery.input_manifest_hash=source.input_manifest_hash
+                                  AND recovery.input_refs=source.input_refs
+                                  AND recovery.required_for_barrier=FALSE
+                                  AND recovery.conflict_key IS NULL
+                                  AND recovery.priority=source.priority
+                                  AND recovery.attempt_policy=source.attempt_policy
+                                  AND recovery.budget=source.budget
+                                  AND recovery.output_schema=source.output_schema
+                                  AND recovery.created_by='server_seed'
+                                  AND recovery.status='exhausted'
+                                  AND recovery.terminal_at IS NOT NULL
+                                  AND worker.status='failed'
+                                  AND worker.terminal_at IS NOT NULL
+                                  AND worker.lease_token IS NULL
+                                  AND worker.active_tool_call_id IS NULL
+                                  AND worker.checkpoint #>>
+                                      '{stage_team_execution_failure,code}'=
+                                      'stage_team_worker_lease_expired'
+                                  AND output.business_disposition='blocked'
+                                  AND output.canonical_output->>'kind'=
+                                      'stage_team_attempts_exhausted'
+                                  AND output.canonical_output->>'failure_code'=
+                                      'stage_team_worker_lease_expired'
+                                  AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                                      ANY(output.blocker_codes)
+                                  AND (SELECT COUNT(*) FROM stage_worker_runs all_worker
+                                        WHERE all_worker.work_item_id=recovery.id)=1
+                                  AND (SELECT COUNT(*) FROM stage_worker_outputs all_output
+                                        WHERE all_output.work_item_id=recovery.id)=1
+                           )"#,
+                    )
+                    .bind(recovery_v1_item_id)
+                    .bind(item_id)
+                    .bind(plan_id)
+                    .bind(&recovery_stable_key)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    anyhow::ensure!(
+                        recovery_v1_failure_exact,
+                        "sealed Investigation synthesis recovery v1 exhaustion witness is not exact"
+                    );
+                    (
+                        uuid::Uuid::new_v5(
+                            &recovery_v1_item_id,
+                            b"sealed-investigation-synthesis-recovery-primary-v2",
+                        ),
+                        Some("investigation_primary_recovery".to_string()),
+                        "v2",
+                    )
+                }
+                Some((_kind, status)) => anyhow::bail!(
+                    "sealed Investigation synthesis recovery v1 has non-restartable status {status}"
+                ),
+            };
+            sqlx::query(
+                r#"INSERT INTO stage_work_items(
+                       id,team_plan_id,operation_id,stage_execution_id,stage_run_unit_id,
+                       scope_snapshot_id,organization_id,dispatch_epoch,kind,stable_key,role,
+                       input_manifest_hash,input_refs,required_for_barrier,conflict_key,
+                       priority,status,attempt_policy,budget,output_schema,created_by
+                   )
+                   SELECT $3,source.team_plan_id,source.operation_id,
+                          source.stage_execution_id,source.stage_run_unit_id,
+                          source.scope_snapshot_id,source.organization_id,
+                          source.dispatch_epoch,COALESCE($4,source.kind),
+                          'leader:synthesis-recovery:' || source.id::TEXT,
+                          source.role,source.input_manifest_hash,source.input_refs,FALSE,NULL,
+                          source.priority,'queued',source.attempt_policy,source.budget,
+                          source.output_schema,'server_seed'
+                     FROM stage_work_items source
+                    WHERE source.id=$1 AND source.team_plan_id=$2
+                      AND source.stable_key='leader:primary'
+                      AND source.required_for_barrier=FALSE
+                      AND source.status='exhausted'
+                   ON CONFLICT (id) DO NOTHING"#,
+            )
+            .bind(item_id)
+            .bind(plan_id)
+            .bind(recovery_item_id)
+            .bind(recovery_kind.as_deref())
+            .execute(&mut *tx)
+            .await?;
+            let recovery_exact: bool = sqlx::query_scalar(
+                r#"SELECT EXISTS(
+                       SELECT 1
+                         FROM stage_work_items recovery
+                         JOIN stage_work_items source
+                           ON source.id=$4 AND source.team_plan_id=recovery.team_plan_id
+                        WHERE recovery.id=$1 AND recovery.team_plan_id=$2
+                          AND recovery.stable_key=$3
+                          AND recovery.role=(SELECT leader_role FROM stage_team_plans WHERE id=$2)
+                          AND recovery.kind=COALESCE($5,source.kind)
+                          AND recovery.input_manifest_hash=source.input_manifest_hash
+                          AND recovery.input_refs=source.input_refs
+                          AND recovery.required_for_barrier=FALSE
+                          AND recovery.conflict_key IS NULL
+                          AND recovery.priority=source.priority
+                          AND recovery.attempt_policy=source.attempt_policy
+                          AND recovery.budget=source.budget
+                          AND recovery.output_schema=source.output_schema
+                          AND recovery.created_by='server_seed'
+                          AND recovery.status IN ('queued','running')
+                          AND recovery.terminal_at IS NULL
+                   )"#,
+            )
+            .bind(recovery_item_id)
+            .bind(plan_id)
+            .bind(&recovery_stable_key)
+            .bind(item_id)
+            .bind(recovery_kind.as_deref())
+            .fetch_one(&mut *tx)
+            .await?;
+            anyhow::ensure!(
+                recovery_exact,
+                "sealed Investigation synthesis recovery {recovery_generation} Primary was not inserted exactly"
+            );
+        }
+        tx.commit().await?;
+        eprintln!(
+            "[stage-run-resume] admitted exact sealed Investigation synthesis recovery generation without replaying child WorkItems: operation={} execution={}",
+            operation.operation_id, active_execution.id
+        );
+        return Ok(());
+    }
+    let exhausted_stage_exact = exhausted_controller_count == frozen_organization_count;
+    let interrupted_investigation_exact =
+        interrupted_investigation_count == frozen_organization_count;
+    let sealed_unapplied_investigation_exact =
+        sealed_unapplied_investigation_count == frozen_organization_count;
+    let restartable_investigation_exact =
+        interrupted_investigation_exact || sealed_unapplied_investigation_exact;
+    anyhow::ensure!(
+        exhausted_stage_exact || restartable_investigation_exact,
+        "test stage restart requires one exact exhausted Controller, sealed pre-subtask Investigation interruption, or sealed compiler-unapplied Investigation interruption per frozen organization"
+    );
+    if exhausted_stage_exact && stage == StageKind::VulnTriage {
+        let exhausted_controllers: Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid, uuid::Uuid, i64, i64)> =
+            sqlx::query_as(
+                r#"SELECT plan.id,item.id,unit.id,worker.id,
+                          worker.attempt_epoch,worker.checkpoint_version
+                     FROM stage_team_plans plan
+                     JOIN stage_run_units unit
+                       ON unit.id=plan.stage_run_unit_id
+                      AND unit.operation_id=plan.operation_id
+                      AND unit.stage_execution_id=plan.stage_execution_id
+                      AND unit.organization_id=plan.organization_id
+                     JOIN stage_work_items item
+                       ON item.team_plan_id=plan.id
+                      AND item.stable_key='leader:primary'
+                      AND item.role=plan.leader_role
+                      AND item.required_for_barrier=FALSE
+                     JOIN stage_worker_runs worker
+                       ON worker.work_item_id=item.id
+                      AND worker.operation_id=plan.operation_id
+                      AND worker.stage_execution_id=plan.stage_execution_id
+                      AND worker.stage_run_unit_id=plan.stage_run_unit_id
+                      AND worker.organization_id=plan.organization_id
+                    WHERE plan.operation_id=$1 AND plan.stage_execution_id=$2
+                      AND plan.stage_kind='vuln_triage'
+                      AND plan.dynamic_request_policy->>'coordination_mode'='company_controller'
+                      AND plan.requests_closed_at IS NULL
+                      AND plan.final_submitter_worker_run_id IS NULL
+                      AND unit.status='running'
+                      AND item.status='exhausted' AND item.terminal_at IS NOT NULL
+                      AND worker.status='failed' AND worker.terminal_at IS NOT NULL
+                      AND worker.lease_token IS NULL AND worker.active_tool_call_id IS NULL
+                      AND worker.checkpoint #>> '{stage_team_execution_failure,code}'=
+                          'stage_team_worker_lease_expired'
+                      AND (SELECT COUNT(*) FROM stage_worker_outputs output
+                            WHERE output.team_plan_id=plan.id
+                              AND output.work_item_id=item.id
+                              AND output.worker_run_id=worker.id
+                              AND output.business_disposition='blocked'
+                              AND output.canonical_output->>'kind'=
+                                  'stage_team_attempts_exhausted'
+                              AND output.canonical_output->>'failure_code'=
+                                  'stage_team_worker_lease_expired'
+                              AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=
+                                  ANY(output.blocker_codes))=1
+                    ORDER BY plan.organization_id"#,
+            )
+            .bind(operation.operation_id)
+            .bind(active_execution.id)
+            .fetch_all(pool)
+            .await?;
+        anyhow::ensure!(
+            i64::try_from(exhausted_controllers.len()).unwrap_or(i64::MAX)
+                == frozen_organization_count,
+            "test Vuln restart lost its exact exhausted Controller census"
+        );
+        let mut sealed_cells = 0usize;
+        let mut found_cells = 0usize;
+        let mut blocked_cells = 0usize;
+        for (plan_id, item_id, unit_id, worker_id, attempt_epoch, checkpoint_version) in
+            exhausted_controllers
+        {
+            let sealed = golish_db::repo::runtime_memory_tx::seal_exhausted_vuln_residual_outcomes(
+                pool,
+                &golish_db::repo::runtime_memory_tx::SealExhaustedVulnResidualOutcomesRow {
+                    fence: golish_db::repo::runtime_memory_tx::RuntimeMemoryTxFence {
+                        operation_id: operation.operation_id,
+                        stage_execution_id: active_execution.id,
+                        stage_run_unit_id: unit_id,
+                        worker_run_id: worker_id,
+                        // Nil is a server-only compatibility sentinel. The DB
+                        // transaction accepts it solely with the exact exhausted
+                        // Controller and completed producer census above.
+                        lease_token: uuid::Uuid::nil(),
+                        attempt_epoch,
+                        expected_checkpoint_version: checkpoint_version,
+                    },
+                    stage_team_plan_id: plan_id,
+                    leader_work_item_id: item_id,
+                    expected_attempt_ordinal: 3,
+                },
+            )
+            .await
+            .map_err(anyhow::Error::new)
+            .context("seal exhausted Vuln evidence before controlled stage-shell restart")?;
+            sealed_cells = sealed_cells.saturating_add(sealed.sealed_cells);
+            found_cells = found_cells.saturating_add(sealed.found_cells);
+            blocked_cells = blocked_cells.saturating_add(sealed.blocked_cells);
+        }
+        eprintln!(
+            "[stage-run-resume] sealed {sealed_cells} exhausted Vuln cell(s) before controlled runtime-shell restart ({found_cells} positive, {blocked_cells} inconclusive residual)"
+        );
+    }
+    let live_workers: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM stage_worker_runs
+            WHERE operation_id=$1 AND stage_execution_id=$2
+              AND (active_tool_call_id IS NOT NULL
+                   OR ($3=FALSE AND (lease_token IS NOT NULL
+                       OR status IN ('queued','running','waiting_background','recovery_required')))
+                   OR ($3=TRUE AND lease_token IS NOT NULL
+                       AND lease_expires_at>clock_timestamp()))"#,
+    )
+    .bind(operation.operation_id)
+    .bind(active_execution.id)
+    .bind(restartable_investigation_exact)
+    .fetch_one(pool)
+    .await?;
+    anyhow::ensure!(
+        live_workers == 0,
+        "test exhausted-stage restart refused while live/recoverable Workers remain"
+    );
+
+    let replacement_stage_execution_id = uuid::Uuid::new_v4();
+    golish_db::repo::runtime_memory_tx::supersede_stage_checkpoint(
+        pool,
+        &golish_db::repo::runtime_memory_tx::SupersedeStageCheckpointRow {
+            operation_id: operation.operation_id,
+            expected_active_stage_execution_id: Some(active_execution.id),
+            expected_current_stage: operation.current_stage.clone(),
+            selected_stage: operation.current_stage.clone(),
+            affected_stage_kinds: vec![operation.current_stage.clone()],
+            next_state_blob: operation.state_blob,
+            replacement_specialist: golish_agent_kit::harness::load_embedded_stage_spec(stage)
+                .ok()
+                .and_then(|spec| spec.specialist)
+                .filter(|specialist| !specialist.trim().is_empty()),
+            replacement_stage_execution_id: Some(replacement_stage_execution_id),
+            fact_purge: None,
+            finalizer_recovery_witness: None,
+        },
+    )
+    .await
+    .map_err(anyhow::Error::new)
+    .context("atomically restart exhausted test stage runtime")?;
+    eprintln!(
+        "[stage-run-resume] restarted exhausted test stage runtime: operation={} stage={} replacement_execution={}",
+        operation.operation_id,
+        stage.as_str(),
+        replacement_stage_execution_id
+    );
+    Ok(())
+}
+
 /// Parse `--from`/`--to`/`--only` into `(from, to)` stages.
 fn resolve_from_to(args: &Args) -> Result<(Option<StageKind>, StageKind)> {
     let parse = |s: &str| StageKind::try_parse(s).ok_or_else(|| anyhow!("unknown stage: {s}"));
@@ -1296,6 +2211,8 @@ fn is_active_stage(stage: StageKind) -> bool {
             | StageKind::VulnTriage
             | StageKind::AttackCandidate
             | StageKind::Verification
+            | StageKind::ApplicationUnderstanding
+            | StageKind::Investigation
             | StageKind::AccessValidation
             | StageKind::InternalDiscovery
             | StageKind::ObjectivePathing
@@ -1350,6 +2267,23 @@ fn prepare_stage_run_db(args: &Args) -> Result<StageRunDbConfig> {
         );
         config.database = database.to_string();
     }
+    if let Some(pg_data_dir) = args.stage_run_resume_pgdata.as_ref() {
+        anyhow::ensure!(
+            pg_data_dir.is_absolute(),
+            "--stage-run-resume-pgdata must be an absolute path"
+        );
+        anyhow::ensure!(
+            pg_data_dir.join("PG_VERSION").is_file(),
+            "--stage-run-resume-pgdata is not an initialized PostgreSQL data directory: {}",
+            pg_data_dir.display()
+        );
+        config.pg_data_dir = pg_data_dir.clone();
+        config.port = allocate_local_port().context("allocate retained-resume PostgreSQL port")?;
+        return Ok(StageRunDbConfig {
+            config,
+            temp_dir: None,
+        });
+    }
     if !args.ephemeral_db {
         return Ok(StageRunDbConfig {
             config,
@@ -1394,6 +2328,265 @@ fn maybe_keep_ephemeral_db(stage_db: &mut StageRunDbConfig, keep: bool) {
     }
 }
 
+const STAGE_RUN_DB_DIAGNOSTIC_ACK_ENV: &str = "GOLISH_STAGE_RUN_DB_DIAGNOSTIC_ACK";
+
+/// Keep the owned ephemeral PostgreSQL process alive long enough for the
+/// external run-tree diagnostic to query the exact operation. The wrapper
+/// acknowledges completion by creating a fresh one-shot file; without the
+/// explicit environment variable this seam is completely dormant.
+async fn wait_for_live_db_diagnostic(stage_db: &StageRunDbConfig) -> Result<()> {
+    let Some(ack_path) = std::env::var_os(STAGE_RUN_DB_DIAGNOSTIC_ACK_ENV).map(PathBuf::from)
+    else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        stage_db.temp_dir.is_some(),
+        "live DB diagnostic requires an owned ephemeral stage-run database"
+    );
+    anyhow::ensure!(
+        ack_path.is_absolute(),
+        "live DB diagnostic acknowledgement path must be absolute"
+    );
+    anyhow::ensure!(
+        !ack_path.exists(),
+        "live DB diagnostic acknowledgement path already exists"
+    );
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "type": "db_smoke_diagnostic_ready",
+            "dbUrl": stage_db.config.connection_string(),
+        })
+    );
+    std::io::stdout()
+        .flush()
+        .context("flush live DB diagnostic handshake")?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        if ack_path.is_file() {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for live DB diagnostic acknowledgement"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn bootstrap_ephemeral_joint_rollout(
+    pool: &sqlx::PgPool,
+    args: &Args,
+    stage_db: &StageRunDbConfig,
+) -> Result<()> {
+    let Some(target_rank) = args.stage_run_test_joint_rank else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        args.ephemeral_db && stage_db.temp_dir.is_some(),
+        "stage-run test rollout bootstrap requires an owned ephemeral database"
+    );
+    let target_mode = match target_rank {
+        5 => "registry_authoritative_legacy_projection",
+        6 => "new_only",
+        _ => anyhow::bail!("stage-run test rollout bootstrap accepts only joint rank 5 or 6"),
+    };
+
+    let mut tx = pool
+        .begin()
+        .await
+        .context("begin ephemeral rollout bootstrap")?;
+    let operation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM operation_state")
+        .fetch_one(&mut *tx)
+        .await
+        .context("verify empty ephemeral operation catalog")?;
+    anyhow::ensure!(
+        operation_count == 0,
+        "ephemeral rollout bootstrap refused after operation creation"
+    );
+    let runtime_initial: (String, i16, i64) = sqlx::query_as(
+        "SELECT contract,contract_rank,row_version FROM runtime_memory_rollout WHERE singleton_id=1 FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("lock initial Runtime Memory rollout")?;
+    let attack_initial: (String, i16, i64) = sqlx::query_as(
+        "SELECT contract,rank,row_version FROM attack_execution_rollout WHERE singleton=TRUE FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("lock initial Attack Execution rollout")?;
+    let enumeration_initial: (String, i64) = sqlx::query_as(
+        "SELECT new_operation_contract,generation FROM enumeration_analysis_rollout WHERE singleton=TRUE FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("lock initial Enumeration Analysis rollout")?;
+    let tool_initial: (String, i64) = sqlx::query_as(
+        "SELECT new_operation_contract,row_version FROM tool_truth_rollout WHERE singleton=TRUE FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("lock initial Tool Truth rollout")?;
+    let investigation_initial: (String, String, i16, i64) = sqlx::query_as(
+        "SELECT contract_version,rollout_mode,mode_rank,row_version FROM investigation_rollout WHERE singleton=TRUE FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("lock initial Investigation rollout")?;
+    anyhow::ensure!(
+        runtime_initial == ("dual_write_legacy_read".to_owned(), 1, 1)
+            && attack_initial == ("dual_write_read_legacy".to_owned(), 1, 1)
+            && enumeration_initial == ("legacy_v1".to_owned(), 0)
+            && tool_initial == ("legacy_v1".to_owned(), 0)
+            && investigation_initial
+                == (
+                    "legacy_candidate_v1".to_owned(),
+                    "legacy_only".to_owned(),
+                    0,
+                    0,
+                ),
+        "ephemeral rollout bootstrap requires pristine migration defaults"
+    );
+
+    for statement in [
+        "ALTER TABLE runtime_memory_rollout DISABLE TRIGGER runtime_memory_rollout_forward_only",
+        "ALTER TABLE runtime_memory_rollout DISABLE TRIGGER zz_runtime_memory_rollout_attestation_gate",
+        "ALTER TABLE runtime_memory_rollout DISABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt",
+        "ALTER TABLE attack_execution_rollout DISABLE TRIGGER attack_execution_rollout_forward_only",
+        "ALTER TABLE attack_execution_rollout DISABLE TRIGGER zz_attack_execution_rollout_promotion_receipt",
+        "ALTER TABLE enumeration_analysis_rollout DISABLE TRIGGER enumeration_analysis_rollout_mutation_guard",
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .context("disable isolated rollout fixture guard")?;
+    }
+    let runtime_updated = sqlx::query(
+        "UPDATE runtime_memory_rollout SET contract='v2_only',contract_rank=3,row_version=3,updated_at=statement_timestamp() WHERE singleton_id=1 AND contract='dual_write_legacy_read' AND contract_rank=1 AND row_version=1",
+    )
+    .execute(&mut *tx)
+    .await
+    .context("select Runtime Memory V2 in ephemeral database")?;
+    let attack_updated = sqlx::query(
+        "UPDATE attack_execution_rollout SET contract='v2_only',rank=3,row_version=3,updated_at=statement_timestamp() WHERE singleton=TRUE AND contract='dual_write_read_legacy' AND rank=1 AND row_version=1",
+    )
+    .execute(&mut *tx)
+    .await
+    .context("select Attack Execution V2 in ephemeral database")?;
+    let enumeration_updated = sqlx::query(
+        "UPDATE enumeration_analysis_rollout SET new_operation_contract='agent_team_v2',generation=2,updated_at=statement_timestamp() WHERE singleton=TRUE AND new_operation_contract='legacy_v1' AND generation=0",
+    )
+    .execute(&mut *tx)
+    .await
+    .context("select Enumeration Analysis V2 in ephemeral database")?;
+    let tool_updated = sqlx::query(
+        "UPDATE tool_truth_rollout SET new_operation_contract='receipt_v1',row_version=1,updated_at=statement_timestamp() WHERE singleton=TRUE AND new_operation_contract='legacy_v1' AND row_version=0",
+    )
+    .execute(&mut *tx)
+    .await
+    .context("select receipt Tool Truth in ephemeral database")?;
+    let investigation_updated = sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='hypothesis_registry_v1',rollout_mode=$1,
+                  mode_rank=$2,row_version=1,updated_at=statement_timestamp()
+            WHERE singleton=TRUE AND contract_version='legacy_candidate_v1'
+              AND rollout_mode='legacy_only' AND mode_rank=0 AND row_version=0"#,
+    )
+    .bind(target_mode)
+    .bind(if target_rank == 5 { 3_i16 } else { 4_i16 })
+    .execute(&mut *tx)
+    .await
+    .context("select unified Investigation in ephemeral database")?;
+    anyhow::ensure!(
+        runtime_updated.rows_affected() == 1
+            && attack_updated.rows_affected() == 1
+            && enumeration_updated.rows_affected() == 1
+            && tool_updated.rows_affected() == 1
+            && investigation_updated.rows_affected() == 1,
+        "ephemeral rollout bootstrap CAS changed"
+    );
+    for statement in [
+        "ALTER TABLE investigation_rollout ENABLE TRIGGER investigation_rollout_direct_mutation_guard",
+        "ALTER TABLE tool_truth_rollout ENABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+        "ALTER TABLE enumeration_analysis_rollout ENABLE TRIGGER enumeration_analysis_rollout_mutation_guard",
+        "ALTER TABLE attack_execution_rollout ENABLE TRIGGER zz_attack_execution_rollout_promotion_receipt",
+        "ALTER TABLE attack_execution_rollout ENABLE TRIGGER attack_execution_rollout_forward_only",
+        "ALTER TABLE runtime_memory_rollout ENABLE TRIGGER zz_runtime_memory_rollout_promotion_receipt",
+        "ALTER TABLE runtime_memory_rollout ENABLE TRIGGER zz_runtime_memory_rollout_attestation_gate",
+        "ALTER TABLE runtime_memory_rollout ENABLE TRIGGER runtime_memory_rollout_forward_only",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut *tx)
+            .await
+            .context("restore isolated rollout fixture guard")?;
+    }
+    let execution_selected: (String, i16, i64, String, i16, i64, String, i64) = sqlx::query_as(
+        r#"SELECT runtime.contract,runtime.contract_rank,runtime.row_version,
+                  attack.contract,attack.rank,attack.row_version,
+                  enumeration.new_operation_contract,enumeration.generation
+             FROM runtime_memory_rollout runtime
+             CROSS JOIN attack_execution_rollout attack
+             CROSS JOIN enumeration_analysis_rollout enumeration
+            WHERE runtime.singleton_id=1 AND attack.singleton=TRUE
+              AND enumeration.singleton=TRUE"#,
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("verify ephemeral execution rollout selection")?;
+    anyhow::ensure!(
+        execution_selected
+            == (
+                "v2_only".to_owned(),
+                3,
+                3,
+                "v2_only".to_owned(),
+                3,
+                3,
+                "agent_team_v2".to_owned(),
+                2,
+            ),
+        "ephemeral execution rollout verification failed"
+    );
+    let authority_selected: (String, i64, String, String, i16, i64, Option<i16>) = sqlx::query_as(
+        r#"SELECT tool.new_operation_contract,tool.row_version,
+                  investigation.contract_version,investigation.rollout_mode,
+                  investigation.mode_rank,investigation.row_version,
+                  operation_joint_contract_rank(tool.new_operation_contract,
+                      investigation.contract_version,investigation.rollout_mode)
+             FROM tool_truth_rollout tool
+             CROSS JOIN investigation_rollout investigation
+            WHERE tool.singleton=TRUE AND investigation.singleton=TRUE"#,
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .context("verify ephemeral authority rollout selection")?;
+    anyhow::ensure!(
+        authority_selected
+            == (
+                "receipt_v1".to_owned(),
+                1,
+                "hypothesis_registry_v1".to_owned(),
+                target_mode.to_owned(),
+                if target_rank == 5 { 3 } else { 4 },
+                1,
+                Some(target_rank),
+            ),
+        "ephemeral authority rollout verification failed"
+    );
+    tx.commit()
+        .await
+        .context("commit ephemeral rollout bootstrap")?;
+    eprintln!(
+        "[stage-run] isolated rollout bootstrap: runtime=v2_only attack=v2_only enumeration=agent_team_v2 joint_rank={target_rank} mode={target_mode} topology=unified_investigation_v1"
+    );
+    Ok(())
+}
+
 /// Headless entry point for `golish --stage-run`.
 pub async fn run(args: Args) -> Result<()> {
     if args.stage_run_resume.is_some() {
@@ -1409,7 +2602,7 @@ pub async fn run(args: Args) -> Result<()> {
         .clone()
         .unwrap_or_else(|| active_profile_id().to_string());
     let (from_opt, to_stage) = resolve_from_to(&args)?;
-    let (entry_stage, allowlist) = resolve_slice(&profile_id, from_opt, to_stage)?;
+    let (entry_stage, allowlist) = resolve_fresh_slice(&profile_id, from_opt, to_stage)?;
     validate_fresh_slice_target_intake(entry_stage, &allowlist, &args.target)?;
     crate::ai::task_operation::validate_current_invocation_exact_targets(&args.target)?;
 
@@ -1463,6 +2656,12 @@ pub async fn run(args: Args) -> Result<()> {
     }
     eprintln!("[stage-run] database ready.");
 
+    if let Err(error) = bootstrap_ephemeral_joint_rollout(&db_pool, &args, &stage_db).await {
+        finish_embedded_pg(pg_handle_rx, !preexisting_pg_on_port).await;
+        maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
+        return Err(error);
+    }
+
     // Test enablement: optionally seed an intel-provider API key into the vault
     // so a headless run can populate organizations.* via enrich without the GUI.
     maybe_seed_vault_key(&db_pool).await;
@@ -1483,6 +2682,13 @@ pub async fn run(args: Args) -> Result<()> {
         }
     };
     maybe_seed_open_ports(&db_pool, &workspace_str).await;
+    if let Err(error) =
+        maybe_seed_controlled_web_origins(&db_pool, &workspace_str, entry_stage, &args).await
+    {
+        finish_embedded_pg(pg_handle_rx, !preexisting_pg_on_port).await;
+        maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
+        return Err(error);
+    }
 
     // Runtime Memory V2 freezes the trusted CLI scope once, before the one
     // operation is created. LegacyV1 retains the historical per-org fallback.
@@ -1523,6 +2729,44 @@ pub async fn run(args: Args) -> Result<()> {
         db_ready,
     )
     .await;
+    if let (Some(toolsconfig_dir), Some(intel_providers_dir), Some(intel_endpoint)) = (
+        args.stage_run_test_toolsconfig_dir.as_ref(),
+        args.stage_run_test_intel_providers_dir.as_ref(),
+        args.stage_run_test_intel_provider_endpoint.as_ref(),
+    ) {
+        let toolsconfig_dir = toolsconfig_dir.canonicalize().with_context(|| {
+            format!(
+                "resolve controlled tools-config directory {}",
+                toolsconfig_dir.display()
+            )
+        })?;
+        let intel_providers_dir = intel_providers_dir.canonicalize().with_context(|| {
+            format!(
+                "resolve controlled intel-provider directory {}",
+                intel_providers_dir.display()
+            )
+        })?;
+        anyhow::ensure!(
+            toolsconfig_dir.is_dir() && intel_providers_dir.is_dir(),
+            "controlled provider overrides must both be directories"
+        );
+        let intel_transport =
+            golish_pentest::config::ControlledFixtureIntelTransportAuthority::loopback_http(
+                intel_endpoint.clone(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        app_state
+            .pentest_config_manager
+            .update(|config| {
+                config.toolsconfig_dir = toolsconfig_dir;
+                config.intel_providers_dir = intel_providers_dir;
+                config.controlled_fixture_intel_transport = Some(intel_transport);
+            })
+            .await;
+        eprintln!(
+            "[stage-run] controlled fixture provider directories installed (real provider destinations disabled)"
+        );
+    }
     let agent_state = app_state.extract_agent_state();
 
     // 4) Build a CliRuntime whose event stream we own (for HITL auto-approve +
@@ -1622,8 +2866,10 @@ pub async fn run(args: Args) -> Result<()> {
         args.auto_approve,
         StageRunAutoApprovalPolicy {
             trusted_scope_response: trusted_scope_review_response(&args.target),
+            retained_scope_authority: None,
             include_subsidiaries: Some(args.include_subsidiaries),
             confirmed_organization_id: seed.as_ref().and_then(|seed| seed.org_id),
+            confirmed_organization_name: args.org.clone(),
             approve_phase_boundaries: args.approve_phase_boundaries,
         },
     );
@@ -1824,7 +3070,7 @@ pub async fn run(args: Args) -> Result<()> {
                 seed.as_ref().and_then(|s| s.org_id),
                 &workspace_str,
             )
-            .await,
+            .await?,
         )
     } else {
         None
@@ -1864,6 +3110,8 @@ pub async fn run(args: Args) -> Result<()> {
             }
         }
     }
+
+    wait_for_live_db_diagnostic(&stage_db).await?;
 
     if let Some(mgr) = mcp_manager {
         mgr.shutdown().await;
@@ -1942,11 +3190,27 @@ async fn run_fork(mut args: Args) -> Result<()> {
 
     let execution_result: Result<()> = async {
         let (_, _, preview_operation) = load_stage_fork_rows(&db_pool, &selector).await?;
-        let resolved = resolve_stage_run_fork_slice(&preview_operation.profile, &args)?;
+        let preview_topology = validate_persisted_stage_topology(
+            &preview_operation.stage_topology_contract,
+            &preview_operation.stage_topology_canonical_json,
+            &preview_operation.stage_topology_sha256,
+            &preview_operation.stage_topology_freeze_source,
+            &preview_operation.investigation_rollout_mode,
+        )
+        .context("stage fork preview has an invalid frozen topology")?;
+        let resolved = resolve_stage_run_fork_slice(
+            &preview_operation.profile,
+            preview_topology,
+            &args,
+        )?;
         let source = validate_stage_fork_source(&db_pool, &selector, &workspace, &resolved).await?;
         anyhow::ensure!(
             source.profile == preview_operation.profile,
             "stage fork source changed during preflight"
+        );
+        anyhow::ensure!(
+            source.stage_topology_contract == resolved.stage_topology_contract,
+            "stage fork source topology changed during preflight"
         );
         if args.provider.is_none() {
             args.provider = source.provider.clone();
@@ -1955,11 +3219,12 @@ async fn run_fork(mut args: Args) -> Result<()> {
             args.model = source.model.clone();
         }
         eprintln!(
-            "[stage-run-fork] source={} scope={} project={} profile={} entry={} to={} adopted={:?}",
+            "[stage-run-fork] source={} scope={} project={} profile={} topology={} entry={} to={} adopted={:?}",
             source.operation_id,
             source.source_scope_snapshot_id,
             source.project_scope_id,
             source.profile,
+            source.stage_topology_contract.topology,
             resolved.entry_stage.as_str(),
             resolved.terminal_stage.as_str(),
             resolved
@@ -2040,8 +3305,10 @@ async fn run_fork(mut args: Args) -> Result<()> {
             args.auto_approve,
             StageRunAutoApprovalPolicy {
                 trusted_scope_response: None,
+                retained_scope_authority: None,
                 include_subsidiaries: None,
                 confirmed_organization_id: Some(source.root_organization_id),
+                confirmed_organization_name: None,
                 approve_phase_boundaries: args.approve_phase_boundaries,
             },
         );
@@ -2145,10 +3412,31 @@ async fn run_resume(mut args: Args) -> Result<()> {
         return Err(anyhow!("embedded Postgres did not become ready in time"));
     }
 
+    if args.stage_run_test_restart_exhausted_stage {
+        let restart_result: Result<()> = async {
+            anyhow::ensure!(
+                args.stage_run_test_database
+                    .as_deref()
+                    .is_some_and(|database| database.starts_with("golish_gatefix_"))
+                    || args.stage_run_resume_pgdata.is_some(),
+                "--stage-run-test-restart-exhausted-stage requires either an explicit golish_gatefix_* database or --stage-run-resume-pgdata"
+            );
+            restart_exhausted_test_stage_runtime(&db_pool, &selector, &expectations, &workspace)
+                .await
+        }
+        .await;
+        if let Err(error) = restart_result {
+            finish_embedded_pg(pg_handle_rx, !preexisting_pg_on_port).await;
+            maybe_keep_ephemeral_db(&mut stage_db, args.keep_ephemeral_db);
+            return Err(error);
+        }
+    }
+
     let execution_result: Result<()> = async {
         let initial = resolve_stage_run_resume_target(&db_pool, &selector, &expectations).await?;
         let (resume_terminal, resume_allowlist) = resolve_resume_slice(
             &initial.profile,
+            initial.stage_topology_contract.topology,
             initial.stage,
             args.resume_to.as_deref(),
         )?;
@@ -2215,6 +3503,7 @@ async fn run_resume(mut args: Args) -> Result<()> {
                 && target.profile == initial.profile
                 && target.stage == initial.stage
                 && target.runtime_memory_contract == initial.runtime_memory_contract
+                && target.stage_topology_contract == initial.stage_topology_contract
                 && target.authority == initial.authority
                 && target.relational_stage_execution_id
                     == initial.relational_stage_execution_id
@@ -2236,13 +3525,50 @@ async fn run_resume(mut args: Args) -> Result<()> {
             transcript_path.display()
         );
 
+        let retained_scope_authority =
+            if let Some(packet_path) = args.stage_run_active_recon_scope_authority.as_deref() {
+                anyhow::ensure!(
+                    args.stage_run_resume_pgdata.is_some(),
+                    "active-recon scope authority packets are accepted only for an exact retained-DB resume"
+                );
+                anyhow::ensure!(
+                    target.stage == StageKind::TargetIntel,
+                    "active-recon scope authority packets are accepted only while resuming Target Intel"
+                );
+                Some(scope_authority::read_retained_scope_authority(
+                    packet_path,
+                    target.operation_id,
+                    target.organization_id,
+                )?)
+            } else {
+                None
+            };
+
+        if let Some(packet_path) = args.stage_run_campaign_authority.as_deref() {
+            anyhow::ensure!(
+                args.stage_run_resume_pgdata.is_some(),
+                "Campaign authority packets are accepted only for an exact retained-DB resume"
+            );
+            anyhow::ensure!(
+                target.stage == StageKind::Investigation,
+                "Campaign authority packets are accepted only while resuming Investigation"
+            );
+            campaign_authority::apply_retained_resume_campaign_authority(
+                &db_pool,
+                packet_path,
+                target.operation_id,
+            )
+            .await?;
+        }
+
         eprintln!(
-            "[stage-run-resume] session={} db_session={} operation={} org={} profile={} stage={} to={}",
+            "[stage-run-resume] session={} db_session={} operation={} org={} profile={} topology={} stage={} to={}",
             target.chat_session_key,
             target.session_id,
             target.operation_id,
             target.organization_id,
             target.profile,
+            target.stage_topology_contract.topology,
             target.stage.as_str(),
             resume_terminal.as_str(),
         );
@@ -2326,10 +3652,12 @@ async fn run_resume(mut args: Args) -> Result<()> {
             args.auto_approve,
             StageRunAutoApprovalPolicy {
                 trusted_scope_response: None,
+                retained_scope_authority,
                 // Exact resume must use frozen operation truth. The resume CLI
                 // has no authority to invent a new subsidiary decision.
                 include_subsidiaries: None,
                 confirmed_organization_id: None,
+                confirmed_organization_name: None,
                 approve_phase_boundaries: args.approve_phase_boundaries,
             },
         );
@@ -2371,7 +3699,7 @@ async fn run_resume(mut args: Args) -> Result<()> {
                     Some(target.organization_id),
                     &workspace_str,
                 )
-                .await,
+                .await?,
             )
         } else {
             None
@@ -2397,6 +3725,8 @@ async fn run_resume(mut args: Args) -> Result<()> {
                 println!("{}", format_db_smoke_summary(summary));
             }
         }
+
+        wait_for_live_db_diagnostic(&stage_db).await?;
 
         if let Some(manager) = mcp_manager {
             manager.shutdown().await;
@@ -2664,6 +3994,10 @@ async fn orchestrate_resume(
             .await
             .context("load exact-resume operation project scope")?
             .ok_or_else(|| anyhow!("resume operation_state is missing"))?;
+        anyhow::ensure!(
+            operation.stage_topology_contract == target.stage_topology_contract,
+            "resume refused: operation-frozen stage topology changed after validation"
+        );
         golish_agent_kit::runtime_memory::authorize_operation_project_scope(
             operation.project_scope_id,
             operation.runtime_memory_contract,
@@ -2791,12 +4125,21 @@ fn trusted_scope_review_response(targets: &[String]) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StageRunAutoApprovalPolicy {
     trusted_scope_response: Option<String>,
+    /// Explicit operation/org/exact-candidate authority supplied only to an
+    /// exact retained-DB resume. Unlike `--auto-approve`, this may resolve the
+    /// TargetIntel -> EAS target review because it is bound to the complete
+    /// presented set and an unchanged selected subset.
+    retained_scope_authority: Option<scope_authority::RetainedScopeAuthority>,
     /// `Some` only for a fresh CLI invocation where the flag itself is trusted
     /// intake. Exact resume has no authority to create a new scope decision.
     include_subsidiaries: Option<bool>,
     /// Fresh CLI `--org` identity. A subsidiary-scope choice is machine
     /// resolvable only when its typed context names this exact seeded root.
     confirmed_organization_id: Option<uuid::Uuid>,
+    /// Exact fresh CLI `--org` label. This only permits the backward-compatible
+    /// natural-language form when the model names that root verbatim; it never
+    /// gives a sibling or generic choice scope authority.
+    confirmed_organization_name: Option<String>,
     /// Exact CLI authority corresponding to the GUI's phase Confirm action.
     approve_phase_boundaries: bool,
 }
@@ -2811,18 +4154,27 @@ impl StageRunAutoApprovalPolicy {
     fn resolve(
         &self,
         input_type: &str,
-        _question: &str,
+        question: &str,
         options: &[String],
         context: &str,
     ) -> StageRunAutoResolution {
         match input_type {
-            "scope_review" => self
-                .trusted_scope_response
-                .clone()
-                .map(StageRunAutoResolution::Approve)
-                .unwrap_or(StageRunAutoResolution::Decline(
-                    "scope_review requires exact trusted CLI target rows",
-                )),
+            "scope_review" => {
+                if let Some(authority) = &self.retained_scope_authority {
+                    return authority
+                        .resolve_response(context)
+                        .map(StageRunAutoResolution::Approve)
+                        .unwrap_or(StageRunAutoResolution::Decline(
+                            "scope_review candidates differ from the explicit retained authority packet",
+                        ));
+                }
+                self.trusted_scope_response
+                    .clone()
+                    .map(StageRunAutoResolution::Approve)
+                    .unwrap_or(StageRunAutoResolution::Decline(
+                        "scope_review requires exact trusted CLI target rows",
+                    ))
+            }
             "confirmation" if self.approve_phase_boundaries => StageRunAutoResolution::Approve(
                 "approved by explicit CLI --approve-phase-boundaries".to_string(),
             ),
@@ -2830,15 +4182,27 @@ impl StageRunAutoApprovalPolicy {
                 "phase confirmation requires --approve-phase-boundaries",
             ),
             "choice" => {
-                let Some(request_organization_id) = subsidiary_scope_choice_org(context) else {
-                    return StageRunAutoResolution::Decline(
-                        "choice is not a typed subsidiary-scope decision",
-                    );
-                };
-                if self.confirmed_organization_id != Some(request_organization_id) {
-                    return StageRunAutoResolution::Decline(
-                        "subsidiary choice organization does not match trusted CLI --org",
-                    );
+                match subsidiary_scope_choice_org(context) {
+                    Some(request_organization_id)
+                        if self.confirmed_organization_id == Some(request_organization_id) => {}
+                    Some(_) => {
+                        return StageRunAutoResolution::Decline(
+                            "subsidiary choice organization does not match trusted CLI --org",
+                        );
+                    }
+                    None if self
+                        .confirmed_organization_name
+                        .as_deref()
+                        .is_some_and(|name| {
+                            legacy_subsidiary_choice_names_exact_root(
+                                question, options, context, name,
+                            )
+                        }) => {}
+                    None => {
+                        return StageRunAutoResolution::Decline(
+                            "choice is not a typed or exact-root subsidiary-scope decision",
+                        );
+                    }
                 }
                 let Some(include) = self.include_subsidiaries else {
                     return StageRunAutoResolution::Decline(
@@ -2888,9 +4252,29 @@ fn subsidiary_scope_choice_org(raw: &str) -> Option<uuid::Uuid> {
         .ok()
 }
 
+fn legacy_subsidiary_choice_names_exact_root(
+    question: &str,
+    options: &[String],
+    context: &str,
+    exact_root_name: &str,
+) -> bool {
+    let exact_root_name = exact_root_name.trim().to_lowercase();
+    if exact_root_name.is_empty() {
+        return false;
+    }
+    let authority_text = format!("{context} {question}").to_lowercase();
+    let prompt = format!("{context} {question} {}", options.join(" ")).to_lowercase();
+    authority_text.contains(&exact_root_name)
+        && (prompt.contains("subsidiar")
+            || prompt.contains("controlled holding")
+            || prompt.contains("子公司")
+            || prompt.contains("分支机构"))
+}
+
 fn subsidiary_option_excludes(option: &str) -> bool {
     let normalized = option.trim().to_lowercase();
     [
+        "root_only",
         "不纳入子公司",
         "不包含子公司",
         "仅母公司",
@@ -2900,6 +4284,7 @@ fn subsidiary_option_excludes(option: &str) -> bool {
         "exclude subsidiaries",
         "parent company only",
         "root only",
+        "root-only",
     ]
     .iter()
     .any(|marker| normalized.contains(marker))
@@ -2909,6 +4294,9 @@ fn subsidiary_option_includes(option: &str) -> bool {
     let normalized = option.trim().to_lowercase();
     !subsidiary_option_excludes(option)
         && [
+            "include_subsidiaries",
+            "included —",
+            "included -",
             "纳入：",
             "纳入:",
             "纳入子公司",
@@ -3012,9 +4400,15 @@ async fn maybe_seed(
     if !should_seed_upstream(entry_stage, args.org.as_deref(), &args.target) {
         return Ok(None);
     }
-    let seed = seed_upstream(db_pool, project_path, args.org.as_deref(), &args.target)
-        .await
-        .context("persist trusted CLI organization/target intake")?;
+    let seed = seed_upstream(
+        db_pool,
+        project_path,
+        args.org.as_deref(),
+        args.stage_run_test_organization_id,
+        &args.target,
+    )
+    .await
+    .context("persist trusted CLI organization/target intake")?;
     eprintln!(
         "[stage-run] seeded upstream: org={:?} (id={:?}) targets={} project_path={project_path}",
         seed.org_name, seed.org_id, seed.targets_added
@@ -3116,6 +4510,7 @@ async fn seed_upstream(
     db_pool: &Arc<sqlx::PgPool>,
     project_path: &str,
     org_name: Option<&str>,
+    exact_org_id: Option<uuid::Uuid>,
     targets: &[String],
 ) -> Result<SeedResult> {
     use golish_app_core::ports::recon::{PgReconTargetsAdapter, ReconTargetsPort};
@@ -3134,20 +4529,41 @@ async fn seed_upstream(
                 .context("seed organization lookup")?
             {
                 Some(existing) => existing,
-                None => {
-                    golish_db::repo::organizations::create(
-                        db_pool,
-                        project_path,
-                        name,
-                        None,
-                        "",
-                        "",
+                None => match exact_org_id {
+                    Some(exact_id) => sqlx::query_scalar::<_, uuid::Uuid>(
+                        r#"INSERT INTO organizations(
+                               id,project_path,name,parent_id,description,owner
+                           ) VALUES($1,$2,$3,NULL,'','')
+                           RETURNING id"#,
                     )
+                    .bind(exact_id)
+                    .bind(project_path)
+                    .bind(name)
+                    .fetch_one(db_pool.as_ref())
                     .await
-                    .context("seed organization")?
-                    .id
-                }
+                    .context("seed organization with exact isolated identity")?,
+                    None => {
+                        golish_db::repo::organizations::create(
+                            db_pool,
+                            project_path,
+                            name,
+                            None,
+                            "",
+                            "",
+                        )
+                        .await
+                        .context("seed organization")?
+                        .id
+                    }
+                },
             };
+        if let Some(expected) = exact_org_id {
+            if expected != id {
+                return Err(anyhow!(
+                    "exact isolated organization identity mismatch: expected {expected}, found {id}"
+                ));
+            }
+        }
         org_id = Some(id);
         org_name_out = Some(name.to_string());
     }
@@ -3239,6 +4655,151 @@ async fn maybe_seed_open_ports(db_pool: &sqlx::PgPool, project_path: &str) {
     eprintln!("[stage-run] seeded open ports for {updated} target row(s)");
 }
 
+const CONTROLLED_WEB_ORIGIN_SEED_ENV: &str = "GOLISH_STAGE_RUN_SEED_CONFIRMED_WEB_ORIGINS";
+
+fn controlled_web_origin_identity(value: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(value.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.host().is_none()
+    {
+        return None;
+    }
+    let normalized = golish_db::repo::surface_identity::normalize_web_origin(value)?;
+    let root_url = format!("{}/", normalized.origin);
+    Some((normalized.origin, root_url))
+}
+
+fn parse_controlled_web_origin_seeds(raw: &str) -> Result<Vec<String>> {
+    let mut seeds = BTreeMap::new();
+    for candidate in raw
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let (key, root_url) = controlled_web_origin_identity(candidate)
+            .ok_or_else(|| anyhow!("controlled Web Origin seed is not an absolute HTTP(S) URL"))?;
+        seeds.insert(key, root_url);
+    }
+    if seeds.is_empty() {
+        return Err(anyhow!("controlled Web Origin seed set is empty"));
+    }
+    Ok(seeds.into_values().collect())
+}
+
+/// Controlled-fixture enablement for a direct Enumeration entry.
+///
+/// A normal production run must obtain these rows from EAS.  The smoke wrapper
+/// may bypass EAS to keep one focused Enumeration repair loop short, so this
+/// hook materializes the exact local fixture origin before the operation and
+/// stage timestamps are frozen.  The hook is accepted only with the paired
+/// ephemeral controlled-provider overlay and only for a direct Enumeration
+/// entry; it cannot widen an ordinary or full-chain run.
+async fn maybe_seed_controlled_web_origins(
+    db_pool: &sqlx::PgPool,
+    project_path: &str,
+    entry_stage: StageKind,
+    args: &Args,
+) -> Result<()> {
+    let Ok(raw) = std::env::var(CONTROLLED_WEB_ORIGIN_SEED_ENV) else {
+        return Ok(());
+    };
+    if entry_stage != StageKind::Enumeration
+        || !args.ephemeral_db
+        || args.stage_run_test_toolsconfig_dir.is_none()
+        || args.stage_run_test_intel_providers_dir.is_none()
+        || args.stage_run_test_intel_provider_endpoint.is_none()
+    {
+        return Err(anyhow!(
+            "controlled Web Origin seed requires a direct Enumeration entry and the paired ephemeral controlled-provider overlay"
+        ));
+    }
+
+    let seeds = parse_controlled_web_origin_seeds(&raw)?;
+    let mut seeded = 0usize;
+    for root_url in seeds {
+        let (canonical_key, _) = controlled_web_origin_identity(&root_url)
+            .ok_or_else(|| anyhow!("controlled Web Origin seed normalization failed"))?;
+        let trusted_target = args
+            .target
+            .iter()
+            .find(|target| {
+                controlled_web_origin_identity(target)
+                    .is_some_and(|(target_key, _)| target_key == canonical_key)
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "controlled Web Origin seed is not present in the current invocation target set: {}",
+                    canonical_key
+                )
+            })?;
+        let targets = sqlx::query_as::<_, (uuid::Uuid, Option<uuid::Uuid>)>(
+            r#"SELECT id,organization_id
+                 FROM targets
+                WHERE project_path=$1 AND value=$2 AND scope::text='in'
+                ORDER BY id"#,
+        )
+        .bind(project_path)
+        .bind(trusted_target)
+        .fetch_all(db_pool)
+        .await
+        .context("load exact controlled fixture target")?;
+        let [(target_id, Some(organization_id))] = targets.as_slice() else {
+            return Err(anyhow!(
+                "controlled Web Origin seed requires exactly one organization-owned in-scope target"
+            ));
+        };
+        let normalized = golish_db::repo::surface_identity::normalize_web_origin(&root_url)
+            .ok_or_else(|| anyhow!("controlled Web Origin DB normalization failed"))?;
+        let origin = golish_db::repo::web_origins::upsert_by_identity(
+            db_pool,
+            Some(*organization_id),
+            Some(project_path),
+            &normalized,
+            Some("stage-run-controlled-fixture"),
+            Some(1.0),
+            true,
+        )
+        .await
+        .context("seed controlled fixture Web Origin")?;
+        let raw = serde_json::json!({
+            "controlled_fixture": true,
+            "authority": "current_invocation_exact_target",
+            "transport": "local_stage_smoke"
+        });
+        golish_db::repo::web_origin_observations::insert_observation(
+            db_pool,
+            &golish_db::repo::web_origin_observations::NewWebOriginObservation {
+                organization_id: Some(*organization_id),
+                project_path: Some(project_path),
+                web_origin_id: origin.id,
+                network_endpoint_id: None,
+                target_id: Some(*target_id),
+                observed_ip: None,
+                sni: None,
+                host_header: None,
+                status_code: Some(200),
+                title: Some("Golish controlled fixture"),
+                final_url: Some(&root_url),
+                redirect_chain: None,
+                body_hash: None,
+                favicon_hash: None,
+                screenshot_path: None,
+                capture_path: None,
+                confidence: Some(1.0),
+                source: Some("eas_probe_http_liveness"),
+                raw: Some(&raw),
+            },
+        )
+        .await
+        .context("seed controlled fixture Web Origin observation")?;
+        seeded += 1;
+    }
+    eprintln!("[stage-run] seeded {seeded} controlled fixture Web Origin observation(s)");
+    Ok(())
+}
+
 fn parse_seed_open_ports(raw: &str) -> Vec<(String, Vec<u16>)> {
     raw.split(';')
         .filter_map(|entry| {
@@ -3270,6 +4831,8 @@ fn child_slice(profile_id: &str, to: StageKind) -> Option<(StageKind, HashSet<St
     if to == StageKind::Scoping {
         return None;
     }
+    // This subsidiary fan-out is reached only from the LegacyV1 execution
+    // branch. Unified operations use the in-graph team runtime instead.
     resolve_slice(profile_id, Some(StageKind::TargetIntel), to).ok()
 }
 
@@ -3339,22 +4902,83 @@ fn init_tracing_best_effort(settings: &golish_settings::GolishSettings, verbose:
 #[derive(Debug, serde::Serialize)]
 struct DbSmokeSummary {
     session_id: String,
+    operation_id: Option<String>,
+    operation_identity: serde_json::Value,
     organization_id: Option<String>,
     project_path: String,
     totals: BTreeMap<String, serde_json::Value>,
     run_scoped: BTreeMap<String, serde_json::Value>,
+    operation_scoped: BTreeMap<String, serde_json::Value>,
+    operation_exact_sets: BTreeMap<String, serde_json::Value>,
     project_scoped: BTreeMap<String, serde_json::Value>,
     org_scoped: BTreeMap<String, serde_json::Value>,
 }
 
+#[allow(clippy::explicit_auto_deref)]
 async fn collect_db_smoke_summary(
     pool: &sqlx::PgPool,
     session_id: &str,
     org_id: Option<uuid::Uuid>,
     project_path: &str,
-) -> DbSmokeSummary {
+) -> Result<DbSmokeSummary> {
+    let mut snapshot = pool
+        .begin()
+        .await
+        .context("begin DB smoke summary snapshot")?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *snapshot)
+        .await
+        .context("configure DB smoke summary snapshot")?;
+    let operation_ids = sqlx::query_scalar::<_, uuid::Uuid>(
+        r#"SELECT DISTINCT operation.operation_id
+             FROM sessions session
+             JOIN tasks task ON task.session_id=session.id
+             JOIN operation_state operation ON operation.operation_id=task.id
+            WHERE session.chat_session_key=$1
+            ORDER BY operation.operation_id"#,
+    )
+    .bind(session_id)
+    .fetch_all(&mut *snapshot)
+    .await
+    .context("resolve exact stage-run operation")?;
+    if operation_ids.len() != 1 {
+        return Err(anyhow!(
+            "stage_run_operation_resolution_not_exact: expected 1 operation for session {}, found {} ({:?})",
+            session_id,
+            operation_ids.len(),
+            operation_ids
+        ));
+    }
+    let operation_id = operation_ids[0];
+    let operation_identity = sqlx::query_scalar::<_, serde_json::Value>(
+        r#"SELECT jsonb_build_object(
+                        'operationId',operation.operation_id,
+                        'taskStatus',task.status,
+                        'profile',operation.profile,
+                        'currentStage',operation.current_stage,
+                        'runtimeMemoryContract',operation.runtime_memory_contract,
+                        'attackExecutionContract',operation.attack_execution_contract,
+                        'enumerationAnalysisContract',operation.enumeration_analysis_contract,
+                        'toolTruthContract',operation.tool_truth_contract,
+                        'investigationContractVersion',operation.investigation_contract_version,
+                        'investigationRolloutMode',operation.investigation_rollout_mode,
+                        'stageTopologyContract',operation.stage_topology_contract,
+                        'stageTopologySha256',operation.stage_topology_sha256,
+                        'stageTopologyFreezeSource',operation.stage_topology_freeze_source,
+                        'projectScopeId',operation.project_scope_id,
+                        'engagementOrganizationId',operation.engagement_org_id
+                    )
+                    FROM operation_state operation
+                    JOIN tasks task ON task.id=operation.operation_id
+                   WHERE operation.operation_id=$1"#,
+    )
+    .bind(operation_id)
+    .fetch_one(&mut *snapshot)
+    .await
+    .unwrap_or_else(|error| serde_json::json!({ "error": error.to_string() }));
+
     let totals = collect_unbound_counts(
-        pool,
+        &mut snapshot,
         &[
             ("sessions", "SELECT COUNT(*) FROM sessions"),
             ("tasks", "SELECT COUNT(*) FROM tasks"),
@@ -3380,10 +5004,10 @@ async fn collect_db_smoke_summary(
             ),
         ],
     )
-    .await;
+    .await?;
 
     let run_scoped = collect_text_counts(
-        pool,
+        &mut snapshot,
         session_id,
         &[
             (
@@ -3416,10 +5040,68 @@ async fn collect_db_smoke_summary(
             ),
         ],
     )
-    .await;
+    .await?;
+
+    let operation_scoped =
+            collect_uuid_counts(
+                &mut snapshot,
+                operation_id,
+                &[
+                    (
+                        "stage_runs_by_operation",
+                        "SELECT COUNT(*) FROM stage_runs WHERE operation_id=$1",
+                    ),
+                    (
+                        "stage_units_by_operation",
+                        "SELECT COUNT(*) FROM stage_run_units WHERE operation_id=$1",
+                    ),
+                    (
+                        "team_plans_by_operation",
+                        "SELECT COUNT(*) FROM stage_team_plans WHERE operation_id=$1",
+                    ),
+                    (
+                        "work_items_by_operation",
+                        "SELECT COUNT(*) FROM stage_work_items WHERE operation_id=$1",
+                    ),
+                    (
+                        "worker_outputs_by_operation",
+                        "SELECT COUNT(*) FROM stage_worker_outputs WHERE operation_id=$1",
+                    ),
+                    (
+                        "deliverable_submissions_by_operation",
+                        "SELECT COUNT(*) FROM stage_deliverable_submissions WHERE operation_id=$1",
+                    ),
+                    (
+                        "tool_calls_by_operation",
+                        "SELECT COUNT(*) FROM tool_calls WHERE operation_id=$1",
+                    ),
+                    (
+                        "capability_receipts_by_operation",
+                        "SELECT COUNT(*) FROM capability_execution_receipts receipt JOIN tool_truth_execution_authorities authority ON authority.id=receipt.execution_authority_id WHERE authority.operation_id=$1",
+                    ),
+                    (
+                        "enumeration_lane_receipts_by_operation",
+                        "SELECT COUNT(*) FROM enumeration_lane_commit_receipts WHERE operation_id=$1",
+                    ),
+                    (
+                        "hypothesis_revisions_by_operation",
+                        "SELECT COUNT(*) FROM attack_hypothesis_revisions WHERE operation_id=$1",
+                    ),
+                    (
+                        "verification_campaigns_by_operation",
+                        "SELECT COUNT(*) FROM verification_campaigns WHERE operation_id=$1",
+                    ),
+                    (
+                        "reports_by_operation",
+                        "SELECT COUNT(*) FROM reports WHERE operation_id=$1",
+                    ),
+        ],
+    )
+    .await?;
+    let operation_exact_sets = collect_operation_exact_sets(&mut snapshot, operation_id).await?;
 
     let project_scoped = collect_text_counts(
-        pool,
+        &mut snapshot,
         project_path,
         &[
             (
@@ -3449,12 +5131,12 @@ async fn collect_db_smoke_summary(
             ),
         ],
     )
-    .await;
+    .await?;
 
     let org_scoped = match org_id {
         Some(org_id) => {
             collect_uuid_counts(
-                pool,
+                &mut snapshot,
                 org_id,
                 &[
                     (
@@ -3487,96 +5169,1367 @@ async fn collect_db_smoke_summary(
                     ),
                 ],
             )
-            .await
+            .await?
         }
         None => BTreeMap::new(),
     };
 
-    DbSmokeSummary {
+    snapshot
+        .commit()
+        .await
+        .context("commit DB smoke summary snapshot")?;
+
+    Ok(DbSmokeSummary {
         session_id: session_id.to_string(),
+        operation_id: Some(operation_id.to_string()),
+        operation_identity,
         organization_id: org_id.map(|id| id.to_string()),
         project_path: project_path.to_string(),
         totals,
         run_scoped,
+        operation_scoped,
+        operation_exact_sets,
         project_scoped,
         org_scoped,
+    })
+}
+
+async fn collect_operation_exact_sets(
+    connection: &mut sqlx::PgConnection,
+    operation_id: uuid::Uuid,
+) -> Result<BTreeMap<String, serde_json::Value>> {
+    let queries = [
+        (
+            "stage_runs",
+            r#"WITH rows AS (
+                    SELECT run.id AS row_id,
+                           operation_stage_rank_for_topology(
+                               operation.stage_topology_contract,run.stage_kind
+                           ) AS ordinal,
+                           jsonb_build_object(
+                               'stageExecutionId',run.id,'stage',run.stage_kind,
+                               'status',run.status,'completedAt',run.completed_at
+                           ) AS member
+                      FROM stage_runs run
+                      JOIN operation_state operation ON operation.operation_id=run.operation_id
+                     WHERE run.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(
+                               jsonb_agg(member ORDER BY ordinal,row_id),
+                               '[]'::jsonb
+                           ) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "deliverable_submissions",
+            r#"WITH rows AS (
+                    SELECT operation_stage_rank_for_topology(
+                               operation.stage_topology_contract,submission.stage_kind
+                           ) AS stage_ordinal,
+                           submission.id AS row_id,
+                           jsonb_build_object(
+                               'submissionId',submission.id,'stage',submission.stage_kind,
+                               'organizationId',submission.organization_id,
+                               'payloadSha256',submission.payload_sha256
+                           ) AS member
+                      FROM stage_deliverable_submissions submission
+                      JOIN operation_state operation
+                        ON operation.operation_id=submission.operation_id
+                     WHERE submission.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(
+                               jsonb_agg(member ORDER BY stage_ordinal,row_id),
+                               '[]'::jsonb
+                           ) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "capability_receipts",
+            r#"WITH rows AS (
+                    SELECT receipt.id AS row_id,
+                           jsonb_build_object(
+                               'receiptId',receipt.id,'capability',receipt.capability,
+                               'attemptState',receipt.attempt_state,
+                               'landingState',receipt.landing_state,
+                               'observationState',receipt.observation_state,
+                               'coverageExtent',receipt.coverage_extent,
+                               'receiptAuthorityHash',receipt.receipt_authority_hash,
+                               'reconciliationState',receipt.reconciliation_state
+                           ) AS member
+                      FROM capability_execution_receipts receipt
+                      JOIN tool_truth_execution_authorities authority
+                        ON authority.id=receipt.execution_authority_id
+                     WHERE authority.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "evidence_ledger",
+            r#"WITH rows AS (
+                    SELECT audit.id AS row_id,
+                           jsonb_build_object(
+                               'evidenceAuditId',audit.id,
+                               'action',audit.action,
+                               'category',audit.category,
+                               'targetId',audit.target_id,
+                               'runId',audit.run_id,
+                               'technique',audit.evidence_technique,
+                               'asset',audit.evidence_asset,
+                               'outcome',audit.evidence_outcome,
+                               'status',audit.status,
+                               'createdAt',audit.created_at
+                           ) AS member
+                      FROM audit_log audit
+                     WHERE audit.audit_role='evidence'
+                       AND (
+                           audit.run_id=$1
+                           OR audit.session_id IN (
+                               SELECT session.chat_session_key
+                                 FROM sessions session
+                                 JOIN tasks task ON task.session_id=session.id
+                                WHERE task.id=$1
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                                 FROM evidence_classifications classification
+                                 JOIN stage_runs run
+                                   ON run.id=classification.producing_stage_run_id
+                                WHERE classification.evidence_audit_id=audit.id
+                                  AND run.operation_id=$1
+                           )
+                           OR EXISTS (
+                               SELECT 1
+                                 FROM tool_truth_evidence_production_bindings binding
+                                WHERE binding.evidence_audit_id=audit.id
+                                  AND binding.operation_id=$1
+                           )
+                       )
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "enumeration_lane_receipts",
+            r#"WITH rows AS (
+                    SELECT id AS row_id,
+                           jsonb_build_object(
+                               'receiptId',id,'lane',lane,'targetId',target_id,
+                               'terminalDisposition',terminal_disposition,
+                               'resolutionOccurrenceId',resolution_occurrence_id,
+                               'entitySetSha256',entity_set_sha256,
+                               'denominatorSetSha256',denominator_set_sha256,
+                               'receiptSetSha256',receipt_set_sha256,
+                               'missing',missing,'unresolvedCount',unresolved_count
+                           ) AS member
+                      FROM enumeration_lane_commit_receipts
+                     WHERE operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "enumeration_endpoint_occurrences",
+            r#"WITH rows AS (
+                    SELECT occurrence.id AS row_id,
+                           jsonb_build_object(
+                               'occurrenceId',occurrence.id,
+                               'organizationId',occurrence.organization_id,
+                               'executionAuthorityId',occurrence.execution_authority_id,
+                               'sourceTargetId',occurrence.source_target_id,
+                               'sourceWebOriginId',occurrence.source_web_origin_id,
+                               'resolvedTargetId',occurrence.resolved_target_id,
+                               'resolvedWebOriginId',occurrence.resolved_web_origin_id,
+                               'parentOccurrenceId',occurrence.parent_occurrence_id,
+                               'sourceUrl',occurrence.source_url,
+                               'documentUrl',occurrence.document_url,
+                               'scriptUrl',occurrence.script_url,
+                               'protocol',occurrence.protocol,'method',occurrence.method,
+                               'observationKind',occurrence.observation_kind,
+                               'inferenceLevel',occurrence.inference_level,
+                               'resolutionStatus',occurrence.resolution_status,
+                               'canonicalRequestUrl',occurrence.canonical_request_url,
+                               'displayUrl',occurrence.display_url,
+                               'resolutionReason',occurrence.resolution_reason,
+                               'scopeDecision',occurrence.scope_decision,
+                               'candidateClassification',occurrence.candidate_classification,
+                               'routeKind',occurrence.route_kind,
+                               'routeTemplate',occurrence.route_template,
+                               'requestSent',occurrence.request_sent,
+                               'requestSchemaHash',occurrence.request_schema_hash,
+                               'runtimeSampleUrl',occurrence.runtime_sample_url,
+                               'promotionEligible',occurrence.promotion_eligible,
+                               'observedAt',occurrence.observed_at,
+                               'createdAt',occurrence.created_at
+                           ) AS member
+                      FROM enumeration_endpoint_occurrences occurrence
+                     WHERE occurrence.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "enumeration_parameter_assessments",
+            r#"WITH rows AS (
+                    SELECT assessment.id AS row_id,
+                           jsonb_build_object(
+                               'assessmentId',assessment.id,
+                               'occurrenceId',assessment.occurrence_id,
+                               'organizationId',assessment.organization_id,
+                               'executionAuthorityId',assessment.execution_authority_id,
+                               'denominatorId',assessment.denominator_id,
+                               'denominatorItemId',assessment.denominator_item_id,
+                               'terminalReceiptId',assessment.terminal_receipt_id,
+                               'terminalReceiptInputId',assessment.terminal_receipt_input_id,
+                               'parameterOutcome',assessment.parameter_outcome,
+                               'reasonCode',assessment.reason_code,
+                               'createdAt',assessment.created_at
+                           ) AS member
+                      FROM enumeration_endpoint_parameter_assessments assessment
+                     WHERE assessment.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "enumeration_occurrence_parameters",
+            r#"WITH rows AS (
+                    SELECT parameter.id AS row_id,
+                           jsonb_build_object(
+                               'parameterId',parameter.id,
+                               'assessmentId',parameter.assessment_id,
+                               'name',parameter.name,
+                               'location',parameter.location,
+                               'valueType',parameter.value_type,
+                               'requirement',parameter.requirement,
+                               'confidence',parameter.confidence,
+                               'sourceAnchorHash',tool_truth_sha256(to_jsonb(parameter.source_anchor)::TEXT),
+                               'createdAt',parameter.created_at
+                           ) AS member
+                      FROM enumeration_endpoint_occurrence_parameters parameter
+                      JOIN enumeration_endpoint_parameter_assessments assessment
+                        ON assessment.id=parameter.assessment_id
+                     WHERE assessment.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "enumeration_parameter_provenance",
+            r#"WITH rows AS (
+                    SELECT anchor.parameter_id::TEXT||':'||anchor.anchor_ordinal::TEXT AS row_id,
+                           jsonb_build_object(
+                               'parameterId',anchor.parameter_id,
+                               'assessmentId',anchor.assessment_id,
+                               'anchorOrdinal',anchor.anchor_ordinal,
+                               'sourceAnchorHash',tool_truth_sha256(to_jsonb(anchor.source_anchor)::TEXT),
+                               'createdAt',anchor.created_at
+                           ) AS member
+                      FROM enumeration_endpoint_occurrence_parameter_source_anchors anchor
+                      JOIN enumeration_endpoint_parameter_assessments assessment
+                        ON assessment.id=anchor.assessment_id
+                     WHERE assessment.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "enumeration_resolution_closeouts",
+            r#"WITH rows AS (
+                    SELECT closeout.id AS row_id,
+                           jsonb_build_object(
+                               'closeoutId',closeout.id,
+                               'organizationId',closeout.organization_id,
+                               'parentOccurrenceId',closeout.parent_occurrence_id,
+                               'producerLaneReceiptId',closeout.producer_lane_receipt_id,
+                               'terminalState',closeout.terminal_state,
+                               'reasonCode',closeout.reason_code,
+                               'suggestionIds',closeout.suggestion_ids,
+                               'terminalReceiptId',closeout.terminal_receipt_id,
+                               'terminalReceiptInputId',closeout.terminal_receipt_input_id,
+                               'evidenceSetSha256',closeout.evidence_set_sha256,
+                               'closeoutSha256',closeout.closeout_sha256,
+                               'createdAt',closeout.created_at
+                           ) AS member
+                      FROM enumeration_resolution_closeout_receipts closeout
+                     WHERE closeout.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "target_intel_goal_epochs",
+            r#"WITH rows AS (
+                    SELECT epoch.id AS row_id,
+                           jsonb_build_object(
+                               'goalEpochId',epoch.id,
+                               'organizationId',epoch.organization_id,
+                               'epoch',epoch.epoch,'status',epoch.status,
+                               'rowVersion',epoch.row_version,
+                               'sealedAt',epoch.sealed_at,'terminalAt',epoch.terminal_at
+                           ) AS member
+                      FROM target_intel_goal_epochs epoch
+                     WHERE epoch.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "target_intel_goal_reviews",
+            r#"WITH rows AS (
+                    SELECT review.id AS row_id,
+                           jsonb_build_object(
+                               'goalReviewId',review.id,
+                               'organizationId',review.organization_id,
+                               'goalEpoch',review.goal_epoch,
+                               'reviewGeneration',review.review_generation,
+                               'round',review.round,'status',review.status,
+                               'bundleSha256',review.bundle_sha256,
+                               'verdictSha256',review.verdict_sha256,
+                               'rowVersion',review.row_version
+                           ) AS member
+                      FROM target_intel_goal_reviews review
+                     WHERE review.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "target_intel_goal_frontier",
+            r#"WITH rows AS (
+                    SELECT frontier.id AS row_id,
+                           jsonb_build_object(
+                               'frontierId',frontier.id,
+                               'organizationId',frontier.organization_id,
+                               'goalEpoch',frontier.goal_epoch,
+                               'pivotKind',frontier.pivot_kind,
+                               'pivotValueSha256',frontier.pivot_value_sha256,
+                               'intent',frontier.intent,'status',frontier.status,
+                               'materiality',frontier.materiality,
+                               'rowVersion',frontier.row_version,
+                               'terminalRefCount',jsonb_array_length(frontier.terminal_refs)
+                           ) AS member
+                      FROM target_intel_goal_frontier_v2 frontier
+                     WHERE frontier.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "target_intel_goal_work_journal",
+            r#"WITH rows AS (
+                    SELECT entry.id AS row_id,
+                           jsonb_build_object(
+                               'journalEntryId',entry.id,
+                               'organizationId',entry.organization_id,
+                               'teamPlanId',entry.team_plan_id,
+                               'goalEpochId',entry.goal_epoch_id,
+                               'goalEpoch',entry.goal_epoch,
+                               'controllerWorkerRunId',entry.controller_worker_run_id,
+                               'controllerMessageChainId',entry.controller_message_chain_id,
+                               'ordinal',entry.ordinal,
+                               'entryKind',entry.entry_kind,
+                               'frontierRefCount',jsonb_array_length(entry.related_frontier_refs),
+                               'evidenceRefCount',jsonb_array_length(entry.evidence_refs),
+                               'toolCallRefCount',jsonb_array_length(entry.tool_call_refs),
+                               'observationRefCount',jsonb_array_length(entry.observation_refs),
+                               'entrySha256',entry.entry_sha256,
+                               'createdAt',entry.created_at
+                           ) AS member
+                      FROM target_intel_goal_work_journal_entries entry
+                     WHERE entry.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "target_intel_semantic_artifacts",
+            r#"WITH rows AS (
+                    SELECT artifact.organization_id::TEXT||':'||artifact.session_id::TEXT||':'||artifact.artifact_ref AS row_id,
+                           jsonb_build_object(
+                               'artifactRef',artifact.artifact_ref,
+                               'organizationId',artifact.organization_id,
+                               'sessionId',artifact.session_id,
+                               'artifactSha256',artifact.artifact_sha256,
+                               'createdAt',artifact.created_at
+                           ) AS member
+                      FROM target_intel_semantic_artifacts artifact
+                     WHERE artifact.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "target_intel_asset_observations",
+            r#"WITH rows AS (
+                    SELECT observation.id AS row_id,
+                           jsonb_build_object(
+                               'observationId',observation.id,
+                               'organizationId',observation.organization_id,
+                               'goalEpochId',observation.goal_epoch_id,
+                               'producerWorkerRunId',observation.producer_worker_run_id,
+                               'producerToolCallId',observation.producer_tool_call_id,
+                               'semanticReceiptAuditId',observation.semantic_receipt_audit_id,
+                               'evidenceId',observation.evidence_id,
+                               'artifactRef',observation.artifact_ref,
+                               'providerId',observation.provider_id,
+                               'providerQueryType',observation.provider_query_type,
+                               'adapterVersion',observation.adapter_version,
+                               'stableQueryKey',observation.stable_query_key,
+                               'assetKind',observation.asset_kind,
+                               'canonicalIdentitySha256',observation.canonical_identity_sha256,
+                               'observationSha256',observation.observation_sha256,
+                               'attributionDisposition',observation.attribution_disposition,
+                               'reachabilityState',observation.reachability_state,
+                               'promotionTargetId',observation.promotion_target_id,
+                               'rowVersion',observation.row_version,
+                               'observedAt',observation.observed_at
+                           ) AS member
+                      FROM target_intel_asset_observations observation
+                     WHERE observation.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "stage_handoffs",
+            r#"WITH rows AS (
+                    SELECT handoff.id AS row_id,
+                           jsonb_build_object(
+                               'handoffId',handoff.id,
+                               'organizationId',handoff.organization_id,
+                               'scopeSnapshotId',handoff.scope_snapshot_id,
+                               'fromStage',handoff.from_stage_kind,
+                               'stageExecutionId',handoff.stage_execution_id,
+                               'sourceStageRunUnitId',handoff.source_stage_run_unit_id,
+                               'deliverableSubmissionId',handoff.deliverable_submission_id,
+                               'scopeHash',handoff.scope_hash,
+                               'payloadSha256',handoff.payload_sha256,
+                               'evidenceCount',cardinality(handoff.evidence_ids),
+                               'unitGateDecisionHash',handoff.unit_gate_decision_hash,
+                               'aggregatePassTokenHash',handoff.aggregate_pass_token_hash,
+                               'invalidatedAt',handoff.invalidated_at,
+                               'schemaVersion',handoff.schema_version
+                           ) AS member
+                      FROM stage_handoffs handoff
+                     WHERE handoff.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "application_model_revisions",
+            r#"WITH rows AS (
+                    SELECT revision.id AS row_id,
+                           jsonb_build_object(
+                               'applicationModelRevisionId',revision.id,
+                               'manifestId',revision.manifest_id,
+                               'scopeSnapshotId',revision.scope_snapshot_id,
+                               'stageExecutionId',revision.stage_execution_id,
+                               'stageRunUnitId',revision.stage_run_unit_id,
+                               'organizationId',revision.organization_id,
+                               'revisionOrdinal',revision.revision_ordinal,
+                               'schemaVersion',revision.schema_version,
+                               'status',revision.status,
+                               'modelHash',revision.model_hash,
+                               'replayMaterialHash',revision.replay_material_hash,
+                               'sourceSubmissionId',revision.source_submission_id,
+                               'rowVersion',revision.row_version,
+                               'createdAt',revision.created_at,
+                               'finalizedAt',revision.finalized_at
+                           ) AS member
+                      FROM application_model_revisions revision
+                     WHERE revision.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_run_heads",
+            r#"WITH rows AS (
+                    SELECT head.authority_id AS row_id,
+                           jsonb_build_object(
+                               'authorityId',head.authority_id,
+                               'stageExecutionId',head.stage_execution_id,
+                               'scopeSnapshotId',head.scope_snapshot_id,
+                               'runState',head.run_state,
+                               'admissionOpen',head.admission_open,
+                               'stopEpoch',head.stop_epoch,
+                               'changeSeq',head.change_seq,
+                               'headVersion',head.head_version,
+                               'headSha256',head.head_sha256
+                           ) AS member
+                      FROM investigation_run_heads head
+                     WHERE head.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_main_read_sessions",
+            r#"WITH rows AS (
+                    SELECT read_session.main_read_session_id AS row_id,
+                           jsonb_build_object(
+                               'mainReadSessionId',read_session.main_read_session_id,
+                               'authorityId',read_session.authority_id,
+                               'organizationId',read_session.organization_id,
+                               'snapshotId',read_session.snapshot_id,
+                               'snapshotSha256',read_session.snapshot_sha256,
+                               'contextChainId',read_session.context_chain_id,
+                               'transcriptPartitionId',read_session.transcript_partition_id,
+                               'sessionContractVersion',read_session.session_contract_version,
+                               'memberSha256',read_session.member_sha256
+                           ) AS member
+                      FROM investigation_main_read_sessions read_session
+                     WHERE read_session.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_analysis_bindings",
+            r#"WITH rows AS (
+                    SELECT binding.binding_id AS row_id,
+                           jsonb_build_object(
+                               'bindingId',binding.binding_id,
+                               'authorityId',binding.authority_id,
+                               'organizationId',binding.organization_id,
+                               'workId',binding.work_id,
+                               'candidateSnapshotId',binding.candidate_snapshot_id,
+                               'analysisAttemptId',binding.analysis_attempt_id,
+                               'attemptOrdinal',binding.attempt_ordinal,
+                               'contractVersion',binding.contract_version
+                           ) AS member
+                      FROM investigation_analysis_attempt_bindings binding
+                     WHERE binding.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_task_plans",
+            r#"WITH rows AS (
+                    SELECT plan.task_plan_id AS row_id,
+                           jsonb_build_object(
+                               'taskPlanId',plan.task_plan_id,
+                               'authorityId',plan.authority_id,
+                               'organizationId',plan.organization_id,
+                               'subjectKind',plan.subject_kind,
+                               'subjectId',plan.subject_id,
+                               'subjectFingerprintSha256',plan.subject_fingerprint_sha256,
+                               'taskPlanVersion',plan.task_plan_version,
+                               'taskPlanSha256',plan.task_plan_sha256,
+                               'status',plan.status,
+                               'subtaskCount',plan.subtask_count,
+                               'subtaskSetSha256',plan.subtask_set_sha256,
+                               'rowVersion',plan.row_version
+                           ) AS member
+                      FROM investigation_pentagi_task_plans plan
+                     WHERE plan.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_delegation_census",
+            r#"WITH rows AS (
+                    SELECT census.census_seal_id AS row_id,
+                           jsonb_build_object(
+                               'censusSealId',census.census_seal_id,
+                               'taskPlanId',census.task_plan_id,
+                               'organizationId',plan.organization_id,
+                               'primaryDispatchReceiptId',census.primary_dispatch_receipt_id,
+                               'primaryWorkerRunId',census.primary_worker_run_id,
+                               'runnableSubtaskCount',census.runnable_subtask_count,
+                               'runnableSubtaskSetSha256',census.runnable_subtask_set_sha256,
+                               'dispatchCount',census.dispatch_count,
+                               'dispatchSetSha256',census.dispatch_set_sha256,
+                               'pipelineEventCount',census.pipeline_event_count,
+                               'pipelineEventSetSha256',census.pipeline_event_set_sha256,
+                               'sealSha256',census.seal_sha256
+                           ) AS member
+                      FROM investigation_pentagi_delegation_census_seals census
+                      JOIN investigation_pentagi_task_plans plan
+                        ON plan.task_plan_id=census.task_plan_id
+                     WHERE plan.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "hypothesis_revisions",
+            r#"WITH rows AS (
+                    SELECT revision_id AS row_id,
+                           jsonb_build_object(
+                               'revisionId',revision_id,'rootId',root_id,
+                               'epistemicState',epistemic_state,
+                               'lifecycleState',lifecycle_state,
+                               'planningReadiness',planning_readiness,
+                               'revisionHash',revision_hash
+                           ) AS member
+                      FROM attack_hypothesis_revisions
+                     WHERE operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "hypothesis_verification_tasks",
+            r#"WITH rows AS (
+                    SELECT task.task_id AS row_id,
+                           jsonb_build_object(
+                               'taskId',task.task_id,
+                               'organizationId',task.organization_id,
+                               'hypothesisRevisionId',task.hypothesis_revision_id,
+                               'hypothesisRevisionSha256',task.hypothesis_revision_sha256,
+                               'verificationPlanId',task.verification_plan_id,
+                               'verificationPlanSha256',task.verification_plan_sha256,
+                               'semanticEvidenceSetSha256',task.semantic_evidence_set_sha256,
+                               'openObligationSetSha256',task.open_obligation_set_sha256,
+                               'semanticAttemptFingerprint',task.semantic_attempt_fingerprint,
+                               'currentState',head.current_state,
+                               'headVersion',head.head_version
+                           ) AS member
+                      FROM hypothesis_verification_tasks task
+                      JOIN hypothesis_verification_task_state_heads head
+                        ON head.task_id=task.task_id
+                     WHERE task.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "verification_campaigns",
+            r#"WITH rows AS (
+                    SELECT campaign_id AS row_id,
+                           jsonb_build_object(
+                               'campaignId',campaign_id,'state',state,
+                               'hypothesisRevisionId',hypothesis_revision_id,
+                               'verificationContractHash',verification_contract_hash,
+                               'sourceSnapshotHash',source_snapshot_hash
+                           ) AS member
+                      FROM verification_campaigns
+                     WHERE operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "verification_prepared_actions",
+            r#"WITH rows AS (
+                    SELECT action.prepared_action_id AS row_id,
+                           jsonb_build_object(
+                               'preparedActionId',action.prepared_action_id,
+                               'campaignId',action.campaign_id,
+                               'organizationId',action.organization_id,
+                               'actionOrdinal',action.action_ordinal,
+                               'actionContractKind',action.action_contract_kind,
+                               'actionKind',action.action_kind,
+                               'canonicalRequestHash',action.canonical_request_hash,
+                               'rendererVersion',action.renderer_version,
+                               'riskTier',action.risk_tier,
+                               'state',action.state,'reasonCode',action.reason_code,
+                               'residualId',action.residual_id,
+                               'rowVersion',action.row_version
+                           ) AS member
+                      FROM verification_prepared_actions action
+                     WHERE action.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "verification_action_authorizations",
+            r#"WITH rows AS (
+                    SELECT auth.authorization_receipt_id AS row_id,
+                           jsonb_build_object(
+                               'authorizationReceiptId',auth.authorization_receipt_id,
+                               'preparedActionId',auth.prepared_action_id,
+                               'campaignId',auth.campaign_id,
+                               'organizationId',auth.organization_id,
+                               'decision',auth.decision,
+                               'decisionReasonCode',auth.decision_reason_code,
+                               'expectedActionRowVersion',auth.expected_action_row_version,
+                               'campaignDispatchGeneration',auth.campaign_dispatch_generation,
+                               'rendererVersion',auth.renderer_version,
+                               'reviewedActionHash',auth.reviewed_action_hash,
+                               'authorizationHash',auth.authorization_hash,
+                               'actorKind',auth.actor_kind,
+                               'operatorChannel',auth.operator_channel,
+                               'residualId',auth.residual_id
+                           ) AS member
+                      FROM verification_prepared_action_authorizations auth
+                     WHERE auth.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "verification_action_executions",
+            r#"WITH rows AS (
+                    SELECT execution.action_execution_id AS row_id,
+                           jsonb_build_object(
+                               'actionExecutionId',execution.action_execution_id,
+                               'preparedActionId',execution.prepared_action_id,
+                               'authorizationReceiptId',execution.authorization_receipt_id,
+                               'organizationId',execution.organization_id,
+                               'executionOrdinal',execution.execution_ordinal,
+                               'executionKind',execution.execution_kind,
+                               'state',execution.state,
+                               'campaignDispatchGeneration',execution.campaign_dispatch_generation,
+                               'durableBeginHash',execution.durable_begin_hash,
+                               'capabilityExecutionReceiptId',execution.capability_execution_receipt_id,
+                               'closeoutHash',execution.closeout_hash,
+                               'rowVersion',execution.row_version
+                           ) AS member
+                      FROM verification_action_executions execution
+                     WHERE execution.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "verification_fact_deltas",
+            r#"WITH rows AS (
+                    SELECT delta.fact_delta_bundle_id AS row_id,
+                           jsonb_build_object(
+                               'factDeltaBundleId',delta.fact_delta_bundle_id,
+                               'campaignId',delta.campaign_id,
+                               'organizationId',delta.organization_id,
+                               'hypothesisRevisionId',delta.hypothesis_revision_id,
+                               'verificationObjectiveId',delta.verification_objective_id,
+                               'deltaKind',delta.delta_kind,
+                               'evidenceRefSetHash',delta.evidence_ref_set_hash,
+                               'sourceAuthorityHash',delta.source_authority_hash,
+                               'factDeltaHash',delta.fact_delta_hash
+                           ) AS member
+                      FROM verification_fact_delta_bundles delta
+                     WHERE delta.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "hypothesis_residual_risks",
+            r#"WITH rows AS (
+                    SELECT residual.residual_id AS row_id,
+                           jsonb_build_object(
+                               'residualId',residual.residual_id,
+                               'organizationId',residual.organization_id,
+                               'revisionId',residual.revision_id,
+                               'snapshotId',residual.snapshot_id,
+                               'reasonCode',residual.reason_code,
+                               'ownerKind',residual.owner_kind,
+                               'residualHash',residual.residual_hash,
+                               'closedAt',residual.closed_at
+                           ) AS member
+                      FROM hypothesis_residual_risks residual
+                     WHERE residual.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_run_closures",
+            r#"WITH rows AS (
+                    SELECT closure.closure_id AS row_id,
+                           jsonb_build_object(
+                               'closureId',closure.closure_id,
+                               'authorityId',closure.authority_id,
+                               'disposition',closure.disposition,
+                               'stopEpoch',closure.stop_epoch,
+                               'workCount',closure.work_count,
+                               'workSetSha256',closure.work_set_sha256,
+                               'taskPlanCount',closure.task_plan_count,
+                               'taskPlanSetSha256',closure.task_plan_set_sha256,
+                               'dispatchCount',closure.dispatch_count,
+                               'dispatchSetSha256',closure.dispatch_set_sha256,
+                               'residualSetSha256',closure.residual_set_sha256,
+                               'closureSha256',closure.closure_sha256
+                           ) AS member
+                      FROM investigation_run_closures closure
+                     WHERE closure.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_stop_intents",
+            r#"WITH rows AS (
+                    SELECT intent.stop_intent_id AS row_id,
+                           jsonb_build_object(
+                               'stopIntentId',intent.stop_intent_id,
+                               'authorityId',intent.authority_id,
+                               'stageExecutionId',intent.stage_execution_id,
+                               'owningStageRunRequestId',intent.owning_stage_run_request_id,
+                               'expectedRunHeadSha256',intent.expected_run_head_sha256,
+                               'expectedChangeSeq',intent.expected_change_seq,
+                               'stopEpoch',intent.stop_epoch,
+                               'frozenWorkCount',intent.frozen_work_count,
+                               'frozenWorkSetSha256',intent.frozen_work_set_sha256,
+                               'receiptSha256',intent.receipt_sha256,
+                               'createdAt',intent.created_at
+                           ) AS member
+                      FROM investigation_stop_intents intent
+                     WHERE intent.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_projection_outbox",
+            r#"WITH rows AS (
+                    SELECT outbox.outbox_member_id AS row_id,
+                           jsonb_build_object(
+                               'outboxMemberId',outbox.outbox_member_id,
+                               'batchId',outbox.batch_id,
+                               'sourceBatchSeq',outbox.source_batch_seq,
+                               'memberOrdinal',outbox.member_ordinal,
+                               'entityKind',outbox.entity_kind,
+                               'changeKind',outbox.change_kind,
+                               'sourceEntityId',outbox.source_entity_id,
+                               'sourceEntityVersion',outbox.source_entity_version,
+                               'sourceEntityHash',outbox.source_entity_hash,
+                               'sourceSnapshotHash',outbox.source_snapshot_hash,
+                               'timelineEventKind',outbox.timeline_event_kind,
+                               'memberHash',outbox.member_hash,
+                               'createdAt',outbox.created_at
+                           ) AS member
+                      FROM investigation_projection_outbox outbox
+                     WHERE outbox.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "investigation_closure_publications",
+            r#"WITH rows AS (
+                    SELECT publication.publication_id AS row_id,
+                           jsonb_build_object(
+                               'publicationId',publication.publication_id,
+                               'closureId',publication.closure_id,
+                               'authorityId',publication.authority_id,
+                               'stageExecutionId',publication.stage_execution_id,
+                               'scopeSnapshotId',publication.scope_snapshot_id,
+                               'disposition',publication.disposition,
+                               'memberCount',publication.member_count,
+                               'memberSetSha256',publication.member_set_sha256,
+                               'closureSha256',publication.closure_sha256,
+                               'publicationSha256',publication.publication_sha256
+                           ) AS member
+                      FROM investigation_stage_closure_publications publication
+                     WHERE publication.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "report_revisions",
+            r#"WITH rows AS (
+                    SELECT revision.revision_id AS row_id,
+                           jsonb_build_object(
+                               'reportId',report.report_id,
+                               'revisionId',revision.revision_id,
+                               'revisionNumber',revision.revision_number,
+                               'validationStatus',revision.validation_status,
+                               'publicationStatus',revision.publication_status,
+                               'sourceSetHash',revision.source_set_hash
+                           ) AS member
+                      FROM reports report
+                      JOIN report_revisions revision ON revision.report_id=report.report_id
+                     WHERE report.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "report_input_seals",
+            r#"WITH rows AS (
+                    SELECT seal.seal_id AS row_id,
+                           jsonb_build_object(
+                               'sealId',seal.seal_id,
+                               'openId',seal.open_id,
+                               'revisionId',seal.revision_id,
+                               'toolTruthAuthoritySetId',seal.tool_truth_authority_set_id,
+                               'revisionAdjudicationAuthoritySetId',seal.revision_adjudication_authority_set_id,
+                               'legacyReportAuthoritySealId',seal.legacy_report_authority_seal_id,
+                               'sourceMemberCount',seal.source_member_count,
+                               'sourceSetHash','sha256:'||encode(seal.source_set_hash,'hex'),
+                               'reportInputHash','sha256:'||encode(seal.report_input_hash,'hex'),
+                               'effectiveValidUntil',seal.effective_valid_until,
+                               'sealedAt',seal.sealed_at
+                           ) AS member
+                      FROM report_input_seals seal
+                     WHERE seal.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "report_revision_artifacts",
+            r#"WITH rows AS (
+                    SELECT artifact.revision_id::TEXT||':'||artifact.artifact_kind AS row_id,
+                           jsonb_build_object(
+                               'revisionId',artifact.revision_id,
+                               'artifactKind',artifact.artifact_kind,
+                               'contentKey',artifact.content_key,
+                               'redactionVersion',artifact.redaction_version
+                           ) AS member
+                      FROM report_revision_artifacts artifact
+                      JOIN report_revisions revision
+                        ON revision.revision_id=artifact.revision_id
+                      JOIN reports report ON report.report_id=revision.report_id
+                     WHERE report.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "report_source_manifest",
+            r#"WITH rows AS (
+                    SELECT manifest.revision_id::TEXT||':'||manifest.ordinal::TEXT AS row_id,
+                           jsonb_build_object(
+                               'revisionId',manifest.revision_id,
+                               'ordinal',manifest.ordinal,
+                               'sourceKind',manifest.source_kind,
+                               'sourceIdKind',manifest.source_id_kind,
+                               'sourceIdValue',manifest.source_id_value,
+                               'sourceRowVersion',manifest.source_row_version,
+                               'contentHash','sha256:'||encode(manifest.content_hash,'hex')
+                           ) AS member
+                      FROM report_source_manifest manifest
+                      JOIN report_revisions revision ON revision.revision_id=manifest.revision_id
+                      JOIN reports report ON report.report_id=revision.report_id
+                     WHERE report.operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+        (
+            "operation_contract_adoptions",
+            r#"WITH rows AS (
+                    SELECT adoption.adoption_id AS row_id,
+                           jsonb_build_object(
+                               'adoptionId',adoption.adoption_id,
+                               'sourceOperationId',adoption.source_operation_id,
+                               'targetOperationId',adoption.target_operation_id,
+                               'sourceJointRank',adoption.source_joint_rank,
+                               'targetJointRank',adoption.target_joint_rank,
+                               'sourceFinalSealHash',adoption.source_final_seal_hash,
+                               'adoptionSetHash',adoption.adoption_set_hash,
+                               'receiptHash',adoption.receipt_hash,
+                               'createdAt',adoption.created_at
+                           ) AS member
+                      FROM operation_contract_adoptions adoption
+                     WHERE adoption.target_operation_id=$1
+                ), aggregate AS (
+                    SELECT COUNT(*)::BIGINT AS member_count,
+                           COALESCE(jsonb_agg(member ORDER BY row_id), '[]'::jsonb) AS members
+                      FROM rows
+                )
+                SELECT jsonb_build_object(
+                    'memberCount',member_count,
+                    'memberSetHash',tool_truth_sha256(members::TEXT),
+                    'members',members
+                ) FROM aggregate"#,
+        ),
+    ];
+    let mut sets = BTreeMap::new();
+    for (label, sql) in queries {
+        let value = sqlx::query_scalar::<_, serde_json::Value>(sql)
+            .bind(operation_id)
+            .fetch_one(&mut *connection)
+            .await
+            .with_context(|| format!("collect operation exact set {label}"))?;
+        sets.insert(label.to_owned(), value);
     }
+    Ok(sets)
 }
 
 async fn collect_unbound_counts(
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::PgConnection,
     queries: &[(&'static str, &'static str)],
-) -> BTreeMap<String, serde_json::Value> {
+) -> Result<BTreeMap<String, serde_json::Value>> {
     let mut out = BTreeMap::new();
     for (label, sql) in queries {
-        out.insert((*label).to_string(), count_unbound(pool, sql).await);
+        out.insert(
+            (*label).to_string(),
+            count_unbound(&mut *connection, sql)
+                .await
+                .with_context(|| format!("collect DB smoke count {label}"))?,
+        );
     }
-    out
+    Ok(out)
 }
 
 async fn collect_text_counts(
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::PgConnection,
     value: &str,
     queries: &[(&'static str, &'static str)],
-) -> BTreeMap<String, serde_json::Value> {
+) -> Result<BTreeMap<String, serde_json::Value>> {
     let mut out = BTreeMap::new();
     for (label, sql) in queries {
-        out.insert((*label).to_string(), count_text(pool, sql, value).await);
+        out.insert(
+            (*label).to_string(),
+            count_text(&mut *connection, sql, value)
+                .await
+                .with_context(|| format!("collect DB smoke count {label}"))?,
+        );
     }
-    out
+    Ok(out)
 }
 
 async fn collect_uuid_counts(
-    pool: &sqlx::PgPool,
+    connection: &mut sqlx::PgConnection,
     value: uuid::Uuid,
     queries: &[(&'static str, &'static str)],
-) -> BTreeMap<String, serde_json::Value> {
+) -> Result<BTreeMap<String, serde_json::Value>> {
     let mut out = BTreeMap::new();
     for (label, sql) in queries {
-        out.insert((*label).to_string(), count_uuid(pool, sql, value).await);
+        out.insert(
+            (*label).to_string(),
+            count_uuid(&mut *connection, sql, value)
+                .await
+                .with_context(|| format!("collect DB smoke count {label}"))?,
+        );
     }
-    out
+    Ok(out)
 }
 
-async fn count_unbound(pool: &sqlx::PgPool, sql: &str) -> serde_json::Value {
-    match sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await {
-        Ok(count) => serde_json::json!(count),
-        Err(e) => serde_json::json!({ "error": e.to_string() }),
-    }
+async fn count_unbound(
+    connection: &mut sqlx::PgConnection,
+    sql: &str,
+) -> Result<serde_json::Value> {
+    let count = sqlx::query_scalar::<_, i64>(sql)
+        .fetch_one(&mut *connection)
+        .await?;
+    Ok(serde_json::json!(count))
 }
 
-async fn count_text(pool: &sqlx::PgPool, sql: &str, value: &str) -> serde_json::Value {
-    match sqlx::query_scalar::<_, i64>(sql)
+async fn count_text(
+    connection: &mut sqlx::PgConnection,
+    sql: &str,
+    value: &str,
+) -> Result<serde_json::Value> {
+    let count = sqlx::query_scalar::<_, i64>(sql)
         .bind(value)
-        .fetch_one(pool)
-        .await
-    {
-        Ok(count) => serde_json::json!(count),
-        Err(e) => serde_json::json!({ "error": e.to_string() }),
-    }
+        .fetch_one(&mut *connection)
+        .await?;
+    Ok(serde_json::json!(count))
 }
 
-async fn count_uuid(pool: &sqlx::PgPool, sql: &str, value: uuid::Uuid) -> serde_json::Value {
-    match sqlx::query_scalar::<_, i64>(sql)
+async fn count_uuid(
+    connection: &mut sqlx::PgConnection,
+    sql: &str,
+    value: uuid::Uuid,
+) -> Result<serde_json::Value> {
+    let count = sqlx::query_scalar::<_, i64>(sql)
         .bind(value)
-        .fetch_one(pool)
-        .await
-    {
-        Ok(count) => serde_json::json!(count),
-        Err(e) => serde_json::json!({ "error": e.to_string() }),
-    }
+        .fetch_one(&mut *connection)
+        .await?;
+    Ok(serde_json::json!(count))
 }
 
 fn format_db_smoke_summary(summary: &DbSmokeSummary) -> String {
     let mut out = String::new();
     out.push_str("\n-- db smoke summary --\n");
     out.push_str(&format!("  session_id = {}\n", summary.session_id));
+    if let Some(operation_id) = &summary.operation_id {
+        out.push_str(&format!("  operation_id = {operation_id}\n"));
+    }
+    out.push_str(&format!(
+        "  operation_identity = {}\n",
+        format_db_summary_value(&summary.operation_identity)
+    ));
     out.push_str(&format!("  project_path = {}\n", summary.project_path));
     if let Some(org_id) = &summary.organization_id {
         out.push_str(&format!("  organization_id = {org_id}\n"));
     }
     push_db_summary_section(&mut out, "totals", &summary.totals);
     push_db_summary_section(&mut out, "run scoped", &summary.run_scoped);
+    if !summary.operation_scoped.is_empty() {
+        push_db_summary_section(&mut out, "operation scoped", &summary.operation_scoped);
+    }
+    if !summary.operation_exact_sets.is_empty() {
+        push_db_summary_section(
+            &mut out,
+            "operation exact sets",
+            &summary.operation_exact_sets,
+        );
+    }
     push_db_summary_section(&mut out, "project scoped", &summary.project_scoped);
     if !summary.org_scoped.is_empty() {
         push_db_summary_section(&mut out, "org scoped", &summary.org_scoped);
@@ -3761,8 +6714,10 @@ mod tests {
             .expect("CLI target becomes a trusted review row");
         let root_only = StageRunAutoApprovalPolicy {
             trusted_scope_response: Some(rows.clone()),
+            retained_scope_authority: None,
             include_subsidiaries: Some(false),
             confirmed_organization_id: Some(ORG_ID),
+            confirmed_organization_name: Some("Golish Fixture Corporation".to_string()),
             approve_phase_boundaries: true,
         };
         assert_eq!(
@@ -3784,6 +6739,16 @@ mod tests {
             root_only.resolve("choice", "是否纳入子公司？", &options, &context),
             StageRunAutoResolution::Approve(options[0].clone())
         );
+        let typed_options = vec![
+            "root_only — subsidiaries/branches are OUT of scope (default, no subsidiary discovery)"
+                .to_string(),
+            "included — subsidiaries/branches ARE in scope (triggers evidence-backed subsidiary discovery + unit review)"
+                .to_string(),
+        ];
+        assert_eq!(
+            root_only.resolve("choice", "subsidiary scope", &typed_options, &context),
+            StageRunAutoResolution::Approve(typed_options[0].clone())
+        );
         assert!(matches!(
             root_only.resolve(
                 "choice",
@@ -3798,6 +6763,29 @@ mod tests {
         ));
         assert!(matches!(
             root_only.resolve("choice", "ordinary choice", &options, ""),
+            StageRunAutoResolution::Decline(_)
+        ));
+        let natural_options = vec![
+            "Root-only: only Golish Fixture Corporation is in scope".to_string(),
+            "Include subsidiaries/controlled holdings/branches".to_string(),
+        ];
+        assert_eq!(
+            root_only.resolve(
+                "choice",
+                "Confirm subsidiary scope for Golish Fixture Corporation",
+                &natural_options,
+                "Confirmed enterprise: Golish Fixture Corporation",
+            ),
+            StageRunAutoResolution::Approve(natural_options[0].clone()),
+            "fresh CLI may compile an exact-root natural-language request from trusted flags"
+        );
+        assert!(matches!(
+            root_only.resolve(
+                "choice",
+                "Confirm subsidiary scope for Another Corporation",
+                &natural_options,
+                "Confirmed enterprise: Another Corporation",
+            ),
             StageRunAutoResolution::Decline(_)
         ));
         let double_encoded_context = serde_json::to_string(&context).expect("encode context");
@@ -3822,8 +6810,10 @@ mod tests {
 
         let include = StageRunAutoApprovalPolicy {
             trusted_scope_response: None,
+            retained_scope_authority: None,
             include_subsidiaries: Some(true),
             confirmed_organization_id: Some(ORG_ID),
+            confirmed_organization_name: Some("Golish Fixture Corporation".to_string()),
             approve_phase_boundaries: false,
         };
         assert!(matches!(
@@ -3833,6 +6823,10 @@ mod tests {
         assert_eq!(
             include.resolve("choice", "是否纳入子公司？", &options, &context),
             StageRunAutoResolution::Approve(options[1].clone())
+        );
+        assert_eq!(
+            include.resolve("choice", "subsidiary scope", &typed_options, &context),
+            StageRunAutoResolution::Approve(typed_options[1].clone())
         );
         assert!(matches!(
             include.resolve("scope_review", "confirm targets", &[], ""),
@@ -3853,6 +6847,8 @@ mod tests {
     }
 
     fn valid_resume_candidate() -> ResumeCandidate {
+        let topology =
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1.freeze_material();
         ResumeCandidate {
             session_id: SESSION_ID,
             chat_session_key: Some("stage-run-476558c3-c22a-4009-a82e-17e086a005de".to_string()),
@@ -3869,6 +6865,11 @@ mod tests {
             profile: "pentest".to_string(),
             current_stage: "enumeration".to_string(),
             runtime_memory_contract: "legacy_v1".to_string(),
+            investigation_rollout_mode: "legacy_only".to_string(),
+            stage_topology_contract: topology.topology.as_str().to_string(),
+            stage_topology_canonical_json: topology.canonical_json,
+            stage_topology_sha256: topology.sha256,
+            stage_topology_freeze_source: "legacy_backfill_v1".to_string(),
             engagement_org_id: Some(ORG_ID),
             superseded_by: None,
             state_blob: serde_json::json!({
@@ -4377,17 +7378,26 @@ mod tests {
 
     #[test]
     fn resolve_resume_slice_defaults_to_current_stage() {
-        let (terminal, allowlist) =
-            resolve_resume_slice("pentest", StageKind::TargetIntel, None).expect("same stage");
+        let (terminal, allowlist) = resolve_resume_slice(
+            "pentest",
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1,
+            StageKind::TargetIntel,
+            None,
+        )
+        .expect("same stage");
         assert_eq!(terminal, StageKind::TargetIntel);
         assert_eq!(allowlist, HashSet::from([StageKind::TargetIntel]));
     }
 
     #[test]
     fn resolve_resume_slice_expands_only_forward_to_candidate() {
-        let (terminal, allowlist) =
-            resolve_resume_slice("pentest", StageKind::TargetIntel, Some("attack_candidate"))
-                .expect("forward pentest slice");
+        let (terminal, allowlist) = resolve_resume_slice(
+            "pentest",
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1,
+            StageKind::TargetIntel,
+            Some("attack_candidate"),
+        )
+        .expect("forward pentest slice");
         assert_eq!(terminal, StageKind::AttackCandidate);
         assert_eq!(
             allowlist,
@@ -4399,9 +7409,16 @@ mod tests {
                 StageKind::AttackCandidate,
             ])
         );
-        assert!(resolve_resume_slice("pentest", StageKind::TargetIntel, Some("scoping")).is_err());
+        assert!(resolve_resume_slice(
+            "pentest",
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1,
+            StageKind::TargetIntel,
+            Some("scoping")
+        )
+        .is_err());
         assert!(resolve_resume_slice(
             "assessment",
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1,
             StageKind::TargetIntel,
             Some("attack_candidate")
         )
@@ -4431,7 +7448,12 @@ mod tests {
             "--only",
             "attack_candidate",
         ]);
-        let resolved = resolve_stage_run_fork_slice("pentest", &args).expect("candidate fork");
+        let resolved = resolve_stage_run_fork_slice(
+            "pentest",
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1.freeze_material(),
+            &args,
+        )
+        .expect("candidate fork");
         assert_eq!(resolved.entry_stage, StageKind::AttackCandidate);
         assert_eq!(resolved.terminal_stage, StageKind::AttackCandidate);
         assert_eq!(
@@ -4461,7 +7483,12 @@ mod tests {
             "--to",
             "attack_candidate",
         ]);
-        let resolved = resolve_stage_run_fork_slice("pentest", &args).expect("range fork");
+        let resolved = resolve_stage_run_fork_slice(
+            "pentest",
+            golish_core::StageTopologyContract::LegacyCandidateVerificationV1.freeze_material(),
+            &args,
+        )
+        .expect("range fork");
         assert_eq!(resolved.entry_stage, StageKind::Enumeration);
         assert_eq!(resolved.terminal_stage, StageKind::AttackCandidate);
         assert_eq!(
@@ -4508,7 +7535,12 @@ mod tests {
             ],
         ] {
             let args = Args::parse_from(argv);
-            assert!(resolve_stage_run_fork_slice("pentest", &args).is_err());
+            assert!(resolve_stage_run_fork_slice(
+                "pentest",
+                golish_core::StageTopologyContract::LegacyCandidateVerificationV1.freeze_material(),
+                &args,
+            )
+            .is_err());
         }
     }
 
@@ -4758,6 +7790,158 @@ mod tests {
     }
 
     #[test]
+    fn stage_run_db_retained_resume_uses_exact_pgdata_and_fresh_port() {
+        let retained = tempfile::tempdir().expect("retained pgdata root");
+        let pgdata = retained.path().join("pgdata");
+        std::fs::create_dir(&pgdata).expect("create retained pgdata");
+        std::fs::write(pgdata.join("PG_VERSION"), "17\n").expect("write PG_VERSION marker");
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run-resume",
+            "stage-run-476558c3-c22a-4009-a82e-17e086a005de",
+            "--stage-run-resume-pgdata",
+            pgdata.to_str().expect("utf8 pgdata"),
+        ]);
+
+        let stage_db = prepare_stage_run_db(&args).expect("retained resume db config");
+        let default_config = golish_db::DbConfig::default();
+        assert!(stage_db.temp_dir.is_none());
+        assert_eq!(stage_db.config.pg_data_dir, pgdata);
+        assert_eq!(
+            stage_db.config.pg_bin_cache_dir,
+            default_config.pg_bin_cache_dir
+        );
+        assert_ne!(stage_db.config.port, default_config.port);
+        assert!(stage_db.config.port > 0);
+    }
+
+    #[test]
+    fn unified_test_rollout_requires_ephemeral_stage_run_and_closed_rank() {
+        let args = Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--stage-run-test-joint-rank",
+            "6",
+            "--to",
+            "reporting",
+        ])
+        .expect("isolated unified test rollout parses");
+        assert_eq!(args.stage_run_test_joint_rank, Some(6));
+
+        assert!(Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--stage-run-test-joint-rank",
+            "6",
+            "--to",
+            "reporting",
+        ])
+        .is_err());
+        assert!(Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--stage-run-test-joint-rank",
+            "4",
+            "--to",
+            "reporting",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn controlled_provider_directories_require_each_other_and_ephemeral_stage_run() {
+        let args = Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--stage-run-test-toolsconfig-dir",
+            "/tmp/controlled-toolsconfig",
+            "--stage-run-test-intel-providers-dir",
+            "/tmp/controlled-intel-providers",
+            "--stage-run-test-intel-provider-endpoint",
+            "http://127.0.0.1:32123/intel/company.json",
+            "--to",
+            "reporting",
+        ])
+        .expect("paired controlled provider directories parse");
+        assert_eq!(
+            args.stage_run_test_toolsconfig_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/controlled-toolsconfig"))
+        );
+        assert_eq!(
+            args.stage_run_test_intel_providers_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/controlled-intel-providers"))
+        );
+        assert_eq!(
+            args.stage_run_test_intel_provider_endpoint
+                .as_ref()
+                .map(url::Url::as_str),
+            Some("http://127.0.0.1:32123/intel/company.json")
+        );
+
+        assert!(Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--stage-run-test-toolsconfig-dir",
+            "/tmp/controlled-toolsconfig",
+            "--to",
+            "reporting",
+        ])
+        .is_err());
+        assert!(Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--stage-run-test-toolsconfig-dir",
+            "/tmp/controlled-toolsconfig",
+            "--stage-run-test-intel-providers-dir",
+            "/tmp/controlled-intel-providers",
+            "--stage-run-test-intel-provider-endpoint",
+            "http://127.0.0.1:32123/intel/company.json",
+            "--to",
+            "reporting",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn exact_test_organization_identity_requires_owned_ephemeral_database() {
+        let args = Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--org",
+            "杭州默安科技有限公司",
+            "--stage-run-test-organization-id",
+            "19d56caa-d894-4bd3-954a-9a6709a6f560",
+            "--to",
+            "reporting",
+        ])
+        .expect("exact isolated organization identity parses");
+        assert_eq!(
+            args.stage_run_test_organization_id,
+            Some(
+                uuid::Uuid::parse_str("19d56caa-d894-4bd3-954a-9a6709a6f560")
+                    .expect("fixture organization uuid")
+            )
+        );
+
+        assert!(Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--org",
+            "杭州默安科技有限公司",
+            "--stage-run-test-organization-id",
+            "19d56caa-d894-4bd3-954a-9a6709a6f560",
+            "--to",
+            "reporting",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn stage_run_db_accepts_only_explicit_gatefix_clone_names() {
         let args = Args::parse_from([
             "golish",
@@ -4782,10 +7966,22 @@ mod tests {
         run_scoped.insert("tool_calls_by_chat_key".to_string(), serde_json::json!(3));
         let summary = DbSmokeSummary {
             session_id: "stage-run-test".into(),
+            operation_id: Some("operation-1".into()),
+            operation_identity: serde_json::json!({
+                "runtimeMemoryContract":"v2_only",
+                "attackExecutionContract":"v2_only",
+                "enumerationAnalysisContract":"agent_team_v2",
+                "toolTruthContract":"receipt_v1",
+                "investigationContractVersion":"hypothesis_registry_v1",
+                "investigationRolloutMode":"new_only",
+                "stageTopologyContract":"unified_investigation_v1"
+            }),
             organization_id: Some("org-1".into()),
             project_path: "/tmp/golish-smoke".into(),
             totals,
             run_scoped,
+            operation_scoped: BTreeMap::new(),
+            operation_exact_sets: BTreeMap::new(),
             project_scoped: BTreeMap::new(),
             org_scoped: BTreeMap::new(),
         };
@@ -4794,6 +7990,9 @@ mod tests {
         assert!(rendered.contains("-- db smoke summary --"));
         assert!(rendered.contains("targets: 2"));
         assert!(rendered.contains("tool_calls_by_chat_key: 3"));
+        assert!(rendered.contains("operation_id = operation-1"));
+        assert!(rendered.contains("\"attackExecutionContract\":\"v2_only\""));
+        assert!(rendered.contains("\"enumerationAnalysisContract\":\"agent_team_v2\""));
     }
 
     #[test]
@@ -4942,6 +8141,20 @@ mod tests {
                 ("192.0.2.11".to_string(), vec![9001]),
             ]
         );
+    }
+
+    #[test]
+    fn controlled_web_origin_seed_parser_is_http_exact_set() {
+        assert_eq!(
+            parse_controlled_web_origin_seeds(
+                "http://127.0.0.1:18080/path; HTTP://127.0.0.1:18080/other"
+            )
+            .expect("parse and deduplicate exact origin"),
+            vec!["http://127.0.0.1:18080/".to_string()]
+        );
+        assert!(parse_controlled_web_origin_seeds("file:///tmp/not-network").is_err());
+        assert!(parse_controlled_web_origin_seeds("https://user:secret@example.com/").is_err());
+        assert!(parse_controlled_web_origin_seeds(" ; ").is_err());
     }
 
     #[test]

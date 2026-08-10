@@ -4,9 +4,11 @@ import {
   buildReportReadModel,
   finalizeReportRevision,
   getReportReadModel,
+  type ReportClaimValue,
   type ReportingFinalizeRequest,
   type ReportReadModelView as ReportReadModelData,
 } from "@/lib/api/reporting";
+import { ReportClaimValueView } from "./ReportClaimValueView";
 
 export interface ReportingViewApi {
   getReadModel: (request: { operationId: string }) => Promise<ReportReadModelData | null>;
@@ -65,7 +67,12 @@ export function ReportReadModelView({
   } | null>(null);
   const [pendingFinalize, setPendingFinalize] = useState<FrozenFinalizeRequest | null>(null);
   const [busy, setBusy] = useState<BusyAction | null>(null);
+  const [stale, setStale] = useState(false);
   const requestSequence = useRef(0);
+  const retainedModel = useRef<{
+    operationId: string;
+    value: ReportReadModelData | null;
+  } | null>(null);
 
   const model = modelOperationId === operationId ? modelState : undefined;
   const error = errorState?.operationId === operationId ? errorState.text : null;
@@ -84,10 +91,16 @@ export function ReportReadModelView({
       if (requestSequence.current !== sequence) return;
       setModelState(next);
       setModelOperationId(operationId);
+      retainedModel.current = { operationId, value: next };
+      setStale(false);
     } catch (cause) {
       if (requestSequence.current !== sequence) return;
-      setModelState(undefined);
-      setModelOperationId(operationId);
+      const canRetain = retainedModel.current?.operationId === operationId;
+      if (!canRetain) {
+        setModelState(undefined);
+        setModelOperationId(operationId);
+      }
+      setStale(canRetain);
       setErrorState({ operationId, text: message(cause) });
     } finally {
       if (requestSequence.current === sequence) setBusy(null);
@@ -146,6 +159,8 @@ export function ReportReadModelView({
       if (requestSequence.current !== sequence) return;
       setModelState(next);
       setModelOperationId(frozen.operationId);
+      retainedModel.current = { operationId: frozen.operationId, value: next };
+      setStale(false);
       setPendingFinalize(null);
     } catch (cause) {
       if (requestSequence.current !== sequence) return;
@@ -249,6 +264,7 @@ export function ReportReadModelView({
 
       {error && (
         <div role="alert" className="rounded border border-red-500/30 p-2 text-[11px] text-red-300">
+          {stale ? "The retained report revision may be stale. " : ""}
           {error}
         </div>
       )}
@@ -273,9 +289,6 @@ export function ReportReadModelView({
               <span>{section.organizationNameAtSnapshot ?? section.sectionKind}</span>
               <span className="text-muted-foreground">{section.sectionKind}</span>
             </div>
-            {section.renderedContent && (
-              <p className="mt-2 whitespace-pre-wrap">{section.renderedContent}</p>
-            )}
             <div className="mt-2 space-y-2">
               {section.claims.map((claim) => (
                 <div key={claim.claimId} className="rounded bg-muted/20 p-2">
@@ -285,16 +298,12 @@ export function ReportReadModelView({
                     </span>{" "}
                     {claim.subjectRef} {claim.predicate}
                   </div>
-                  <pre className="mt-1 overflow-auto text-[10px]">
-                    {JSON.stringify(claim.value, null, 2)}
-                  </pre>
+                  <div className="mt-2">
+                    <ReportClaimValueView value={claim.value as ReportClaimValue} />
+                  </div>
                   <ul className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
                     {claim.citations.map((citation) => (
-                      <li key={citation.citationId}>
-                        Evidence {citation.evidenceAuditId} · {citation.sourceKind}:
-                        {citation.sourceIdValue}
-                        @v{citation.sourceRowVersion}
-                      </li>
+                      <li key={citation.citationId}>Evidence audit {citation.evidenceAuditId}</li>
                     ))}
                   </ul>
                 </div>
@@ -313,7 +322,10 @@ export function ReportReadModelView({
             >
               <FileCheck2 className="h-3.5 w-3.5 text-emerald-300" />
               <span>{artifact.artifactKind}</span>
-              <span className="font-mono text-muted-foreground">{artifact.contentKey}</span>
+              <span className="text-muted-foreground">
+                immutable metadata · {artifact.byteLen} bytes · redaction v{artifact.redactionVersion}
+              </span>
+              <span className="font-mono text-muted-foreground">sha256:{artifact.sha256}</span>
             </div>
           ))}
         </div>

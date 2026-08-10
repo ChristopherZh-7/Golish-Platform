@@ -392,6 +392,10 @@ impl AgentBridge {
             sidecar_state: self.services.sidecar_state.as_ref(),
             chain_persistence: self.services.chain_persistence.clone(),
             runtime_memory: self.services.runtime_memory.clone(),
+            application_understanding_runtime: self
+                .services
+                .application_understanding_runtime
+                .clone(),
             hypothesis_analysis_runtime: self.services.hypothesis_analysis_runtime.clone(),
             resume_runtime_memory_source: *self.resume_runtime_memory_source.read().await,
             knowledge_context: self.services.knowledge_context.clone(),
@@ -409,6 +413,8 @@ impl AgentBridge {
             post_shell_hook: self.post_shell_hook.clone(),
             output_classifier: self.output_classifier.clone(),
             web_fetcher: self.web_fetcher.clone(),
+            target_intel_goal_shadow: None,
+            intel_public_adapter: None,
             // C3 · forward the active harness stage + authorization context (set
             // per-subtask by the Task-mode executor) into the loop so the tool
             // gate can enforce the stage barrier and full pre-action authorizer.

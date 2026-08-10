@@ -62,7 +62,25 @@ impl AiEvent {
             AiEvent::TaskResumed { .. } => "task_resumed",
             AiEvent::EnricherResult { .. } => "enricher_result",
             AiEvent::ToolBackgroundCompleted { .. } => "tool_background_completed",
+            AiEvent::InvestigationProjectionChanged { .. } => "investigation_projection_changed",
             AiEvent::HarnessTrace { .. } => "harness_trace",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn investigation_projection_changed_has_stable_dispatch_name() {
+        let event = AiEvent::InvestigationProjectionChanged {
+            operation_id: "operation-1".to_owned(),
+            stage_execution_id: "stage-1".to_owned(),
+            stage_run_request_id: "request-1".to_owned(),
+            change_seq: 9,
+        };
+
+        assert_eq!(event.event_type(), "investigation_projection_changed");
     }
 }

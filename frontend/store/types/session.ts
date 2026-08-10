@@ -84,6 +84,18 @@ export interface ReportingReadModelHint {
   refreshVersion: number;
 }
 
+/**
+ * Refresh-only pointer emitted after an Investigation projection commit.
+ * The event sequence is never read authority: the direct detail route always
+ * bootstraps the exact server projection before displaying new state.
+ */
+export interface InvestigationRefreshHint {
+  operationId: string;
+  stageExecutionId: string;
+  stageRunRequestId: string;
+  changeSeq: number;
+}
+
 export interface InteractiveModeState {
   active: boolean;
   command: string | null;
@@ -144,5 +156,6 @@ export interface Session {
   stageRuns?: Record<string, SessionStageRun>;
   candidateReviewHint?: CandidateReviewHint;
   reportingReadModelHint?: ReportingReadModelHint;
+  investigationRefreshHint?: InvestigationRefreshHint;
   interactiveMode?: InteractiveModeState | null;
 }

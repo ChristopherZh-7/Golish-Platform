@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::db_shim::{subtasks, tasks};
 use crate::db_traits::{
     CliRuntimeScope, CreateRuntimeOperation, DbRepoProvider, ProjectScopeRegistration,
-    RuntimeMemoryRepository, TaskStatus,
+    RuntimeMemoryRepository, TaskStatus, TrustedCompanyIdentityIntake,
 };
 use golish_core::events::AiEvent;
 use golish_core::plan::{PlanStep, PlanSummary, StepStatus};
@@ -130,6 +130,10 @@ pub struct TaskOrchestrator {
     /// GUI/model runs leave this unset and continue through Scoping lifecycle
     /// evidence. A CLI V2 operation sets it exactly once before `run_stage`.
     pub(super) cli_runtime_scope: Option<CliRuntimeScope>,
+    /// Canonical legal label from a typed adapter-confirmed organization
+    /// intake. When Scoping is the fresh entry, this is frozen into an
+    /// evidence-backed immutable Company Identity before model execution.
+    pub(super) trusted_company_identity_label: Option<String>,
     /// Adapter-neutral fresh-launch target authority. `Some(true)` means an
     /// exact target came from this invocation and must still match DB truth;
     /// `Some(false)` means the launch confirmed only an organization, so even
@@ -171,6 +175,7 @@ impl TaskOrchestrator {
             chain_wave: 0,
             chain_wave_seen: std::collections::HashSet::new(),
             cli_runtime_scope: None,
+            trusted_company_identity_label: None,
             current_invocation_target_authority: None,
         }
     }
@@ -213,6 +218,10 @@ impl TaskOrchestrator {
     /// re-reads a mutable organization tree.
     pub fn set_cli_runtime_scope(&mut self, scope: Option<CliRuntimeScope>) {
         self.cli_runtime_scope = scope;
+    }
+
+    pub fn set_trusted_company_identity_label(&mut self, label: Option<String>) {
+        self.trusted_company_identity_label = label;
     }
 
     /// Freeze whether this fresh typed launch carried an exact target from the
@@ -353,6 +362,23 @@ impl TaskOrchestrator {
         let operation_id = Uuid::new_v4();
         let initial_stage_execution_id = Uuid::new_v4();
         let expected_project_scope_id = project_scope.project_scope_id;
+        let stage_fork = self.stage_fork.take();
+        let application_model_contract = if let Some(fork) = stage_fork.as_ref() {
+            self.repo
+                .operation_state_get(fork.source_operation_id)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "stage fork source operation {} is missing",
+                        fork.source_operation_id
+                    )
+                })?
+                .application_model_contract
+        } else if matches!(profile_id.as_str(), "pentest" | "red_team") {
+            golish_core::ApplicationModelContract::ApplicationModelV1
+        } else {
+            golish_core::ApplicationModelContract::LegacyNoModel
+        };
         let created = self
             .runtime_repo
             .create_runtime_operation(CreateRuntimeOperation {
@@ -363,9 +389,10 @@ impl TaskOrchestrator {
                 input: task_input.to_string(),
                 profile: profile_id.clone(),
                 entry_stage: entry_stage.as_str().to_string(),
+                application_model_contract,
                 project_scope,
                 cli_scope: self.cli_runtime_scope.take(),
-                stage_fork: self.stage_fork.take(),
+                stage_fork,
             })
             .await
             .map_err(anyhow::Error::new)
@@ -381,7 +408,37 @@ impl TaskOrchestrator {
         let initial_operation_profile = created.operation.profile.clone();
         let initial_operation_stage = created.operation.current_stage.clone();
         let initial_runtime_memory_contract = created.operation.runtime_memory_contract;
+        let initial_stage_topology = created.operation.stage_topology_contract.topology;
         let task = created.task;
+
+        if entry_stage == crate::harness::StageKind::Scoping {
+            match (
+                self.trusted_company_identity_label.as_deref(),
+                self.harness_org_id,
+            ) {
+                (Some(canonical_legal_name), Some(organization_id)) => {
+                    self.runtime_repo
+                        .freeze_trusted_company_identity(TrustedCompanyIdentityIntake {
+                            operation_id,
+                            stage_execution_id: initial_stage_execution_id,
+                            organization_id,
+                            canonical_legal_name: canonical_legal_name.to_string(),
+                            session_id: self.chat_session_id.clone(),
+                        })
+                        .await
+                        .map_err(anyhow::Error::new)
+                        .context(
+                            "freeze adapter-confirmed Company Identity before Scoping execution",
+                        )?;
+                }
+                (None, _) => {}
+                (Some(_), None) => {
+                    return Err(anyhow::anyhow!(
+                        "trusted Company Identity label has no organization authority"
+                    ));
+                }
+            }
+        }
 
         tasks::update_status(&*self.repo, task.id, TaskStatus::Running).await?;
 
@@ -415,12 +472,11 @@ impl TaskOrchestrator {
         // profile).
         {
             crate::task_orchestrator::harness_backfill::backfill_harness_stage(&mut generated);
-            let profile_id: String = self
-                .profile_override
-                .clone()
-                .unwrap_or_else(|| crate::harness::active_profile_id().to_string());
-            if let Ok(Some(p)) = crate::harness::load_embedded_profile(&profile_id) {
-                let allowed = p.allowed_stage_set();
+            let profile_id = initial_operation_profile.as_str();
+            if let Ok(Some(p)) = crate::harness::load_embedded_profile(profile_id) {
+                let allowed = p
+                    .allowed_stage_set_for_topology(initial_stage_topology)
+                    .context("project persisted operation profile through frozen topology")?;
                 generated.retain(|s| match s.harness_stage.as_ref() {
                     Some(h) if !allowed.contains(&h.stage_kind) => {
                         tracing::warn!(
@@ -428,6 +484,7 @@ impl TaskOrchestrator {
                             subtask_title = %s.title,
                             stage = %h.stage_kind.as_str(),
                             profile = %profile_id,
+                            topology = %initial_stage_topology,
                             "dag-strict: dropping planner subtask tagged with a stage outside the profile's allowed set"
                         );
                         false

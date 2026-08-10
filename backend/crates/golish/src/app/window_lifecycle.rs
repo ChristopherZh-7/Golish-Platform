@@ -227,11 +227,11 @@ pub(crate) fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunE
         api.prevent_exit();
         let handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
-            let investigation_projection_worker = handle
+            let investigation_projection_event_bridge = handle
                 .state::<AppState>()
-                .investigation_projection_worker
+                .investigation_projection_event_bridge
                 .clone();
-            investigation_projection_worker.shutdown().await;
+            investigation_projection_event_bridge.shutdown().await;
             let cleanup_closeout = handle.state::<AppState>().cleanup_closeout.clone();
             let reporting_artifact_gc = handle.state::<AppState>().reporting_artifact_gc.clone();
             reporting_artifact_gc.shutdown().await;

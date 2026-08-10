@@ -53,6 +53,7 @@ pub enum SubmitGuidanceMode {
     WaitForBackgroundJobs,
     FillCoverageCells,
     ResubmitAfterGateBlock,
+    ContinueGoalReview,
     GenericRepair,
 }
 
@@ -205,7 +206,13 @@ impl RepairDirective {
                 out.push_str(&line);
             }
         }
-        out.push_str("\nThen call submit_stage_deliverable once with terminal coverage/claims that cite real evidence ids when required.");
+        if self.stage == StageKind::TargetIntel.as_str() {
+            out.push_str(
+                "\nContinue the same durable Goal chain and request a fresh neutral Goal review when the material frontier is terminal. Do not hand-build a technique matrix; review and finalization remain host-owned.",
+            );
+        } else {
+            out.push_str("\nThen call submit_stage_deliverable once with terminal coverage/claims that cite real evidence ids when required.");
+        }
         cap_recovery_model_text(out)
     }
 
@@ -332,6 +339,11 @@ pub fn refine_submit_needs_fix(ctx: RefinerContext) -> RepairDirective {
             &["background job", "wait_for_background_jobs"],
         ) {
         RepairKind::BackgroundJobs
+    } else if ctx.stage == StageKind::TargetIntel {
+        // Target Intel is Goal-owned. Legacy per-technique coverage/evidence
+        // failures are review/finalizer findings, not authority to rebuild a
+        // compatibility deliverable or fixed provider/tool worklist.
+        RepairKind::GateBlock
     } else if !ctx.coverage_gap_actions.is_empty() || reasons_look_like_coverage(&ctx.reasons) {
         RepairKind::CoverageGap
     } else if reasons_contain(
@@ -346,24 +358,30 @@ pub fn refine_submit_needs_fix(ctx: RefinerContext) -> RepairDirective {
 }
 
 pub fn refine_gate_block(ctx: RefinerContext) -> RepairDirective {
-    let repair_kind =
-        if !ctx.coverage_gap_actions.is_empty() || reasons_look_like_coverage(&ctx.reasons) {
-            RepairKind::CoverageGap
-        } else {
-            RepairKind::GateBlock
-        };
+    let repair_kind = if ctx.stage == StageKind::TargetIntel {
+        RepairKind::GateBlock
+    } else if !ctx.coverage_gap_actions.is_empty() || reasons_look_like_coverage(&ctx.reasons) {
+        RepairKind::CoverageGap
+    } else {
+        RepairKind::GateBlock
+    };
     directive_from_context(ctx, repair_kind)
 }
 
 fn directive_from_context(ctx: RefinerContext, repair_kind: RepairKind) -> RepairDirective {
     let root_cause = root_cause_for(&ctx, repair_kind);
     let actions = repair_actions_for(&ctx, repair_kind);
-    let submit_guidance = submit_guidance_for(repair_kind, &actions, &ctx.available_evidence_ids);
+    let submit_guidance = submit_guidance_for(
+        ctx.stage,
+        repair_kind,
+        &actions,
+        &ctx.available_evidence_ids,
+    );
     let allowed_tools = allowed_tools_for(ctx.stage, repair_kind);
     let forbidden_tools = forbidden_tools_for(ctx.stage, repair_kind);
     let gate_reason_hash = short_hash(&ctx.reasons);
-    let gap_hash =
-        (!ctx.coverage_gap_actions.is_empty()).then(|| short_hash(&ctx.coverage_gap_actions));
+    let gap_hash = (ctx.stage != StageKind::TargetIntel && !ctx.coverage_gap_actions.is_empty())
+        .then(|| short_hash(&ctx.coverage_gap_actions));
 
     RepairDirective {
         schema_v: 1,
@@ -402,8 +420,12 @@ fn root_cause_for(ctx: &RefinerContext, repair_kind: RepairKind) -> String {
             }
         }
         RepairKind::GateBlock => {
-            "per-org stage gate blocked this worker; repair the named gate reasons and resubmit"
-                .to_string()
+            if ctx.stage == StageKind::TargetIntel {
+                "Target Intel Goal review/finalizer blocked the current durable revision; inspect the named review or finalizer reason, continue the same Goal plan only where material work remains, then request a fresh neutral review".to_string()
+            } else {
+                "per-org stage gate blocked this worker; repair the named gate reasons and resubmit"
+                    .to_string()
+            }
         }
         RepairKind::Generic => ctx
             .reasons
@@ -414,6 +436,32 @@ fn root_cause_for(ctx: &RefinerContext, repair_kind: RepairKind) -> String {
 }
 
 fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<RepairAction> {
+    if ctx.stage == StageKind::TargetIntel
+        && matches!(repair_kind, RepairKind::CoverageGap | RepairKind::GateBlock)
+    {
+        return ctx
+            .reasons
+            .iter()
+            .take(8)
+            .map(|reason| RepairAction {
+                asset: None,
+                technique: None,
+                capability_id: None,
+                tool: Some("update_plan".to_string()),
+                command_hint: Some(
+                    "Update the same Controller plan from the reviewer/finalizer finding, then choose only the missing semantic pivots or bounded generic worker assignments"
+                        .to_string(),
+                ),
+                expected_status: Some("request_fresh_goal_review".to_string()),
+                evidence_refs: Vec::new(),
+                note: Some(
+                    "Do not translate legacy coverage cells into provider or technique obligations"
+                        .to_string(),
+                ),
+                reason: target_intel_goal_repair_reason(reason),
+            })
+            .collect();
+    }
     match repair_kind {
         RepairKind::BackgroundJobs => ctx
             .running_background_jobs
@@ -523,16 +571,21 @@ fn repair_actions_for(ctx: &RefinerContext, repair_kind: RepairKind) -> Vec<Repa
 }
 
 fn submit_guidance_for(
+    stage: StageKind,
     repair_kind: RepairKind,
     actions: &[RepairAction],
     evidence_ids: &[i64],
 ) -> SubmitGuidance {
-    let mode = match repair_kind {
-        RepairKind::EvidenceRefs => SubmitGuidanceMode::RebuildEvidenceRefs,
-        RepairKind::BackgroundJobs => SubmitGuidanceMode::WaitForBackgroundJobs,
-        RepairKind::CoverageGap => SubmitGuidanceMode::FillCoverageCells,
-        RepairKind::GateBlock => SubmitGuidanceMode::ResubmitAfterGateBlock,
-        RepairKind::Generic => SubmitGuidanceMode::GenericRepair,
+    let mode = if stage == StageKind::TargetIntel && repair_kind != RepairKind::BackgroundJobs {
+        SubmitGuidanceMode::ContinueGoalReview
+    } else {
+        match repair_kind {
+            RepairKind::EvidenceRefs => SubmitGuidanceMode::RebuildEvidenceRefs,
+            RepairKind::BackgroundJobs => SubmitGuidanceMode::WaitForBackgroundJobs,
+            RepairKind::CoverageGap => SubmitGuidanceMode::FillCoverageCells,
+            RepairKind::GateBlock => SubmitGuidanceMode::ResubmitAfterGateBlock,
+            RepairKind::Generic => SubmitGuidanceMode::GenericRepair,
+        }
     };
     SubmitGuidance {
         mode,
@@ -556,6 +609,17 @@ fn submit_guidance_for(
 }
 
 fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
+    if stage == StageKind::TargetIntel {
+        return vec![
+            "update_plan",
+            "recon_search_intel",
+            "stage_team_dispatch_workers",
+            "stage_team_prepare_final_submission",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    }
     match repair_kind {
         RepairKind::EvidenceRefs => vec![
             "query_target_data",
@@ -570,14 +634,6 @@ fn allowed_tools_for(stage: StageKind, repair_kind: RepairKind) -> Vec<String> {
             "submit_stage_deliverable",
         ],
         RepairKind::CoverageGap | RepairKind::GateBlock => match stage {
-            StageKind::TargetIntel => vec![
-                "query_target_data",
-                "check_stage_asset_coverage",
-                "recon_map_assets",
-                "recon_lookup_whois",
-                "wait_for_background_jobs",
-                "submit_stage_deliverable",
-            ],
             StageKind::ExternalAttackSurface => vec![
                 "stage_worklist_status",
                 "stage_worklist_next",
@@ -677,8 +733,6 @@ fn suggested_tool_for(stage: StageKind, technique: &str) -> Option<String> {
         (StageKind::Enumeration, "GOLISH-ENUM-JSAPI") => Some("browser_collect_js_api".to_string()),
         (StageKind::Enumeration, "GOLISH-ENUM-DIR") => Some("route_probe_paths".to_string()),
         (StageKind::Enumeration, "GOLISH-ENUM-PARAM") => Some("js_extract_apis".to_string()),
-        (StageKind::TargetIntel, "GOLISH-INTEL-WHOIS") => Some("recon_lookup_whois".to_string()),
-        (StageKind::TargetIntel, _) => Some("recon_map_assets".to_string()),
         (StageKind::VulnTriage, "GOLISH-NDAY") => {
             Some("vuln_nuclei_fingerprint_targeted".to_string())
         }
@@ -736,14 +790,8 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
             "vuln_nuclei_fingerprint_targeted foreground call: resolve the work item's target_id and exact target_url={asset}, then pass techniques=[\"GOLISH-NDAY\"]; the backend freezes template ids from current-owner fingerprints and never falls back to a general scan"
         ),
         (StageKind::VulnTriage, "vuln_probe_anonymous_access", _) => format!(
-            "vuln_probe_anonymous_access foreground call: resolve the work item's server-side target_id and exact target_url={asset}, query_target_data sections=[\"endpoints\"], review the complete potentially-sensitive inventory, then pass reviewed_endpoint_ids=[every eligible id] plus a bounded selected_probes=[{{endpoint_id, query_values, rationale}}] subset (maximum 16); never pass per-endpoint URL/method/header/cookie/token/body/redirect/CLI controls or blindly probe the full inventory"
+            "vuln_probe_anonymous_access foreground call: resolve the work item's server-side target_id and exact target_url={asset}, query_target_data sections=[\"endpoints\"], review the complete potentially-sensitive inventory, copy reviewed_endpoint_ids exactly from anonymous_access_review.eligible_endpoint_ids, then choose a bounded selected_probes=[{{endpoint_id, query_values, rationale}}] subset only from those eligible ids (maximum 16); for each selected endpoint copy query_values keys only from anonymous_access_review.eligible_endpoint_query_contracts[].persisted_url_query_names and use query_values={{}} when that list is empty (endpoint params that are not already URL-query names are not authorized overrides); never pass per-endpoint URL/method/header/cookie/token/body/redirect/CLI controls or blindly probe the full inventory"
         ),
-        (StageKind::TargetIntel, "recon_lookup_whois", _) => {
-            "recon_lookup_whois(organization_id=<current org>)".to_string()
-        }
-        (StageKind::TargetIntel, "recon_map_assets", _) => {
-            "recon_map_assets(organization_id=<current org>)".to_string()
-        }
         _ => format!("{tool} targeted at {asset} for {technique}"),
     }
 }
@@ -796,6 +844,16 @@ fn normalized_tool_hint(tool: &str) -> Option<String> {
 
 fn normalized_stage_tool_hint(stage: StageKind, technique: &str, tool: &str) -> Option<String> {
     let token = normalized_tool_hint(tool)?;
+    if stage == StageKind::TargetIntel {
+        return matches!(
+            token.as_str(),
+            "update_plan"
+                | "recon_search_intel"
+                | "stage_team_dispatch_workers"
+                | "stage_team_prepare_final_submission"
+        )
+        .then_some(token);
+    }
     if stage == StageKind::VulnTriage {
         return match (technique, token.as_str()) {
             ("GOLISH-NDAY", "vuln_nuclei_fingerprint_targeted") => Some(token.clone()),
@@ -895,6 +953,20 @@ fn sample_assets(assets: &[String], total: usize) -> String {
 fn reasons_contain(reasons: &[String], needles: &[&str]) -> bool {
     let joined = reasons.join(" | ").to_ascii_lowercase();
     needles.iter().any(|needle| joined.contains(needle))
+}
+
+fn target_intel_goal_repair_reason(reason: &str) -> String {
+    let normalized = reason.to_ascii_lowercase();
+    if normalized.contains("golish-intel-")
+        || normalized.contains("coverage")
+        || normalized.contains("never attempted")
+        || normalized.contains("missing terminal")
+    {
+        "Ignore the obsolete formulaic coverage signal; re-read the durable Goal frontier and the current review/finalizer finding"
+            .to_string()
+    } else {
+        reason.to_string()
+    }
 }
 
 fn reasons_look_like_coverage(reasons: &[String]) -> bool {
@@ -1149,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn target_intel_directive_forbids_scan_fallback() {
+    fn target_intel_directive_drops_legacy_formulaic_coverage_repair() {
         let d = refine_gate_block(RefinerContext {
             stage: StageKind::TargetIntel,
             org_id: None,
@@ -1166,8 +1238,42 @@ mod tests {
             running_background_jobs: Vec::new(),
         });
 
-        assert!(d.allowed_tools.contains(&"recon_lookup_whois".to_string()));
+        assert_eq!(d.repair_kind, RepairKind::GateBlock);
+        assert_eq!(
+            d.submit_guidance.mode,
+            SubmitGuidanceMode::ContinueGoalReview
+        );
+        assert!(d.gap_hash.is_none());
+        assert!(d.actions.iter().all(|action| action.technique.is_none()));
+        assert!(d
+            .actions
+            .iter()
+            .all(|action| action.capability_id.is_none()));
+        assert!(d.allowed_tools.contains(&"recon_search_intel".to_string()));
+        assert!(d
+            .allowed_tools
+            .contains(&"stage_team_dispatch_workers".to_string()));
+        assert!(d.allowed_tools.contains(&"update_plan".to_string()));
+        assert!(!d.allowed_tools.contains(&"query_target_data".to_string()));
+        assert!(!d.allowed_tools.contains(&"intel_public_search".to_string()));
+        assert!(!d.allowed_tools.contains(&"recon_lookup_whois".to_string()));
+        assert!(!d.allowed_tools.contains(&"recon_map_assets".to_string()));
+        assert!(!d
+            .allowed_tools
+            .contains(&"check_stage_asset_coverage".to_string()));
+        assert!(!d
+            .allowed_tools
+            .contains(&"submit_stage_deliverable".to_string()));
         assert!(d.forbidden_tools.contains(&"pentest_run".to_string()));
+        let instruction = d.model_instruction();
+        assert!(instruction.contains("Goal review/finalizer"));
+        assert!(instruction.contains("semantic pivot"));
+        assert!(instruction.contains("same durable Goal chain"));
+        assert!(!instruction.contains("compatibility deliverable"));
+        assert!(!instruction.contains("GOLISH-INTEL-WHOIS"));
+        assert!(!instruction.contains("recon_lookup_whois"));
+        let mode = d.to_submit_repair_mode().expect("gate block repair mode");
+        assert!(mode.coverage_gap_actions.is_empty());
     }
 
     #[test]
@@ -1279,8 +1385,11 @@ mod tests {
             .as_deref()
             .expect("anonymous-access repair hint");
         assert!(anonymous_hint.contains("reviewed_endpoint_ids"));
+        assert!(anonymous_hint.contains("anonymous_access_review.eligible_endpoint_ids"));
         assert!(anonymous_hint.contains("selected_probes"));
         assert!(anonymous_hint.contains("query_values"));
+        assert!(anonymous_hint.contains("eligible_endpoint_query_contracts"));
+        assert!(anonymous_hint.contains("persisted_url_query_names"));
         let mode = d.to_submit_repair_mode().unwrap();
         assert!(mode.allows("vuln_nuclei_general"));
         assert!(mode.allows("vuln_nuclei_fingerprint_targeted"));

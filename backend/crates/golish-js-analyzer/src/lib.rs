@@ -43,9 +43,11 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 mod ast_filter;
 mod noise;
@@ -176,12 +178,130 @@ pub struct CallSiteContext {
     pub span: SourceSpan,
 }
 
+/// Closed adapter family used to interpret one AST-confirmed call site.
+///
+/// `Raw` deliberately carries no inferred argument/config semantics. This is
+/// the fail-closed result for custom wrappers that have a URL-shaped first
+/// argument but are not one of the adapters understood by this crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CallAdapter {
+    #[default]
+    Raw,
+    Fetch,
+    Axios,
+    Request,
+    XmlHttpRequest,
+    JQuery,
+    Graphql,
+    WebSocket,
+    EventSource,
+}
+
+/// Value-free location assigned to a parameter name at one exact call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParameterLocation {
+    Path,
+    Query,
+    Body,
+    Form,
+    Header,
+    GraphqlVariable,
+    Unknown,
+}
+
+/// Static type shape. Dynamic expressions remain [`ParameterValueType::Unknown`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ParameterValueType {
+    String,
+    Number,
+    Boolean,
+    Object,
+    Array,
+    Null,
+    #[default]
+    Unknown,
+}
+
+/// A field-name fact extracted from one AST-confirmed call node.
+///
+/// This type intentionally has no value, preview, or value hash field. Values
+/// are only inspected transiently to derive the coarse static type above.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterFact {
+    pub name: String,
+    pub location: ParameterLocation,
+    pub value_type: ParameterValueType,
+}
+
+/// Semantic role of a top-level call argument. The argument expression itself
+/// is never retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArgumentRole {
+    Url,
+    Config,
+    Body,
+    Form,
+    GraphqlDocument,
+    GraphqlVariables,
+    Unknown,
+}
+
+/// Value-free top-level argument shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgumentFact {
+    pub index: usize,
+    pub role: ArgumentRole,
+    pub value_type: ParameterValueType,
+    pub dynamic: bool,
+}
+
+/// Value-free top-level config field shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigFact {
+    pub name: String,
+    pub value_type: ParameterValueType,
+}
+
+/// GraphQL operation metadata is schema identity rather than an argument
+/// value, so it is safe to retain alongside variable names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphqlOperationKind {
+    Query,
+    Mutation,
+    Subscription,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphqlOperationFact {
+    pub kind: GraphqlOperationKind,
+    pub name: Option<String>,
+}
+
 /// One raw endpoint plus the source-local call-site evidence needed by a
 /// downstream contextual resolver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointCandidate {
+    /// Stable source-local identity. It hashes only source identity, exact
+    /// byte span and callee — never argument values or secret material.
+    #[serde(default)]
+    pub candidate_id: String,
     pub endpoint: Endpoint,
     pub call: CallSiteContext,
+    #[serde(default)]
+    pub adapter: CallAdapter,
+    #[serde(default)]
+    pub arguments: Vec<ArgumentFact>,
+    #[serde(default)]
+    pub config: Vec<ConfigFact>,
+    #[serde(default)]
+    pub parameters: Vec<ParameterFact>,
+    #[serde(default)]
+    pub graphql_operation: Option<GraphqlOperationFact>,
 }
 
 /// Candidate-preserving counterpart to [`ExtractReport`].
@@ -270,6 +390,13 @@ pub fn extract_candidates_from_source(source_file: &str, content: &str) -> Vec<E
     let axios_config_re = Regex::new(patterns::AXIOS_CONFIG).expect("AXIOS_CONFIG regex valid");
     let jquery_re = Regex::new(patterns::JQUERY_AJAX).expect("JQUERY_AJAX regex valid");
     let new_request_re = Regex::new(patterns::NEW_REQUEST).expect("NEW_REQUEST regex valid");
+    let xhr_open_re = Regex::new(patterns::XHR_OPEN).expect("XHR_OPEN regex valid");
+    let graphql_url_re =
+        Regex::new(patterns::GRAPHQL_URL_CALL).expect("GRAPHQL_URL_CALL regex valid");
+    let graphql_client_re =
+        Regex::new(patterns::GRAPHQL_CLIENT_CALL).expect("GRAPHQL_CLIENT_CALL regex valid");
+    let websocket_re = Regex::new(patterns::WEBSOCKET).expect("WEBSOCKET regex valid");
+    let event_source_re = Regex::new(patterns::EVENT_SOURCE).expect("EVENT_SOURCE regex valid");
     let fetch_concat_re = Regex::new(patterns::FETCH_CONCAT).expect("FETCH_CONCAT regex valid");
     let fetch_template_re =
         Regex::new(patterns::FETCH_TEMPLATE).expect("FETCH_TEMPLATE regex valid");
@@ -433,6 +560,81 @@ pub fn extract_candidates_from_source(source_file: &str, content: &str) -> Vec<E
             ));
         }
     }
+    for cap in xhr_open_re.captures_iter(scrubbed_str) {
+        let receiver = cap.get(1).map(|value| value.as_str().to_string());
+        if let (Some(matched), Some(receiver), Some(endpoint)) = (
+            cap.get(0),
+            receiver,
+            patterns::endpoint_from_xhr_open(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                matched.start(),
+                endpoint_candidate(
+                    endpoint,
+                    content,
+                    matched,
+                    &format!("{receiver}.open"),
+                    Some(&receiver),
+                ),
+            ));
+        }
+    }
+    for cap in graphql_url_re.captures_iter(scrubbed_str) {
+        let callee = cap.get(1).map(|value| value.as_str().to_string());
+        if let (Some(matched), Some(callee), Some(endpoint)) = (
+            cap.get(0),
+            callee,
+            patterns::endpoint_from_graphql_url_call(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                matched.start(),
+                endpoint_candidate(endpoint, content, matched, &callee, None),
+            ));
+        }
+    }
+    for cap in graphql_client_re.captures_iter(scrubbed_str) {
+        let receiver = cap.get(1).map(|value| value.as_str().to_string());
+        let verb = cap.get(2).map(|value| value.as_str().to_string());
+        if let (Some(matched), Some(receiver), Some(verb), Some(endpoint)) = (
+            cap.get(0),
+            receiver,
+            verb,
+            patterns::endpoint_from_graphql_client_call(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                matched.start(),
+                endpoint_candidate(
+                    endpoint,
+                    content,
+                    matched,
+                    &format!("{receiver}.{verb}"),
+                    Some(&receiver),
+                ),
+            ));
+        }
+    }
+    for cap in websocket_re.captures_iter(scrubbed_str) {
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_websocket(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                matched.start(),
+                endpoint_candidate(endpoint, content, matched, "WebSocket", None),
+            ));
+        }
+    }
+    for cap in event_source_re.captures_iter(scrubbed_str) {
+        if let (Some(matched), Some(endpoint)) = (
+            cap.get(0),
+            patterns::endpoint_from_event_source(&cap, scrubbed_str, source_file),
+        ) {
+            hits.push((
+                matched.start(),
+                endpoint_candidate(endpoint, content, matched, "EventSource", None),
+            ));
+        }
+    }
 
     // P2 final filter: drop any hit whose byte offset is NOT inside a
     // tree-sitter-confirmed call_expression / new_expression node.
@@ -440,11 +642,19 @@ pub fn extract_candidates_from_source(source_file: &str, content: &str) -> Vec<E
     // graceful degradation.
     let candidates: Vec<EndpointCandidate> = if let Some(ref ranges) = ast_ranges {
         hits.into_iter()
-            .filter(|(off, _)| ranges.contains_offset(*off))
-            .map(|(_, candidate)| candidate)
+            .filter_map(|(off, mut candidate)| {
+                let (start, end) = ranges.range_containing(off)?;
+                bind_exact_callsite_facts(&mut candidate, source_file, content, start, end);
+                Some(candidate)
+            })
             .collect()
     } else {
-        hits.into_iter().map(|(_, candidate)| candidate).collect()
+        hits.into_iter()
+            .map(|(_, mut candidate)| {
+                assign_candidate_id(&mut candidate, source_file);
+                candidate
+            })
+            .collect()
     };
 
     candidates
@@ -497,7 +707,16 @@ fn expanded_member_chain_receiver(
 }
 
 fn legacy_candidate_visible(candidate: &EndpointCandidate) -> bool {
-    (candidate.endpoint.kind != CallSiteKind::HttpClientVerb
+    matches!(
+        candidate.endpoint.kind,
+        CallSiteKind::Fetch
+            | CallSiteKind::AxiosVerb
+            | CallSiteKind::AxiosConfig
+            | CallSiteKind::HttpClientVerb
+            | CallSiteKind::JqueryAjax
+            | CallSiteKind::NewRequest
+            | CallSiteKind::HaeRoute
+    ) && (candidate.endpoint.kind != CallSiteKind::HttpClientVerb
         || candidate.endpoint.path.starts_with('/'))
         && candidate
             .call
@@ -551,6 +770,7 @@ fn endpoint_candidate(
         .map(|offset| offset + 1)
         .unwrap_or(0);
     EndpointCandidate {
+        candidate_id: String::new(),
         endpoint,
         call: CallSiteContext {
             callee: callee.to_string(),
@@ -565,7 +785,65 @@ fn endpoint_candidate(
                 column: start_byte.saturating_sub(line_start),
             },
         },
+        adapter: CallAdapter::Raw,
+        arguments: Vec::new(),
+        config: Vec::new(),
+        parameters: Vec::new(),
+        graphql_operation: None,
     }
+}
+
+fn bind_exact_callsite_facts(
+    candidate: &mut EndpointCandidate,
+    source_file: &str,
+    source: &str,
+    start_byte: usize,
+    end_byte: usize,
+) {
+    let line_start = source[..start_byte]
+        .rfind('\n')
+        .map(|offset| offset + 1)
+        .unwrap_or(0);
+    candidate.call.span = SourceSpan {
+        start_byte,
+        end_byte,
+        line: 1 + source[..start_byte]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count(),
+        column: start_byte.saturating_sub(line_start),
+    };
+
+    let call_source = &source[start_byte..end_byte];
+    let facts = patterns::facts_from_call(
+        candidate.endpoint.kind,
+        &candidate.endpoint.method,
+        &candidate.endpoint.path,
+        call_source,
+    );
+    candidate.adapter = facts.adapter;
+    candidate.arguments = facts.arguments;
+    candidate.config = facts.config;
+    candidate.parameters = facts.parameters;
+    candidate.graphql_operation = facts.graphql_operation;
+    assign_candidate_id(candidate, source_file);
+}
+
+fn assign_candidate_id(candidate: &mut EndpointCandidate, source_file: &str) {
+    let mut digest = Sha256::new();
+    digest.update(b"golish-js-callsite-v1\0");
+    digest.update(source_file.as_bytes());
+    digest.update(b"\0");
+    digest.update(candidate.call.span.start_byte.to_le_bytes());
+    digest.update(candidate.call.span.end_byte.to_le_bytes());
+    digest.update(b"\0");
+    digest.update(candidate.call.callee.as_bytes());
+
+    let mut id = String::from("js-callsite-v1:");
+    for byte in digest.finalize() {
+        write!(&mut id, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    candidate.candidate_id = id;
 }
 
 /// Convenience: extract from many files and aggregate into a single report.

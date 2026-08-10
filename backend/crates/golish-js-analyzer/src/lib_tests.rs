@@ -97,7 +97,7 @@ fn candidate_api_preserves_custom_client_receiver_and_exact_span() {
     assert_eq!(candidate.call.span.column, src.find("admin.get").unwrap());
     assert_eq!(
         &src[candidate.call.span.start_byte..candidate.call.span.end_byte],
-        "admin.get('/users'"
+        "admin.get('/users')"
     );
 }
 
@@ -118,11 +118,11 @@ fn candidate_api_distinguishes_minified_same_line_calls_by_byte_span() {
     );
     assert_eq!(
         &src[candidates[0].call.span.start_byte..candidates[0].call.span.end_byte],
-        "admin.get('/users'"
+        "admin.get('/users')"
     );
     assert_eq!(
         &src[candidates[1].call.span.start_byte..candidates[1].call.span.end_byte],
-        "open.get('/users'"
+        "open.get('/users')"
     );
 }
 
@@ -411,4 +411,252 @@ fn plain_fetch_still_marked_literal() {
     assert_eq!(eps.len(), 1);
     assert_eq!(eps[0].url_kind, UrlKind::Literal);
     assert!(!eps[0].has_path_params);
+}
+
+#[test]
+fn candidate_params_are_bound_to_exact_minified_callsite() {
+    let source = concat!(
+        "fetch('/one',{body:JSON.stringify({first:secretOne})});",
+        "fetch('/two',{body:JSON.stringify({second:secretTwo})})"
+    );
+
+    let candidates = extract_candidates_from_source("min.js", source);
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(
+        candidates[0]
+            .parameters
+            .iter()
+            .map(|fact| fact.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first"]
+    );
+    assert_eq!(
+        candidates[1]
+            .parameters
+            .iter()
+            .map(|fact| fact.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["second"]
+    );
+    assert_eq!(
+        &source[candidates[0].call.span.start_byte..candidates[0].call.span.end_byte],
+        "fetch('/one',{body:JSON.stringify({first:secretOne})})"
+    );
+    assert_eq!(
+        &source[candidates[1].call.span.start_byte..candidates[1].call.span.end_byte],
+        "fetch('/two',{body:JSON.stringify({second:secretTwo})})"
+    );
+}
+
+#[test]
+fn fetch_config_extracts_query_body_and_header_names_without_values() {
+    let source = concat!(
+        "fetch('/users?tenant=private-tenant',{method:'POST',",
+        "body:JSON.stringify({displayName:'Alice',token:secretToken}),",
+        "headers:{Authorization:bearerToken,'X-Trace':traceId}})"
+    );
+
+    let candidate = extract_candidates_from_source("fetch.js", source)
+        .into_iter()
+        .next()
+        .expect("fetch candidate");
+
+    assert_eq!(candidate.adapter, CallAdapter::Fetch);
+    assert!(candidate.parameters.contains(&ParameterFact {
+        name: "tenant".to_string(),
+        location: ParameterLocation::Query,
+        value_type: ParameterValueType::Unknown,
+    }));
+    assert!(candidate.parameters.contains(&ParameterFact {
+        name: "displayName".to_string(),
+        location: ParameterLocation::Body,
+        value_type: ParameterValueType::String,
+    }));
+    assert!(candidate.parameters.contains(&ParameterFact {
+        name: "token".to_string(),
+        location: ParameterLocation::Body,
+        value_type: ParameterValueType::Unknown,
+    }));
+    assert!(candidate.parameters.contains(&ParameterFact {
+        name: "Authorization".to_string(),
+        location: ParameterLocation::Header,
+        value_type: ParameterValueType::Unknown,
+    }));
+    let serialized = serde_json::to_string(&candidate.parameters).expect("serialize facts");
+    for forbidden in [
+        "private-tenant",
+        "Alice",
+        "secretToken",
+        "bearerToken",
+        "traceId",
+    ] {
+        assert!(!serialized.contains(forbidden));
+    }
+}
+
+#[test]
+fn axios_config_extracts_body_and_params_by_location() {
+    let source = concat!(
+        "axios.post('/orders',{sku:'sku-secret',quantity:2},",
+        "{params:{dryRun:true},headers:{'X-CSRF':csrfToken}});",
+        "axios({url:'/search',method:'POST',data:{term:searchTerm},params:{page:1}})"
+    );
+
+    let candidates = extract_candidates_from_source("axios.js", source);
+    assert_eq!(candidates.len(), 2);
+    let post = candidates
+        .iter()
+        .find(|candidate| candidate.endpoint.path == "/orders")
+        .expect("axios verb candidate");
+    assert!(post.parameters.contains(&ParameterFact {
+        name: "sku".to_string(),
+        location: ParameterLocation::Body,
+        value_type: ParameterValueType::String,
+    }));
+    assert!(post.parameters.contains(&ParameterFact {
+        name: "dryRun".to_string(),
+        location: ParameterLocation::Query,
+        value_type: ParameterValueType::Boolean,
+    }));
+    assert!(post.parameters.contains(&ParameterFact {
+        name: "X-CSRF".to_string(),
+        location: ParameterLocation::Header,
+        value_type: ParameterValueType::Unknown,
+    }));
+
+    let config = candidates
+        .iter()
+        .find(|candidate| candidate.endpoint.path == "/search")
+        .expect("axios config candidate");
+    assert!(config.parameters.contains(&ParameterFact {
+        name: "term".to_string(),
+        location: ParameterLocation::Body,
+        value_type: ParameterValueType::Unknown,
+    }));
+    assert!(config.parameters.contains(&ParameterFact {
+        name: "page".to_string(),
+        location: ParameterLocation::Query,
+        value_type: ParameterValueType::Number,
+    }));
+}
+
+#[test]
+fn request_and_jquery_extract_form_fields() {
+    let source = concat!(
+        "new Request('/submit',{method:'POST',body:new URLSearchParams({email,password})});",
+        "$.ajax({url:'/legacy-submit',type:'POST',data:{email,password}})"
+    );
+
+    let candidates = extract_candidates_from_source("forms.js", source);
+    assert_eq!(candidates.len(), 2);
+    for candidate in &candidates {
+        for name in ["email", "password"] {
+            assert!(candidate.parameters.contains(&ParameterFact {
+                name: name.to_string(),
+                location: ParameterLocation::Form,
+                value_type: ParameterValueType::Unknown,
+            }));
+        }
+    }
+}
+
+#[test]
+fn graphql_extracts_operation_and_variable_names() {
+    let source = concat!(
+        "graphql('/graphql',{query:gql`query User($id: ID!, $filter: Filter){",
+        "user(id:$id){id}}`,variables:{id,filter:buildFilter()}})"
+    );
+
+    let candidate = extract_candidates_from_source("graphql.js", source)
+        .into_iter()
+        .next()
+        .expect("GraphQL candidate");
+
+    assert_eq!(candidate.adapter, CallAdapter::Graphql);
+    assert_eq!(
+        candidate.graphql_operation,
+        Some(GraphqlOperationFact {
+            kind: GraphqlOperationKind::Query,
+            name: Some("User".to_string()),
+        })
+    );
+    for name in ["id", "filter"] {
+        assert!(candidate.parameters.iter().any(|fact| {
+            fact.name == name && fact.location == ParameterLocation::GraphqlVariable
+        }));
+    }
+}
+
+#[test]
+fn dynamic_values_keep_field_names_and_unknown_types() {
+    let source = "axios.post('/profiles',{accountId,profile:buildProfile(),active:true})";
+
+    let candidate = extract_candidates_from_source("dynamic.js", source)
+        .into_iter()
+        .next()
+        .expect("axios candidate");
+
+    for name in ["accountId", "profile"] {
+        assert!(candidate.parameters.contains(&ParameterFact {
+            name: name.to_string(),
+            location: ParameterLocation::Body,
+            value_type: ParameterValueType::Unknown,
+        }));
+    }
+    assert!(candidate.parameters.contains(&ParameterFact {
+        name: "active".to_string(),
+        location: ParameterLocation::Body,
+        value_type: ParameterValueType::Boolean,
+    }));
+}
+
+#[test]
+fn two_equal_paths_keep_distinct_candidate_ids_and_spans() {
+    let source = "fetch('/same');fetch('/same')";
+
+    let candidates = extract_candidates_from_source("duplicates.js", source);
+
+    assert_eq!(candidates.len(), 2);
+    assert_ne!(candidates[0].candidate_id, candidates[1].candidate_id);
+    assert_ne!(candidates[0].call.span, candidates[1].call.span);
+    assert!(candidates
+        .iter()
+        .all(|candidate| candidate.candidate_id.starts_with("js-callsite-v1:")));
+}
+
+#[test]
+fn legacy_endpoint_projection_remains_serde_compatible() {
+    let source = concat!(
+        "new WebSocket('/socket');xhr.open('POST','/xhr');",
+        "axios.post('/orders',{sku:'secret'});fetch('/users');",
+        "graphql('/graphql',{query:'query Ping { ping }'})"
+    );
+
+    let candidates = extract_candidates_from_source("compat.js", source);
+    let legacy = extract_from_source("compat.js", source);
+    assert_eq!(candidates.len(), 5);
+    assert_eq!(
+        legacy
+            .iter()
+            .map(|endpoint| (endpoint.method.as_str(), endpoint.path.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("GET", "/users"), ("POST", "/orders")]
+    );
+    let legacy_json = serde_json::to_value(&legacy).expect("serialize legacy endpoints");
+    let object = legacy_json[0].as_object().expect("legacy endpoint object");
+    assert!(!object.contains_key("candidate_id"));
+    assert!(!object.contains_key("parameters"));
+    assert!(!object.contains_key("config"));
+
+    let old_candidate_json = r#"{
+        "endpoint":{"method":"GET","path":"/old","auth":"none","source_file":"old.js","line":1,"confidence":0.9,"kind":"fetch","url_kind":"literal","has_path_params":false,"id_param_position":null,"source":"regex"},
+        "call":{"callee":"fetch","receiver":null,"span":{"start_byte":0,"end_byte":12,"line":1,"column":0}}
+    }"#;
+    let old: EndpointCandidate =
+        serde_json::from_str(old_candidate_json).expect("old candidate JSON remains readable");
+    assert!(old.candidate_id.is_empty());
+    assert_eq!(old.adapter, CallAdapter::Raw);
+    assert!(old.parameters.is_empty());
+    assert!(old.config.is_empty());
 }

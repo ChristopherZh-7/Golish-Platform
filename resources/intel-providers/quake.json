@@ -62,7 +62,11 @@
                 "location.isp"
               ]
             },
-            "timeout_secs": 45
+      "timeout_secs": 45,
+      "applicable_pivot_kinds": ["company_name", "brand"],
+      "wire_query_type": "org",
+      "adapter_version": "http_semantic.v1",
+      "literal_encoder": "quake_quoted_literal.v1"
           },
           {
             "id": "domain",
@@ -99,7 +103,57 @@
                 "location.isp"
               ]
             },
-            "timeout_secs": 45
+      "timeout_secs": 45,
+      "applicable_pivot_kinds": ["domain", "hostname"],
+      "wire_query_type": "domain",
+      "adapter_version": "http_semantic.v1",
+            "literal_encoder": "quake_quoted_literal.v1"
+          },
+          {
+            "id": "ip",
+            "method": "POST",
+            "url": "https://quake.360.net/api/v3/search/quake_service",
+            "headers": {
+              "Content-Type": "application/json",
+              "User-Agent": "Golish Asset Intel",
+              "X-QuakeToken": "{{secret:api_key}}"
+            },
+            "json": {
+              "query": "ip: \"{{company_name}}\"",
+              "start": 0,
+              "size": 100,
+              "ignore_cache": false,
+              "latest": true,
+              "include": ["ip", "port", "transport", "domain", "hostname", "asn", "org", "service.name", "service.http.host", "service.http.title", "service.http.server", "service.http.status_code", "service.cert"]
+            },
+            "timeout_secs": 45,
+            "applicable_pivot_kinds": ["ip"],
+            "wire_query_type": "ip",
+            "adapter_version": "http_semantic.v1",
+            "literal_encoder": "quake_quoted_literal.v1"
+          },
+          {
+            "id": "asn",
+            "method": "POST",
+            "url": "https://quake.360.net/api/v3/search/quake_service",
+            "headers": {
+              "Content-Type": "application/json",
+              "User-Agent": "Golish Asset Intel",
+              "X-QuakeToken": "{{secret:api_key}}"
+            },
+            "json": {
+              "query": "asn: \"{{company_name}}\"",
+              "start": 0,
+              "size": 100,
+              "ignore_cache": false,
+              "latest": true,
+              "include": ["ip", "port", "transport", "domain", "hostname", "asn", "org", "service.name", "service.http.host", "service.http.title", "service.http.server", "service.http.status_code", "service.cert"]
+            },
+            "timeout_secs": 45,
+            "applicable_pivot_kinds": ["asn"],
+            "wire_query_type": "asn",
+            "adapter_version": "http_semantic.v1",
+            "literal_encoder": "quake_quoted_literal.v1"
           },
           {
             "id": "icp_unit",
@@ -111,7 +165,7 @@
               "X-QuakeToken": "{{secret:api_key}}"
             },
             "json": {
-              "query": "service.http.icp.main_licence.unit: \"{{company_name}}\"",
+              "query": "service.http.icp.main_licence: \"{{company_name}}\"",
               "start": 0,
               "size": 100,
               "ignore_cache": false,
@@ -136,7 +190,11 @@
                 "location.isp"
               ]
             },
-            "timeout_secs": 45
+      "timeout_secs": 45,
+      "applicable_pivot_kinds": ["icp"],
+      "wire_query_type": "icp",
+      "adapter_version": "http_semantic.v1",
+      "literal_encoder": "quake_quoted_literal.v1"
           },
           {
             "id": "cert",
@@ -173,7 +231,11 @@
                 "location.isp"
               ]
             },
-            "timeout_secs": 45
+      "timeout_secs": 45,
+      "applicable_pivot_kinds": ["certificate"],
+      "wire_query_type": "cert",
+      "adapter_version": "http_semantic.v1",
+      "literal_encoder": "quake_quoted_literal.v1"
           }
         ]
       },

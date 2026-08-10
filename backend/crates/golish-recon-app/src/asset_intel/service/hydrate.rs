@@ -174,6 +174,7 @@ pub(crate) async fn run_providers_for_org(
     let mut evidence = Vec::new();
     let mut candidates = OrganizationCandidates::default();
     let mut profile_entries: Vec<ProfileFieldEntry> = Vec::new();
+    let mut observed_profile_fields: Vec<ObservedProfileField> = Vec::new();
     let cli_limit = Arc::new(Semaphore::new(CLI_PROVIDER_CONCURRENCY));
     let http_limit = Arc::new(Semaphore::new(HTTP_PROVIDER_CONCURRENCY));
     let provider_count = providers.len();
@@ -219,6 +220,7 @@ pub(crate) async fn run_providers_for_org(
                         company_name,
                         config,
                         sink,
+                        pentest_config.controlled_fixture_intel_transport.as_ref(),
                     )
                     .await
                 }
@@ -249,6 +251,12 @@ pub(crate) async fn run_providers_for_org(
         let (status, next_candidates, next_evidence, next_profile) = provider_run?;
         if provider_output_has_landable_records(&status, &next_evidence) {
             merge_candidates(&mut candidates, next_candidates);
+            observed_profile_fields.extend(next_profile.iter().map(|entry| ObservedProfileField {
+                provider_id: status.provider_id.clone(),
+                target_kind: entry.target_kind.clone(),
+                target_field: entry.target_field.clone(),
+                value: entry.value.clone(),
+            }));
             profile_entries.extend(next_profile);
         }
         evidence.push(next_evidence);
@@ -335,6 +343,7 @@ pub(crate) async fn run_providers_for_org(
         candidates,
         evidence,
         observed_domain_hosts,
+        observed_profile_fields,
     })
 }
 

@@ -1,6 +1,7 @@
 //! Candidate/Hypothesis Registry host boundary.
 
 mod candidate_gate;
+mod consolidation;
 mod reducer;
 mod rollout;
 mod semantic_key;
@@ -20,14 +21,21 @@ pub use candidate_gate::{
     InputProcessingDispositionDecision, InputProcessingDispositionV1, PriorCandidateAttemptV1,
     RevisionSourceRef,
 };
+pub use consolidation::{
+    adjudicate_revision_from_current_outcomes, decide_fact_delta_consumption,
+    generation_transition, validate_wave_partition, ConsolidationError, CurrentObjectiveOutcome,
+    FactDeltaBundleCandidateV1, FactDeltaConsumptionDecisionV1, FactDeltaConsumptionDispositionV1,
+    GenerationTransitionV1, WaveCoveragePartitionV1,
+};
 pub use reducer::{
     reduce_proposals, ReducerCatalog, ReducerDecision, ReducerError, ReducerMutationSet,
     ReducerOperatorInputV1, ReducerProposal,
 };
 pub use rollout::{
-    candidate_mutation_state, freeze_candidate_authority_bundle,
-    CandidateAuthorityBundleSnapshotV1, CandidateAuthorityRootSnapshotV1,
+    candidate_mutation_state, freeze_candidate_authority_bundle, select_campaign_route,
+    CampaignRoute, CandidateAuthorityBundleSnapshotV1, CandidateAuthorityRootSnapshotV1,
     CandidateAuthoritySnapshotDispositionV1, CandidateMutationError,
+    PersistedOperationContractSnapshot,
 };
 pub use semantic_key::{derive_root_id, initial_root_id, merge_root_id, split_root_id};
 pub use types::{CandidateProposal, ClaimComponentCompilerInput, StructuredClaimComponentSourceV1};

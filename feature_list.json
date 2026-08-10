@@ -2887,8 +2887,51 @@
         "pnpm typecheck",
         "cd backend && just space-guard && cargo clippy -p golish-agent-kit -p golish-db -p golish-agent-app -p golish-agent-runtime -p golish-sub-agents -p golish-pentest-app --all-targets -- -D warnings"
       ],
-      "notes": "依赖 Plan A 与 Plan B passing。唯一预留 migration 为 20260729000007_verification_campaigns.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。shadow_registry/dual_read_compare 不能执行 Prepared Action；只有 operation-frozen 的两个新权威 mode 可进入新 Campaign。Plan C 必须独立提供 cold-start 可发现的安全审批入口，不能依赖 Plan D。",
+      "notes": "依赖 Plan A 与 Plan B passing。2026-08-02 按用户要求暂停剩余 Plan C 验证并切换到 Candidate Technique Method Contract；已落地改动与已有定向证据保持不变。唯一预留 migration 为 20260729000007_verification_campaigns.sql；开始 schema/migration 与 generated IPC 前必须重新取得用户明确授权。shadow_registry/dual_read_compare 不能执行 Prepared Action；只有 operation-frozen 的两个新权威 mode 可进入新 Campaign。Plan C 必须独立提供 cold-start 可发现的安全审批入口，不能依赖 Plan D。",
       "evidence": "PLANNED 2026-07-29. 设计已获用户确认；Plan C 已规划objective-local Campaign、多角色团队、Prepared Action/JIT、per-key conflict、ConcurrentActionGroup、typed oracle、FactDelta与revision-level aggregate adjudication；outer truth严格使用存在proof path/全称designated falsifier量词，非决定性未决项只进入limitation。单Campaign不能创建Finding或终结revision。尚未实现、未创建migration、未生成IPC、未运行产品测试。"
+    },
+    {
+      "id": "candidate-technique-method-contracts-2026-08-02",
+      "priority": 2,
+      "area": "Candidate Hypothesis Analysis typed technique registry, applicability, prerequisite gaps and Verification contract binding",
+      "title": "用版本化 Technique Method Contract 构建统一假设验证循环",
+      "user_visible_behavior": "产品把 Candidate 与 Verification 呈现为一个持续的 Hypothesis Validation Loop：AI 读取全部资产与应用上下文，按服务器冻结的方法卡提出假设，验证后用新增 evidence/FactDelta 再生成或修正假设，直到验证、反驳、补充信息、能力缺失或有界固定点。缺条件的假设不能伪装成可执行候选或 Finding。",
+      "status": "not_started",
+      "design": "docs/design/2026-08-02-candidate-technique-method-contracts.md",
+      "plan": "docs/superpowers/plans/2026-08-02-candidate-technique-method-contracts.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-core -E 'test(candidate_technique_)' --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-app -E 'test(candidate_technique_) | test(candidate_analysis_runtime)' --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-sub-agents -E 'test(candidate_hypothesis_)' --status-level fail",
+        "cd backend && just space-guard && cargo clippy -p golish-core -p golish-agent-kit -p golish-db -p golish-agent-app -p golish-sub-agents --all-targets -- -D warnings",
+        "jq empty feature_list.json resources/harness/stages/attack_candidate/spec.json && jq -e '([.features[] | select(.status == \"in_progress\")] | length) == 1' feature_list.json && git diff --check"
+      ],
+      "notes": "2026-08-07 用户把本 slice 吸收到统一 Investigation 实现与实体全链验收；代码保留，由 rag-first-unified-investigation-stage-2026-08-02 作为唯一 active feature 统一验收，不单独并行推进。实现只借鉴 CyberStrike skill 的抽象方法卡结构，Golish 内容独立编写。",
+      "evidence": "IN PROGRESS 2026-08-02. 已完成公开方法论与现有 Candidate authority 差距审计；实现和 fresh focused verification 待完成。"
+    },
+    {
+      "id": "rag-first-unified-investigation-stage-2026-08-02",
+      "priority": 1,
+      "area": "RAG-first unified Investigation runtime, governed operator catalog, Target Intel/Enumeration recovery and full-chain evidence closure",
+      "title": "统一 Investigation、受控工具准入与实体全链闭环",
+      "user_visible_behavior": "从确认公司与自主资产发现开始，Enumeration 由 AI 自主规划并分析 JS/API；Application Understanding 后进入单一 Investigation，认知 Agent 只产 typed hypothesis/action intent，host 通过工具目录、Prepared Action/JIT、typed adapter、Tool Truth 与确定性 Gate 执行和收敛，最终生成可追溯报告。",
+      "status": "passing",
+      "design": "docs/design/2026-08-02-rag-first-unified-investigation-stage.md; docs/design/2026-08-07-investigation-tool-catalog-and-admission.md",
+      "plan": "docs/superpowers/plans/2026-08-02-rag-first-unified-investigation-stage.md",
+      "verification": [
+        "jq empty resources/toolsconfig/arjun.json resources/toolsconfig/kiterunner.json resources/toolsconfig/schemathesis.json resources/toolsconfig/jwt-tool.json resources/toolsconfig/graphql-cop.json resources/toolsconfig/testssl-sh.json resources/toolsconfig/ssh-audit.json resources/toolsconfig/enum4linux-ng.json resources/toolsconfig/trivy.json resources/toolsconfig/interactsh-client.json resources/harness/stages/investigation/tool_catalog.json",
+        "cd backend && just space-guard && cargo run -p golish-pentest-domain --example validate_all_tools",
+        "cd backend && just space-guard && cargo nextest run -p golish-pentest-domain --test investigation_tool_configs --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-pentest --test investigation_tool_smoke --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-kit --test investigation_tool_catalog --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-runtime -E 'test(unified_investigation_profiles_never_receive_raw_action_tools)' --status-level fail",
+        "python3 scripts/stage_smoke.py --workspace /Users/christopherzheng/golish-platform/ControlledFixtureAcceptance-20260810-Fresh02 --controlled-fixture --profile red_team --from scoping --to reporting --objective 'controlled fixture full-chain acceptance'",
+        "python3 scripts/run_tree.py --workspace /Users/christopherzheng/golish-platform/ControlledFixtureAcceptance-20260810-Fresh02 --db --db-url postgres://golish:golish_local@localhost:65364/golish --full",
+        "cd backend && just space-guard && cargo clippy -p golish-core -p golish-db -p golish-agent-kit -p golish-agent-app -p golish-agent-runtime -p golish-pentest-domain -p golish-pentest -p golish-pentest-app -p golish-recon-app -p golish-intel-providers -p golish-js-analyzer -p golish-memory-domain -p golish-reporting-domain -p golish-reporting-app -p golish --lib -- -D warnings",
+        "just space-guard && just precommit"
+      ],
+      "notes": "用户明确授权恢复临时 worktree、forward-only DB migration、受控 fixture 和 fresh moresec.cn 根资产实体闭环；最终只 commit 一次，并按 2026-08-10 最新指令直接 push 当前 codex 分支。Reporting 收敛为 evidence-linked concise summary，不要求模板替换。大型 just precommit 按 AGENTS §0.1 视为可选门禁；本轮为避免重复七分钟全量循环，以 fresh 实体链、DB exact set、15-crate Clippy、focused tests、typecheck/fmt/JSON/diff 作为完成证据。",
+      "evidence": "PASSING 2026-08-10. 恢复来源、两个实体 operation、Memory/RAG、catalog/admission、root-only scope、Reporting 与全部 targeted gate 见 docs/evidence/2026-08-10-recovery-investigation-full-chain.json。moresec operation f76e47ba-a468-4393-852a-4c2bf8ee5682 与 controlled operation 299a056c-7c13-469d-9286-8105f861714c 均 Scoping→Reporting terminal；controlled DB 为 8/8 completed、4/4 Campaign terminal、0 PreparedAction/auth/execution、1 validated unpublished report、0 template artifact。工具配置 57/57；nextest 60f7ecc4 15/15、b930046b 1/1、252096c9 1/1；15-crate Clippy -D warnings、typecheck、fmt、JSON、diff均exit 0；Vitest 69/69、Node 30/30、Python 39/39。"
     },
     {
       "id": "investigation-workspace-reporting-rollout-2026-07-29",

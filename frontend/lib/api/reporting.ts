@@ -1,6 +1,7 @@
 /** Canonical cited Reporting read model and explicit trusted publication IPC. */
 
 import type { ReportArtifactView } from "@/lib/generated/ReportArtifactView";
+import type { ReportClaimValue } from "@/lib/generated/ReportClaimValue";
 import type { ReportingFinalizeRequest } from "@/lib/generated/ReportingFinalizeRequest";
 import type { ReportingScopeRequest } from "@/lib/generated/ReportingScopeRequest";
 import type { ReportReadModelView } from "@/lib/generated/ReportReadModelView";
@@ -9,6 +10,7 @@ import { invoke } from "./client";
 
 export type {
   ReportArtifactView,
+  ReportClaimValue,
   ReportReadModelView,
   ReportRevisionView,
   ReportingFinalizeRequest,

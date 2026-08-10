@@ -16,6 +16,21 @@
       "provider_id": "0.zone",
       "display_name": "0.zone（零零信安）",
       "capabilities": ["domains", "apps", "contacts"],
+      "lookup": {
+        "enabled": true,
+        "skill_id": "org",
+        "timeout_secs": 30,
+        "normalize": {
+          "path": "$..data[*]",
+          "name": ["name_cn", "company", "group"],
+          "credit_code": "msg.code",
+          "industry": "msg.industry",
+          "legal_representative": "msg.legal_person",
+          "address": "msg.address",
+          "registered_at": "msg.registered_at",
+          "default_confidence": 0.64
+        }
+      },
       "requires_integration": {
         "tool_id": "0.zone",
         "group_ids": ["default"]
@@ -44,7 +59,11 @@
               "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+          "timeout_secs": 30,
+          "applicable_pivot_kinds": ["company_name", "brand"],
+          "wire_query_type": "domain",
+          "adapter_version": "http_semantic.v1",
+          "literal_encoder": "zone_exact_literal.v1"
           },
           {
             "id": "domain_root",
@@ -61,7 +80,47 @@
               "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+          "timeout_secs": 30,
+          "applicable_pivot_kinds": ["domain", "hostname"],
+          "wire_query_type": "domain",
+          "adapter_version": "http_semantic.v1",
+            "literal_encoder": "zone_exact_literal.v1"
+          },
+          {
+            "id": "site_ip",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {"Content-Type": "application/json", "User-Agent": "Golish Asset Intel"},
+            "json": {
+              "query": "ip=={{company_name}}",
+              "query_type": "site",
+              "page": 1,
+              "pagesize": 40,
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30,
+            "applicable_pivot_kinds": ["ip"],
+            "wire_query_type": "site",
+            "adapter_version": "http_semantic.v1",
+            "literal_encoder": "zone_exact_literal.v1"
+          },
+          {
+            "id": "site_asn",
+            "method": "POST",
+            "url": "https://0.zone/api/data/",
+            "headers": {"Content-Type": "application/json", "User-Agent": "Golish Asset Intel"},
+            "json": {
+              "query": "asn=={{company_name}}",
+              "query_type": "site",
+              "page": 1,
+              "pagesize": 40,
+              "zone_key_id": "{{secret:api_key}}"
+            },
+            "timeout_secs": 30,
+            "applicable_pivot_kinds": ["asn"],
+            "wire_query_type": "asn",
+            "adapter_version": "http_semantic.v1",
+            "literal_encoder": "zone_exact_literal.v1"
           },
           {
             "id": "apk",
@@ -78,7 +137,11 @@
               "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+          "timeout_secs": 30,
+          "applicable_pivot_kinds": ["company_name", "brand", "app_id"],
+          "wire_query_type": "apk",
+          "adapter_version": "http_semantic.v1",
+          "literal_encoder": "zone_exact_literal.v1"
           },
           {
             "id": "org",
@@ -95,7 +158,11 @@
               "pagesize": 20,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+          "timeout_secs": 30,
+          "applicable_pivot_kinds": ["company_name", "brand"],
+          "wire_query_type": "org",
+          "adapter_version": "http_semantic.v1",
+          "literal_encoder": "zone_exact_literal.v1"
           },
           {
             "id": "email",
@@ -112,7 +179,11 @@
               "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+          "timeout_secs": 30,
+          "applicable_pivot_kinds": ["company_name", "email_domain"],
+          "wire_query_type": "email",
+          "adapter_version": "http_semantic.v1",
+          "literal_encoder": "zone_exact_literal.v1"
           },
           {
             "id": "member",
@@ -129,7 +200,11 @@
               "pagesize": 40,
               "zone_key_id": "{{secret:api_key}}"
             },
-            "timeout_secs": 30
+          "timeout_secs": 30,
+          "applicable_pivot_kinds": ["company_name"],
+          "wire_query_type": "member",
+          "adapter_version": "http_semantic.v1",
+          "literal_encoder": "zone_exact_literal.v1"
           }
         ]
       },

@@ -29,8 +29,11 @@ use crate::db_traits::{
 const TECH_INTEL_DNS: &str = "GOLISH-INTEL-DNS";
 const TECH_INTEL_CT: &str = "GOLISH-INTEL-CT";
 const TECH_INTEL_SUBDOMAIN: &str = "GOLISH-INTEL-SUBDOMAIN";
+#[allow(dead_code)]
 const TECH_INTEL_WHOIS: &str = "GOLISH-INTEL-WHOIS";
+#[allow(dead_code)]
 const TECH_INTEL_ASN: &str = "GOLISH-INTEL-ASN";
+#[allow(dead_code)]
 const TECH_INTEL_OSINT: &str = "GOLISH-INTEL-OSINT";
 const TECH_EAS_LIVENESS: &str = "GOLISH-EAS-LIVENESS";
 const TECH_EAS_PORT: &str = "GOLISH-EAS-PORT";
@@ -138,6 +141,7 @@ pub fn target_intel_organization_asset_key(
     Some(format!("organization:{organization_id}"))
 }
 
+#[allow(dead_code)]
 fn target_intel_deliverable_with_organization_aliases(
     deliverable: &StageDeliverable,
     organization_key: &str,
@@ -532,13 +536,19 @@ pub fn eas_cidr_range_outcome_is_self_corroborating(
 /// current, org-bound technique outcome rows; provider/source terminal rows are
 /// host/source-level compatibility data and cannot close their cells.
 pub fn stage_accepts_source_query_completion(stage: StageKind) -> bool {
-    !matches!(stage, StageKind::Enumeration | StageKind::VulnTriage)
+    !matches!(
+        stage,
+        StageKind::TargetIntel | StageKind::Enumeration | StageKind::VulnTriage
+    )
 }
 
 /// EAS, Enumeration, and Vuln Triage have strict freshness contracts: without
 /// a concrete stage start, presence-only rows from an earlier attempt in the
 /// same chat session must not be projected. Other stages retain their fallback.
 pub fn stage_accepts_outcome_projection(stage: StageKind, has_freshness_cutoff: bool) -> bool {
+    if stage == StageKind::TargetIntel {
+        return false;
+    }
     !matches!(
         stage,
         StageKind::ExternalAttackSurface | StageKind::Enumeration | StageKind::VulnTriage
@@ -551,6 +561,9 @@ pub fn stage_gate_expected_techniques(
     stage: StageKind,
     target_types: &[String],
 ) -> Option<Vec<String>> {
+    if stage == StageKind::TargetIntel {
+        return Some(Vec::new());
+    }
     if stage == StageKind::Enumeration {
         return Some(ENUM_CONTENT_TECHNIQUES.map(str::to_string).to_vec());
     }
@@ -659,6 +672,31 @@ pub fn fanout_completion_scope_ids(
     }
 }
 
+/// Select the immutable organization denominator used by specialist closeout.
+///
+/// Investigation is special: its closure publication is produced from the
+/// operation-frozen StageUnit set and is therefore the only admissible scope
+/// authority. The engagement organization subtree is a mutable catalog view
+/// and may include subsidiaries that a root-only operation excluded. Other
+/// specialist stages retain the legacy engagement-subtree behavior until they
+/// expose an equivalent immutable publication authority.
+pub fn specialist_completion_scope_ids(
+    stage: StageKind,
+    investigation_completion_authority: Option<&[(Uuid, DateTime<Utc>)]>,
+    engagement_root: Option<Uuid>,
+    engagement_subtree_ids: Option<Vec<Uuid>>,
+    legacy_in_scope_ids: Vec<Uuid>,
+) -> Vec<Uuid> {
+    if stage == StageKind::Investigation {
+        return investigation_completion_authority
+            .unwrap_or_default()
+            .iter()
+            .map(|(organization_id, _)| *organization_id)
+            .collect();
+    }
+    fanout_completion_scope_ids(engagement_root, engagement_subtree_ids, legacy_in_scope_ids)
+}
+
 /// 对 (stage, 全 org 的 PASS 行) 算确定性摘要令牌。**规范化**：org 行按 org_id 升序、用账本
 /// 里的 `passed_at` 微秒时间戳入摘要，保证 stage_run 端与 gate 端对同一张账本态算出同一串。
 /// 空行集 → 空串（调用方按「无 PASS」处理）。
@@ -714,20 +752,14 @@ fn current_wave_gate_error(
     None
 }
 
-/// Coverage-axis cutoff for stages whose own outputs create new Targets.
-/// Target Intel validates the inputs that existed when the stage started; its
-/// current-run asset-map rows are handoff output for EAS and must not inflate
-/// the stage that produced them. Wave-aware stages keep their existing cutoff.
+/// Coverage-axis cutoff for legacy matrix stages. Target Intel no longer owns a
+/// coverage denominator and is finalized exclusively by IntelGoalV1 review.
 pub fn stage_asset_axis_cutoff(
-    stage: StageKind,
-    stage_started_at: Option<DateTime<Utc>>,
+    _stage: StageKind,
+    _stage_started_at: Option<DateTime<Utc>>,
     wave_cutoff: Option<DateTime<Utc>>,
 ) -> Option<DateTime<Utc>> {
-    if stage == StageKind::TargetIntel {
-        stage_started_at
-    } else {
-        wave_cutoff
-    }
+    wave_cutoff
 }
 
 fn stage_outcome_run_id(
@@ -747,7 +779,8 @@ fn stage_outcome_run_id(
 /// 复用 orchestrator stage-close 的同一批 repo 查询（`in_scope_assets` /
 /// `in_scope_typed_assets` / `evidence_facts_for_session` / `db_truth_facts`）+ 同一个
 /// `validate_stage_gate_with_context`，把判定按 org 隔离。先做一次 fabricated-ref 存在性
-/// 兜底（与 execute.rs `enforce_evidence_existence` 同义；scoping 例外——它不产账本证据）。
+/// 兜底（与 execute.rs `enforce_evidence_existence` 同义）。Scoping 的企业身份确认同样
+/// 必须引用真实账本证据，不能绕过这条通用真实性边界。
 ///
 /// 失败回退：spec 加载失败 → 直接 Block（fail-closed，配置坏不该放行）。repo 缺失/
 /// DB 错由调用方（stage_run）决定回退策略，本函数要求传入可用 repo。
@@ -761,6 +794,15 @@ pub async fn evaluate_org_stage_gate(
     wave_cutoff: Option<DateTime<Utc>>,
     current_wave: Option<&StageAssetWaveView>,
 ) -> GateResult {
+    if stage == StageKind::TargetIntel {
+        return GateResult::block(
+            vec![
+                "Target Intel legacy coverage Gate is retired; IntelGoalV1 independent review and DB finalization are required"
+                    .to_string(),
+            ],
+            Default::default(),
+        );
+    }
     let spec: StageSpec = match load_embedded_stage_spec(stage) {
         Ok(s) => s,
         Err(e) => {
@@ -857,41 +899,83 @@ pub async fn evaluate_org_stage_gate(
             );
         }
     }
-    let wave_asset_override = current_wave.map(|wave| wave.asset_values.clone());
-    let wave_target_id_override = current_wave.map(|wave| wave.target_ids.clone());
-    // Once an engagement org is bound, Target Intel/EAS coverage is a DB-truth
-    // contract. A failed read must never collapse to an empty Vec and silently
-    // re-enable model-authored axes or facts.
-    let authoritative_db_gate = org_id.is_some()
-        && matches!(
-            stage,
-            StageKind::TargetIntel | StageKind::ExternalAttackSurface
-        );
-
-    // 1) fabricated-ref 兜底（scoping 不要求账本证据，跳过）。
-    if stage != StageKind::Scoping {
-        let cited: Vec<i64> = deliverable
-            .evidence_refs
-            .iter()
-            .map(|e| e.as_i64())
-            .collect();
-        if !cited.is_empty() {
-            if let Ok(existing) = repo.evidence_existing_ids(&cited).await {
-                let fabricated: Vec<i64> = cited
-                    .into_iter()
-                    .filter(|id| !existing.contains(id))
-                    .collect();
-                if !fabricated.is_empty() {
+    if stage == StageKind::Enumeration {
+        if let (Some(operation_id), Some(organization_id)) = (operation_id, org_id) {
+            let lifecycle = match repo
+                .enumeration_occurrence_gate_snapshot(operation_id, organization_id)
+                .await
+            {
+                Ok(lifecycle) => lifecycle,
+                Err(error) => {
                     return GateResult::block(
                         vec![format!(
-                            "cited evidence ids {fabricated:?} do not exist in the evidence ledger"
+                            "enumeration occurrence lifecycle query failed: {error}"
+                        )],
+                        Default::default(),
+                    )
+                }
+            };
+            if let Some(lifecycle) = lifecycle {
+                if lifecycle.enforces_closeout && !lifecycle.allows_closeout() {
+                    return GateResult::block(
+                        vec![format!(
+                            "enumeration v2 exact-subject closure is nonterminal: frozen_subjects={}, coverage_receipts={}, missing_coverage_receipts={}, invalid_coverage_receipts={}, closure_graph_drift={} (terminal_residual_occurrences={}, stage_execution_id={}, stage_run_unit_id={})",
+                            lifecycle.frozen_subject_count,
+                            lifecycle.coverage_receipt_count,
+                            lifecycle.missing_coverage_receipt_count,
+                            lifecycle.invalid_coverage_receipt_count,
+                            lifecycle.closure_graph_drift_count,
+                            lifecycle.residual_occurrence_count,
+                            lifecycle.stage_execution_id,
+                            lifecycle.stage_run_unit_id,
                         )],
                         Default::default(),
                     );
                 }
+                tracing::info!(
+                    target: "harness::hook",
+                    operation_id = %operation_id,
+                    organization_id = %organization_id,
+                    stage_execution_id = %lifecycle.stage_execution_id,
+                    stage_run_unit_id = %lifecycle.stage_run_unit_id,
+                    enforces_closeout = lifecycle.enforces_closeout,
+                    frozen_subjects = lifecycle.frozen_subject_count,
+                    coverage_receipts = lifecycle.coverage_receipt_count,
+                    missing_coverage_receipts = lifecycle.missing_coverage_receipt_count,
+                    invalid_coverage_receipts = lifecycle.invalid_coverage_receipt_count,
+                    closure_graph_drift = lifecycle.closure_graph_drift_count,
+                    terminal_residual_occurrences = lifecycle.residual_occurrence_count,
+                    "evaluated DB-authoritative Enumeration exact-subject closure"
+                );
             }
-            // infra error → 不在这兜底 BLOCK（与 execute.rs fail-open 一致），交给覆盖 gate。
         }
+    }
+    let wave_asset_override = current_wave.map(|wave| wave.asset_values.clone());
+    let wave_target_id_override = current_wave.map(|wave| wave.target_ids.clone());
+    // Once an engagement org is bound, EAS coverage is a DB-truth contract. A
+    // failed read must never collapse to an empty Vec and silently re-enable a
+    // model-authored axis. Target Intel has no coverage denominator here.
+    let authoritative_db_gate = org_id.is_some() && stage == StageKind::ExternalAttackSurface;
+
+    // 1) fabricated-ref 兜底。包括 Scoping 在内的所有阶段都必须引用真实账本证据。
+    let cited: Vec<i64> = deliverable
+        .evidence_refs
+        .iter()
+        .map(|e| e.as_i64())
+        .collect();
+    if !cited.is_empty() {
+        if let Ok(existing) = repo.evidence_existing_ids(&cited).await {
+            let fabricated = fabricated_evidence_ids(&cited, &existing);
+            if !fabricated.is_empty() {
+                return GateResult::block(
+                    vec![format!(
+                        "cited evidence ids {fabricated:?} do not exist in the evidence ledger"
+                    )],
+                    Default::default(),
+                );
+            }
+        }
+        // infra error → 不在这兜底 BLOCK（与 execute.rs fail-open 一致），交给覆盖 gate。
     }
 
     // 2) 资产轴 + 类型（org 隔离）。空资产集 → 不注入（gate 回退自报，coverage_complete
@@ -981,46 +1065,6 @@ pub async fn evaluate_org_stage_gate(
             typed_assets.retain(|(asset, _)| alive.contains(asset.as_str()));
         }
     }
-    // Target Intel has two distinct axes: executable/authorized target rows and
-    // one organization-context row for WHOIS/ASN/OSINT. The read model already
-    // exposes this row; inject the identical organization name into the final
-    // per-org gate so a wildcard-only target cannot pass on SUBDOMAIN alone.
-    let target_intel_org_context = if stage == StageKind::TargetIntel {
-        let Some(organization_id) = org_id else {
-            return GateResult::block(
-                vec!["target_intel gate requires an organization-bound context row".to_string()],
-                Default::default(),
-            );
-        };
-        let units = match repo.org_subtree_units(organization_id).await {
-            Ok(units) => units,
-            Err(error) => {
-                return GateResult::block(
-                    vec![format!(
-                        "target_intel authoritative organization-context query failed: {error}"
-                    )],
-                    Default::default(),
-                )
-            }
-        };
-        let Some(unit) = units.into_iter().find(|unit| unit.id == organization_id) else {
-            return GateResult::block(
-                vec![format!(
-                    "target_intel authoritative organization-context row is missing for {organization_id}"
-                )],
-                Default::default(),
-            );
-        };
-        // Never use a display name as a coverage identity. An organization can
-        // legitimately be named `moresec.cn`; sharing that string with a domain
-        // target would collapse two rows in the typed-axis HashMap and in
-        // anchor-only suffix filtering.
-        let context = TargetIntelOrganizationContext::new(organization_id);
-        context.inject_axis(&mut in_scope_assets, &mut typed_assets);
-        Some((context, unit.name))
-    } else {
-        None
-    };
     let web_capable_assets: Vec<String> = match stage {
         StageKind::Enumeration if spec.enum_ip_web_coverage => repo
             .enumeration_web_capable_assets(org_id)
@@ -1048,9 +1092,6 @@ pub async fn evaluate_org_stage_gate(
     // Enumeration/Vuln denominator is already exact HTTP(S) origins, so raw-host
     // context must never synthesize origin-level not_applicable cells.
     let mut not_applicable_coverage: Vec<(String, String)> = Vec::new();
-    if let Some((organization_context, _)) = target_intel_org_context.as_ref() {
-        not_applicable_coverage.extend(organization_context.not_applicable_coverage());
-    }
     let mut authoritative_coverage_axis = false;
     if matches!(stage, StageKind::Enumeration | StageKind::VulnTriage) {
         let Some(oid) = org_id else {
@@ -1140,14 +1181,6 @@ pub async fn evaluate_org_stage_gate(
             },
             _ => Vec::new(),
         }
-    } else if stage == StageKind::TargetIntel && org_id.is_some() {
-        // Legacy command-path ledger facts are keyed only by session. Fan-out
-        // organizations share that session, so a sibling org with the same host
-        // could otherwise satisfy this org's asset/technique cell, and stale rows
-        // pre-dating the current freshness window could leak in as well. Target
-        // Intel's org-bound closeout instead uses org-scoped fresh business truth
-        // for Found and org+run source/outcome rows for empty/error/blocked.
-        Vec::new()
     } else if stage == StageKind::VulnTriage {
         // The Nuclei wrappers self-land fresh, org-bound, run-scoped technique
         // outcomes. Session-wide legacy shell evidence must not close an exact
@@ -1280,8 +1313,7 @@ pub async fn evaluate_org_stage_gate(
     };
 
     // 统一组装入口（设计 2026-06-23-unified-gate-context-builder）：归一/合并收口到
-    // GateContextBuilder。expected_techniques=None ⇒ 回退 spec.expected_techniques
-    // （target_intel 已声明）。
+    // GateContextBuilder。expected_techniques=None ⇒ 回退 spec.expected_techniques。
     let mut ctx_builder = GateContextBuilder::new()
         .typed_assets(typed_assets)
         .web_capable_assets(web_capable_assets)
@@ -1299,27 +1331,7 @@ pub async fn evaluate_org_stage_gate(
     }
     .build();
 
-    // The read model displays the organization name, while the final gate uses
-    // a collision-proof key. Preserve user-authored blocked/N/A context cells by
-    // copying only the three organization-level dimensions onto that key. Keep
-    // the original cell too: if an org display name equals a real domain target,
-    // the domain row must not lose its own declaration.
-    let normalized_deliverable = target_intel_org_context.as_ref().map(
-        |(organization_context, organization_display_name)| {
-            target_intel_deliverable_with_organization_aliases(
-                deliverable,
-                organization_context.asset_key(),
-                organization_display_name,
-            )
-        },
-    );
-    let legacy_result = validate_stage_gate_with_context(
-        normalized_deliverable.as_ref().unwrap_or(deliverable),
-        &spec,
-        None,
-        None,
-        &ctx,
-    );
+    let legacy_result = validate_stage_gate_with_context(deliverable, &spec, None, None, &ctx);
     if tool_truth_contract.writes_receipts() {
         if let (Some(operation_id), Some(organization_id)) = (operation_id, org_id) {
             if let Err(error) = repo
@@ -1343,6 +1355,14 @@ pub async fn evaluate_org_stage_gate(
         }
     }
     legacy_result
+}
+
+fn fabricated_evidence_ids(cited: &[i64], existing: &std::collections::HashSet<i64>) -> Vec<i64> {
+    cited
+        .iter()
+        .copied()
+        .filter(|id| !existing.contains(id))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1567,18 +1587,27 @@ fn eas_liveness_lookup_key(asset: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::types::{
-        CoverageCell, CoverageGapAction, CoverageStatus, HarnessRecoveryActions,
-    };
+    use crate::harness::types::{CoverageGapAction, HarnessRecoveryActions};
 
     #[test]
-    fn target_intel_freezes_its_asset_axis_at_stage_start() {
+    fn scoping_cited_evidence_has_no_fabricated_ref_exemption() {
+        let existing = std::collections::HashSet::from([11_i64, 13_i64]);
+
+        assert_eq!(
+            fabricated_evidence_ids(&[11, 12, 13, 14], &existing),
+            vec![12, 14],
+            "Scoping uses this same stage-agnostic filter before any stage-specific gate rules",
+        );
+    }
+
+    #[test]
+    fn target_intel_has_no_legacy_asset_axis_cutoff() {
         let stage_started_at = chrono::Utc::now();
         let wave_started_at = stage_started_at + chrono::Duration::minutes(1);
 
         assert_eq!(
             stage_asset_axis_cutoff(StageKind::TargetIntel, Some(stage_started_at), None,),
-            Some(stage_started_at)
+            None
         );
         assert_eq!(
             stage_asset_axis_cutoff(
@@ -2559,7 +2588,7 @@ mod tests {
             StageKind::ExternalAttackSurface,
             true
         ));
-        assert!(stage_accepts_outcome_projection(
+        assert!(!stage_accepts_outcome_projection(
             StageKind::TargetIntel,
             false
         ));
@@ -2576,6 +2605,15 @@ mod tests {
             stage_gate_expected_techniques(StageKind::Enumeration, &[]).unwrap(),
             ENUM_CONTENT_TECHNIQUES.map(str::to_string).to_vec()
         );
+        assert_eq!(
+            stage_gate_expected_techniques(
+                StageKind::TargetIntel,
+                &["domain".to_string(), "ip".to_string()]
+            )
+            .unwrap(),
+            Vec::<String>::new(),
+            "IntelGoalV1 has no legacy six-axis denominator",
+        );
     }
 
     #[test]
@@ -2583,7 +2621,7 @@ mod tests {
         assert!(!stage_accepts_source_query_completion(
             StageKind::Enumeration
         ));
-        assert!(stage_accepts_source_query_completion(
+        assert!(!stage_accepts_source_query_completion(
             StageKind::TargetIntel
         ));
     }
@@ -2790,6 +2828,54 @@ mod tests {
     }
 
     #[test]
+    fn investigation_completion_scope_uses_immutable_root_only_publication() {
+        let root = Uuid::from_u128(1);
+        let excluded_child = Uuid::from_u128(2);
+        let passed_at = Utc::now();
+        let publication_authority = vec![(root, passed_at)];
+
+        assert_eq!(
+            specialist_completion_scope_ids(
+                StageKind::Investigation,
+                Some(&publication_authority),
+                Some(root),
+                Some(vec![root, excluded_child]),
+                vec![root, excluded_child],
+            ),
+            vec![root],
+            "the mutable engagement subtree must not enlarge a root-only frozen Investigation scope",
+        );
+        assert!(
+            specialist_completion_scope_ids(
+                StageKind::Investigation,
+                None,
+                Some(root),
+                Some(vec![root, excluded_child]),
+                vec![root, excluded_child],
+            )
+            .is_empty(),
+            "missing immutable publication authority must fail closed",
+        );
+    }
+
+    #[test]
+    fn non_investigation_completion_scope_keeps_engagement_subtree_behavior() {
+        let root = Uuid::from_u128(1);
+        let child = Uuid::from_u128(2);
+
+        assert_eq!(
+            specialist_completion_scope_ids(
+                StageKind::Enumeration,
+                None,
+                Some(root),
+                Some(vec![root, child]),
+                vec![root],
+            ),
+            vec![root, child],
+        );
+    }
+
+    #[test]
     fn extract_pass_token_reads_reserved_claim_trimmed() {
         use crate::harness::types::StageClaim;
         let d = StageDeliverable {
@@ -2912,76 +2998,5 @@ mod tests {
             .expect("a present empty wave must block instead of becoming NoWave");
 
         assert!(error.contains("has no items"));
-    }
-
-    #[test]
-    fn organization_context_identity_never_collides_with_display_name_or_domain_target() {
-        let context = TargetIntelOrganizationContext::new(Uuid::from_u128(7));
-        let key = context.asset_key();
-        assert_eq!(key, "organization:00000000-0000-0000-0000-000000000007");
-        assert_ne!(key, "moresec.cn");
-        assert!(!key.ends_with(".moresec.cn"));
-    }
-
-    #[test]
-    fn organization_snapshot_identity_requires_exact_type_and_uuid() {
-        let organization_id = "00000000-0000-0000-0000-000000000007";
-        assert_eq!(
-            target_intel_organization_asset_key(Some("organization"), Some(organization_id)),
-            Some(format!("organization:{organization_id}"))
-        );
-        assert_eq!(
-            target_intel_organization_asset_key(Some("domain"), Some(organization_id)),
-            None
-        );
-        assert_eq!(
-            target_intel_organization_asset_key(Some("organization"), Some("not-a-uuid")),
-            None
-        );
-    }
-
-    #[test]
-    fn organization_display_alias_copies_only_context_dimensions_and_keeps_domain_cell() {
-        let blocked = |technique: &str| CoverageCell {
-            asset: "moresec.cn".to_string(),
-            technique: technique.to_string(),
-            status: CoverageStatus::Blocked,
-            evidence_refs: Vec::new(),
-            note: Some("provider unavailable".to_string()),
-            reason_kind: None,
-            tested_units: 0,
-            total_units: 0,
-            sampling_rationale: None,
-        };
-        let deliverable = StageDeliverable {
-            stage_id: StageKind::TargetIntel.as_str().to_string(),
-            stage_run_id: Uuid::new_v4(),
-            claims: Vec::new(),
-            evidence_refs: Vec::new(),
-            skipped_checks: Vec::new(),
-            findings: Vec::new(),
-            required_checks_done: Vec::new(),
-            coverage: vec![blocked(TECH_INTEL_WHOIS), blocked(TECH_INTEL_DNS)],
-            candidates: Vec::new(),
-            candidate_decisions: Vec::new(),
-        };
-
-        let normalized = target_intel_deliverable_with_organization_aliases(
-            &deliverable,
-            "organization:stable",
-            "moresec.cn",
-        );
-
-        assert_eq!(normalized.coverage.len(), 3);
-        assert!(normalized
-            .coverage
-            .iter()
-            .any(|cell| cell.asset == "moresec.cn" && cell.technique == TECH_INTEL_WHOIS));
-        assert!(normalized.coverage.iter().any(|cell| {
-            cell.asset == "organization:stable" && cell.technique == TECH_INTEL_WHOIS
-        }));
-        assert!(!normalized.coverage.iter().any(|cell| {
-            cell.asset == "organization:stable" && cell.technique == TECH_INTEL_DNS
-        }));
     }
 }

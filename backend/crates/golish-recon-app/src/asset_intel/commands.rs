@@ -29,7 +29,7 @@ pub async fn asset_intel_lookup_company(
     pentest: tauri::State<'_, ToolsConfigState>,
     args: AssetIntelLookupRequest,
 ) -> Result<AssetIntelLookupResult, GolishError> {
-    let _ = state.pool_ready().await?;
+    let pool = state.pool_ready().await?;
     if args.keyword.trim().is_empty() {
         return Err(GolishError::Validation(
             "keyword is required for asset intel lookup".into(),
@@ -40,6 +40,7 @@ pub async fn asset_intel_lookup_company(
     // Core moved to service/lookup_core.rs so the recon_lookup_company agent
     // tool (scoping 纠名, 设计 2026-06-13) shares the exact same path.
     lookup_company_matches(
+        pool,
         &pentest_config,
         args.keyword.trim(),
         &args.provider_ids,

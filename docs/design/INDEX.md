@@ -54,11 +54,21 @@
 | 2026-06-26 | [enumeration-deliverables-and-flow](2026-06-26-enumeration-deliverables-and-flow.md) | ✅ |
 | 2026-07-05 | [stage-capability-tools](2026-07-05-stage-capability-tools.md) | ✅ |
 | 2026-07-29 | [tool-truth-hypothesis-verification-loop](2026-07-29-tool-truth-hypothesis-verification-loop.md) | ✅ |
+| 2026-08-02 | [au-bounded-third-recovery-and-output-headroom](2026-08-02-au-bounded-third-recovery-and-output-headroom.md) | ✅ |
+| 2026-08-02 | [candidate-technique-method-contracts](2026-08-02-candidate-technique-method-contracts.md) | 🚧 |
+| 2026-08-02 | [cyberstrike-methodology-corpus-audit](2026-08-02-cyberstrike-methodology-corpus-audit.md) | ✅ |
+| 2026-08-02 | [target-intel-goal-loop-and-audit](2026-08-02-target-intel-goal-loop-and-audit.md) | ⚠️ |
+| 2026-08-02 | [unified-visible-stage-workspace-mock](2026-08-02-unified-visible-stage-workspace-mock.md) | 🚧 |
+| 2026-08-02 | [enumeration-agent-team-js-api-analysis-v2](2026-08-02-enumeration-agent-team-js-api-analysis-v2.md) | 🚧 |
+| 2026-08-02 | [rag-first-unified-investigation-stage](2026-08-02-rag-first-unified-investigation-stage.md) | 🚧 |
+| 2026-08-04 | [unified-stage-smoke-closure](2026-08-04-unified-stage-smoke-closure.md) | 🚧 |
+| 2026-08-07 | [investigation-tool-catalog-and-admission](2026-08-07-investigation-tool-catalog-and-admission.md) | 🚧 |
 
 ## 2. Asset Intel / Recon / Targets / Integrations
 
 | 日期 | 文档 | 状态 |
 |---|---|---|
+| 2026-08-04 | [scoping-and-autonomous-corporate-asset-discovery](2026-08-04-scoping-and-autonomous-corporate-asset-discovery.md) | 🚧 |
 | 2026-05-(05) | [recon-tool-belt-2026-05](recon-tool-belt-2026-05.md) | ✅ |
 | 2026-05-20 | [asm-intel-providers](2026-05-20-asm-intel-providers.md) | ⚠️ |
 | 2026-05-21 | [credential-capture-engine](2026-05-21-credential-capture-engine.md) | ✅ |

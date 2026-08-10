@@ -35,7 +35,13 @@ pub use memory::execute_memory_tool;
 pub use plan::{execute_plan_patch_tool, execute_plan_tool};
 pub use security::execute_security_analysis_tool;
 pub use shell::normalize_run_pty_cmd_args;
-pub use web::execute_web_fetch_tool;
+pub use web::{
+    execute_intel_public_tool, execute_web_fetch_tool, intel_public_tool_definitions,
+    record_intel_public_policy_violation, IntelPublicCapabilityMode, IntelPublicEvidenceAdapter,
+    IntelPublicEvidenceReceipt, IntelPublicEvidenceSink, IntelPublicFixtureTransport,
+    IntelPublicSearchHit, IntelPublicTransportResponse, PinnedIntelPublicRequest,
+    StrictPassiveIntelPublicAdapter, INTEL_PUBLIC_FETCH_TOOL, INTEL_PUBLIC_SEARCH_TOOL,
+};
 
 #[cfg(test)]
 mod tests {

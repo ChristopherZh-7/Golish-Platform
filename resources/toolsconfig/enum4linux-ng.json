@@ -1,0 +1,34 @@
+{
+  "tool": {
+    "id": "enum4linux-ng",
+    "pentestPhase": ["enum", "vuln_id"],
+    "name": "enum4linux-ng",
+    "description": "Perform bounded SMB, NetBIOS and AD enumeration against one exact host.",
+    "executable": "enum4linux-ng/enum4linux-ng.py",
+    "runtime": "python",
+    "runtimeVersion": "3.11",
+    "launchMode": "cli",
+    "version": "1.3.10",
+    "category": "network",
+    "subcategory": "smb-ad",
+    "tier": "recommended",
+    "tags": ["smb", "netbios", "ad", "active", "jit-required", "gpl-3.0-only"],
+    "install": {
+      "method": "github",
+      "source": "cddmp/enum4linux-ng",
+      "macos": {"method": "github", "source": "cddmp/enum4linux-ng"},
+      "linux": {"method": "github", "source": "cddmp/enum4linux-ng"},
+      "windows": {"method": "github", "source": "cddmp/enum4linux-ng"}
+    },
+    "params": [
+      {"label": "Exact host", "flag": "", "type": "string", "required": true, "description": "One exact authorized SMB host.", "placeholder": "192.0.2.10"},
+      {"label": "Safe enumeration", "flag": "-As", "type": "boolean", "description": "Bounded safe aggregate enumeration; still requires Investigation JIT."},
+      {"label": "Username credential reference", "flag": "-u", "type": "string", "description": "Host-injected exact credential grant only.", "placeholder": "credential-ref"},
+      {"label": "JSON/YAML artifact", "flag": "-oJ", "type": "string", "description": "Raw structured artifact path.", "placeholder": "enum4linux-ng.json"}
+    ],
+    "skills": [
+      {"id": "local-help", "name": "Local help smoke", "description": "No-target executable smoke only.", "args": "-h", "tags": ["local", "no-target"]}
+    ],
+    "output": {"format": "json", "produces": ["host", "share", "user", "domain", "info"], "patterns": [], "fields": {}, "detect": "enum4linux-ng|SMB Dialect"}
+  }
+}

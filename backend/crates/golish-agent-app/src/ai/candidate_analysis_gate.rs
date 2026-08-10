@@ -382,13 +382,25 @@ pub fn compile_candidate_host_recipe(
         contracts.push(contract);
         plans.push(plan);
     }
-    if (!mutations.is_empty()
-        && (components.is_empty() || contracts.is_empty() || plans.is_empty()))
-        || (mutations.is_empty()
+    let new_revision_count = routes
+        .values()
+        .filter(|route| {
+            matches!(
+                route,
+                CandidateRegistryMutationDecisionV1::CreateInitial { .. }
+            )
+        })
+        .count();
+    if mutations.len() != routes.len()
+        || (new_revision_count == 0
             && (!components.is_empty() || !contracts.is_empty() || !plans.is_empty()))
+        || (new_revision_count > 0
+            && (components.is_empty()
+                || contracts.len() != new_revision_count
+                || plans.len() != new_revision_count))
     {
         return Err(HypothesisRegistryError::AuthorityMismatch(
-            "candidate compiler produced no new revision authority".to_owned(),
+            "candidate compiler new-revision authority exact set is inconsistent".to_owned(),
         ));
     }
     mutations.sort_by_key(|mutation| {
@@ -513,6 +525,9 @@ fn db_snapshot_view(
     let disposition = match value.disposition {
         golish_db::repo::candidate_analysis::CandidateSnapshotDispositionRow::SealedReady => {
             CandidateAnalysisSnapshotDispositionV1::SealedReady
+        }
+        golish_db::repo::candidate_analysis::CandidateSnapshotDispositionRow::SealedAnalysisReadyWithResiduals => {
+            CandidateAnalysisSnapshotDispositionV1::SealedAnalysisReadyWithResiduals
         }
         golish_db::repo::candidate_analysis::CandidateSnapshotDispositionRow::BlockedAuthorityBundle => {
             CandidateAnalysisSnapshotDispositionV1::BlockedAuthorityBundle
@@ -1715,6 +1730,97 @@ mod tests {
             &compiled.mutation_routes,
         )
         .expect("empty controller decision exact set is valid");
+    }
+
+    #[test]
+    fn attach_current_recipe_is_a_closed_generation_member_without_new_revision_authority() {
+        let proposal_id = Uuid::new_v4();
+        let root_id = Uuid::new_v4();
+        let revision_id = Uuid::new_v4();
+        let recipe = serde_json::json!({
+            "schema":"investigation_server_compiler_recipe.v1",
+            "organization_id":Uuid::new_v4(),
+            "items":[{
+                "proposal_id":proposal_id,
+                "semantic_key_hash":hash('a'),
+                "state":"proposed",
+                "proof_refs":[{"kind":"tool_truth_evidence","id":hash('b')}],
+                "refutation_refs":[],
+                "generation_transition_hash":hash('c'),
+                "route":{
+                    "kind":"attach_current",
+                    "root_id":root_id,
+                    "revision_id":revision_id
+                }
+            }]
+        });
+        let compiled = compile_candidate_host_recipe(&recipe)
+            .expect("attach-current needs no duplicate revision authorities");
+        assert_eq!(compiled.mutations.len(), 1);
+        assert_eq!(
+            compiled.mutation_routes.get(&proposal_id),
+            Some(&CandidateRegistryMutationDecisionV1::AttachCurrent {
+                root_id,
+                revision_id
+            })
+        );
+        assert!(compiled.claim_components.is_empty());
+        assert!(compiled.verification_contracts.is_empty());
+        assert!(compiled.verification_plans.is_empty());
+    }
+
+    #[test]
+    fn create_initial_recipe_compiles_one_closed_revision_contract_and_plan() {
+        let proposal_id = Uuid::new_v4();
+        let root_id = Uuid::new_v4();
+        let revision_id = Uuid::new_v4();
+        let objective_id = Uuid::new_v4();
+        let recipe = serde_json::json!({
+            "schema":"investigation_server_compiler_recipe.v1",
+            "organization_id":Uuid::new_v4(),
+            "items":[{
+                "proposal_id":proposal_id,
+                "semantic_key_hash":hash('a'),
+                "state":"proposed",
+                "proof_refs":[{"kind":"tool_truth_evidence","id":hash('b')}],
+                "refutation_refs":[],
+                "generation_transition_hash":hash('c'),
+                "polarity":"positive",
+                "predicate_schema":"typed.hypothesis_revision.v1",
+                "predicate_version":1,
+                "predicate_arguments":{"candidate_key":"directory-listing"},
+                "route":{"kind":"create_initial","root_id":root_id},
+                "revision":{
+                    "revision_id":revision_id,
+                    "revision_hash":hash('d'),
+                    "revision_ingredients_hash":hash('e'),
+                    "derivation_digest":hash('f'),
+                    "claim_clause_hash":hash('1'),
+                    "impact_hash":hash('2'),
+                    "trust_boundary_hash":hash('3'),
+                    "identity_hash":hash('4'),
+                    "objective_id":objective_id,
+                    "objective_hash":hash('5'),
+                    "stopping_criteria_hash":hash('6'),
+                    "compiler_digest":hash('7'),
+                    "rule_digest":hash('8'),
+                    "policy_snapshot_hash":hash('9'),
+                    "outer_policy_digest":hash('0')
+                },
+                "ordinal":0
+            }]
+        });
+
+        let compiled = compile_candidate_host_recipe(&recipe)
+            .expect("one server-owned create-initial recipe must compile");
+        assert_eq!(compiled.mutations.len(), 1);
+        assert_eq!(compiled.claim_components.len(), 4);
+        assert_eq!(compiled.verification_contracts.len(), 1);
+        assert_eq!(compiled.verification_plans.len(), 1);
+        assert_eq!(
+            compiled.mutation_routes.get(&proposal_id),
+            Some(&CandidateRegistryMutationDecisionV1::CreateInitial { root_id })
+        );
     }
 
     #[test]

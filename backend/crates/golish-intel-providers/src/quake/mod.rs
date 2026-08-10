@@ -98,6 +98,24 @@ impl QuakeProvider {
     }
 }
 
+/// Compile a host-selected semantic literal without accepting provider DSL.
+pub fn compile_semantic_query(qtype: QueryType, value: &str) -> IntelResult<String> {
+    let value = crate::types::escape_provider_literal(value)?;
+    let field = match qtype {
+        QueryType::Site => "host",
+        QueryType::Domain => "domain",
+        QueryType::Cert => "cert",
+        QueryType::Org => "org",
+        other => {
+            return Err(IntelError::UnsupportedQueryType {
+                provider: PROVIDER_ID.into(),
+                query_type: other.as_str().into(),
+            });
+        }
+    };
+    Ok(format!("{field}: \"{value}\""))
+}
+
 #[async_trait]
 impl IntelProvider for QuakeProvider {
     fn id(&self) -> &str {

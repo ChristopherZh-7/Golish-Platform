@@ -26,10 +26,10 @@
 | `install_handlers`（来自 `commands_registry.rs`，`include!`-d） | `tauri::generate_handler![...]` ~300 命令 |
 | `commands_facade::<domain>`（ai/investigation/pentest/vuln_intel/vault/workspace…） | 各域**权威命令面** re-export（glob `__cmd__$name`）；`investigation`只暴露summary/list/detail三个readonly命令 |
 | `app`（`bootstrap` / `tauri_app` / `window_lifecycle` / `menu` / `mcp_bootstrap` / `sidecar_bootstrap`） | 进程级 setup + DB-ready Memory Supervisor/Investigation projector worker + builder/退出生命周期 |
-| `cli`（`args` / `bootstrap` / `repl` / `runner`） | headless CLI / REPL 模式（clap） |
+| `cli`（`args` / `bootstrap` / `maintenance` / `repl` / `runner`） | headless CLI / REPL 模式（clap）；`maintenance` 是不进入 LLM/runtime 的 local-admin Plan D default promotion dry-run/apply 组合根，apply 必须回显 dry-run evidence manifest hash且不会自动释放 safety hold |
 | `state`（`db` / `pty` / `mcp` / `sidecar` / `telemetry`） | 全局 `AppState` 各子状态 |
 | `tools` / `pentest_tool_factory` / `stage_run` / `runtime` | 工具装配 / pentest 工具工厂 / stage 运行 / runtime 适配；`stage_run` 支持从共享应用 DB 的既有 operation 创建 post-Scoping 不可变阶段分叉 |
-| `reporting_artifact_store` | 把 Reporting artifact port 绑定到 server-resolved project root，并拥有 GUI/CLI 共享 orphan GC runtime |
+| `reporting_artifact_store` | 把 Reporting artifact port 绑定到 server-resolved project root，拥有 GUI/CLI 共享 orphan GC runtime，并把历史 receipt 授权→no-follow verified read→current authority-time attestation 串成受控读取闭环 |
 
 ## 依赖
 

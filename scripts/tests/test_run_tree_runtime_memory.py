@@ -51,6 +51,20 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
         rendered, _query = self.render_with_query(rows)
         return rendered
 
+    def test_session_evidence_facts_never_falls_back_to_global_rows(self) -> None:
+        calls: list[tuple[str, tuple]] = []
+
+        def query(sql: str, params: tuple = ()) -> list[tuple]:
+            calls.append((sql, params))
+            return []
+
+        rows = run_tree.session_evidence_facts(query, "session-exact")
+
+        self.assertEqual(rows, [])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("session_id=%s", calls[0][0])
+        self.assertEqual(calls[0][1], ("session-exact",))
+
     def test_session_operation_ids_accepts_runtime_trace_detail_but_not_model_args(self) -> None:
         runtime_operation_id = "00000000-0000-0000-0000-0000000000a1"
         model_authored_id = "00000000-0000-0000-0000-0000000000ff"
@@ -399,6 +413,73 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
             rendered,
         )
         self.assertNotIn("anomaly: missing active stage execution", rendered)
+        self.assertIn("selected_read_source=v2 legacy_fallback=forbidden", rendered)
+        self.assertNotIn("v2_only operation has incomplete runtime state", rendered)
+
+    def test_finished_summary_only_reporting_is_complete_without_a_stage_unit(self) -> None:
+        rendered = self.render(
+            {
+                "runtime_rollout": [
+                    row(
+                        contract="v2_only",
+                        contract_rank=3,
+                        row_version=9,
+                        updated_at="2026-08-10T02:00:00Z",
+                    )
+                ],
+                "runtime_operations": [
+                    row(
+                        operation_id="op-reporting",
+                        runtime_memory_contract="v2_only",
+                        task_status="finished",
+                        profile="red_team",
+                        current_stage="reporting",
+                        project_scope_id="project-reporting",
+                        engagement_org_id="org-root",
+                        superseded_by=None,
+                        stage_started_at="2026-08-10T02:00:00Z",
+                        state_blob={},
+                    )
+                ],
+                "stage_executions": [
+                    row(
+                        id="stage-reporting",
+                        stage_kind="reporting",
+                        status="completed",
+                        started_at="2026-08-10T02:00:00Z",
+                        completed_at="2026-08-10T02:00:01Z",
+                    )
+                ],
+                "scope_snapshots": [
+                    row(
+                        id="snapshot-reporting",
+                        scope_decision_id="decision-reporting",
+                        project_scope_id="project-reporting",
+                        project_path_at_freeze="/fixture/reporting",
+                        root_organization_id="org-root",
+                        mode="root_only",
+                        scope_hash="scope-reporting",
+                        schema_version=1,
+                        frozen_at="2026-08-10T01:00:00Z",
+                        sealed_at="2026-08-10T01:00:01Z",
+                    )
+                ],
+                "runtime_reporting_completion": [
+                    row(
+                        report_id="report-1",
+                        revision_id="revision-1",
+                        validation_status="validated",
+                        publication_status="unpublished",
+                        source_manifest_count=203,
+                    )
+                ],
+            }
+        )
+
+        self.assertIn(
+            "stage_executions: exact_active=0 terminal_selected=stage-reporting",
+            rendered,
+        )
         self.assertIn("selected_read_source=v2 legacy_fallback=forbidden", rendered)
         self.assertNotIn("v2_only operation has incomplete runtime state", rendered)
 
@@ -944,6 +1025,442 @@ class RuntimeMemoryDiagnosisTests(unittest.TestCase):
         self.assertIn(
             "selected_read_source=legacy_fallback legacy_fallback=used",
             rendered,
+        )
+
+    def test_unified_investigation_renders_exact_authority_chain(self) -> None:
+        query = FixtureQuery(
+            {
+                "investigation_authorities": [
+                    row(
+                        authority_id="authority-1",
+                        stage_execution_id="investigation-exec-1",
+                        owning_stage_run_request_id="stage-run-request-1",
+                        scope_snapshot_id="scope-1",
+                        contract_version="unified_investigation_authority.v1",
+                        created_at="2026-08-02T01:00:00Z",
+                    )
+                ],
+                "investigation_read_sessions": [
+                    row(
+                        authority_id="authority-1",
+                        session_set_id="session-set-1",
+                        session_set_status="sealed",
+                        session_set_member_count=1,
+                        session_set_member_sha256="sha256:session-set",
+                        main_read_session_id="main-read-1",
+                        stage_execution_id="investigation-exec-1",
+                        owning_stage_run_request_id="stage-run-request-1",
+                        stage_run_unit_id="unit-org-1",
+                        scope_snapshot_id="scope-1",
+                        organization_id="org-1",
+                        snapshot_id="analysis-authority-1",
+                        snapshot_sha256="sha256:analysis-authority",
+                        context_chain_id="context-1",
+                        transcript_partition_id="transcript-1",
+                        receipt_id="read-receipt-1",
+                        receipt_sha256="sha256:read-receipt",
+                        context_item_count=12,
+                        methodology_hit_count=4,
+                        omission_count=0,
+                        created_at="2026-08-02T01:01:00Z",
+                    )
+                ],
+                "investigation_analysis_authorities": [
+                    row(
+                        snapshot_id="analysis-authority-1",
+                        authority_id="authority-1",
+                        stage_execution_id="investigation-exec-1",
+                        owning_stage_run_request_id="stage-run-request-1",
+                        stage_run_unit_id="unit-org-1",
+                        scope_snapshot_id="scope-1",
+                        organization_id="org-1",
+                        snapshot_sha256="sha256:analysis-authority",
+                        context_item_count=12,
+                        methodology_hit_count=4,
+                        omission_count=0,
+                        sealed_at="2026-08-02T01:01:00Z",
+                    )
+                ],
+                "investigation_candidate_snapshots": [
+                    row(
+                        snapshot_id="candidate-snapshot-1",
+                        organization_id="org-1",
+                        wave_ordinal=0,
+                        genesis=True,
+                        previous_generation_seal_id=None,
+                        fact_delta_watermark=0,
+                        snapshot_status="sealed_ready",
+                        authority_hash="sha256:candidate-authority",
+                        created_at="2026-08-02T01:02:00Z",
+                    )
+                ],
+                "investigation_generations": [
+                    row(
+                        generation_id="generation-1",
+                        organization_id="org-1",
+                        generation_ordinal=0,
+                        candidate_snapshot_id="candidate-snapshot-1",
+                        previous_generation_id=None,
+                        generation_seal_id="generation-seal-1",
+                        member_count=1,
+                        member_set_hash="sha256:generation-members",
+                        open_obligation_set_hash="sha256:obligations",
+                        generation_hash="sha256:generation",
+                        sealed_at="2026-08-02T01:03:00Z",
+                        created_at="2026-08-02T01:02:30Z",
+                    )
+                ],
+                "investigation_hypotheses": [
+                    row(
+                        generation_id="generation-1",
+                        generation_member_id="generation-member-1",
+                        generation_ordinal=0,
+                        member_ordinal=0,
+                        organization_id="org-1",
+                        root_id="hypothesis-root-1",
+                        revision_id="hypothesis-revision-1",
+                        revision_ordinal=0,
+                        revision_hash="sha256:hypothesis",
+                        subject_kind="endpoint",
+                        epistemic_state="supported",
+                        lifecycle_state="current",
+                        planning_readiness="ready_for_strategy",
+                        priority=7,
+                        is_current_head=True,
+                        head_version=0,
+                    )
+                ],
+                "investigation_admissions": [
+                    row(
+                        admission_set_id="admission-set-1",
+                        generation_id="generation-1",
+                        organization_id="org-1",
+                        stage_execution_id="investigation-exec-1",
+                        stage_run_unit_id="unit-org-1",
+                        status="sealed",
+                        member_count=1,
+                        member_set_sha256="sha256:admission-members",
+                        admission_member_id="admission-member-1",
+                        generation_member_id="generation-member-1",
+                        hypothesis_revision_id="hypothesis-revision-1",
+                        disposition="scheduled",
+                        reason_code="READY_FOR_VERIFICATION",
+                        task_id="verification-task-1",
+                        member_sha256="sha256:admission-member",
+                    )
+                ],
+                "investigation_tasks": [
+                    row(
+                        task_id="verification-task-1",
+                        organization_id="org-1",
+                        stage_execution_id="investigation-exec-1",
+                        stage_run_unit_id="unit-org-1",
+                        hypothesis_revision_id="hypothesis-revision-1",
+                        hypothesis_revision_sha256="sha256:hypothesis",
+                        verification_plan_id="verification-plan-1",
+                        verification_plan_sha256="sha256:verification-plan",
+                        first_admission_generation_id="generation-1",
+                        task_contract_version="hypothesis_verification_task.v1",
+                        current_state="terminal",
+                        head_version=5,
+                        latest_event_id="task-event-5",
+                    )
+                ],
+                "investigation_delegation_census": [
+                    row(
+                        task_plan_id="task-plan-1",
+                        organization_id="org-1",
+                        task_plan_status="sealed",
+                        subtask_count=2,
+                        subtask_set_sha256="sha256:subtasks",
+                        census_seal_id="census-1",
+                        primary_dispatch_receipt_id="dispatch-primary-1",
+                        primary_worker_run_id="worker-primary-1",
+                        runnable_subtask_count=2,
+                        runnable_subtask_set_sha256="sha256:runnable",
+                        dispatch_count=3,
+                        dispatch_set_sha256="sha256:dispatches",
+                        pipeline_event_count=6,
+                        pipeline_event_set_sha256="sha256:pipeline",
+                        seal_sha256="sha256:census",
+                    )
+                ],
+                "investigation_assignments": [
+                    row(
+                        assignment_set_id="assignment-set-1",
+                        task_id="verification-task-1",
+                        hypothesis_revision_id="hypothesis-revision-1",
+                        verification_plan_id="verification-plan-1",
+                        status="sealed",
+                        member_count=1,
+                        member_set_sha256="sha256:assignment-members",
+                        assignment_member_id="assignment-member-1",
+                        plan_objective_id="plan-objective-1",
+                        verification_objective_id="verification-objective-1",
+                        assignment_kind="campaign",
+                        campaign_id="campaign-1",
+                        campaign_state="terminal",
+                        campaign_version=1,
+                        campaign_terminal_decision="proof",
+                        campaign_terminal_hash="sha256:campaign-terminal",
+                    )
+                ],
+                "investigation_prepared_actions": [
+                    row(
+                        prepared_action_id="prepared-action-1",
+                        campaign_id="campaign-1",
+                        organization_id="org-1",
+                        action_ordinal=0,
+                        action_contract_kind="single_action_v1",
+                        action_kind="verify.http_get",
+                        canonical_request_hash="sha256:request",
+                        renderer_version="renderer.v1",
+                        risk_tier="T0",
+                        state="succeeded",
+                        reason_code="completed",
+                        residual_id=None,
+                        row_version=2,
+                    )
+                ],
+                "investigation_action_authorizations": [
+                    row(
+                        authorization_receipt_id="authorization-1",
+                        prepared_action_id="prepared-action-1",
+                        campaign_id="campaign-1",
+                        organization_id="org-1",
+                        decision="authorized",
+                        decision_reason_code="trusted_get",
+                        reviewed_action_hash="sha256:reviewed",
+                        authorization_hash="sha256:authorization",
+                        actor_kind="local_operator",
+                        operator_channel="local_cli",
+                        residual_id=None,
+                    )
+                ],
+                "investigation_action_executions": [
+                    row(
+                        action_execution_id="action-execution-1",
+                        prepared_action_id="prepared-action-1",
+                        authorization_receipt_id="authorization-1",
+                        organization_id="org-1",
+                        execution_ordinal=1,
+                        execution_kind="single_action_v1",
+                        state="succeeded",
+                        durable_begin_hash="sha256:begin",
+                        capability_execution_receipt_id="capability-receipt-1",
+                        closeout_hash="sha256:closeout",
+                        row_version=2,
+                    )
+                ],
+                "investigation_outcomes": [
+                    row(
+                        outcome_set_id="outcome-set-1",
+                        assignment_set_id="assignment-set-1",
+                        task_id="verification-task-1",
+                        status="sealed",
+                        member_count=1,
+                        member_set_sha256="sha256:outcome-members",
+                        outcome_member_id="outcome-member-1",
+                        campaign_id="campaign-1",
+                        outcome_kind="completed",
+                        terminal_receipt_id="campaign-terminal-1",
+                        terminal_receipt_sha256="sha256:campaign-terminal",
+                    )
+                ],
+                "investigation_fact_deltas": [
+                    row(
+                        fact_delta_bundle_id="fact-delta-1",
+                        campaign_id="campaign-1",
+                        campaign_terminal_decision_id="campaign-terminal-1",
+                        organization_id="org-1",
+                        hypothesis_revision_id="hypothesis-revision-1",
+                        verification_objective_id="verification-objective-1",
+                        delta_kind="support",
+                        fact_delta_hash="sha256:fact-delta",
+                        consumption_id="consumption-1",
+                        generation_id="generation-2",
+                        disposition="applied",
+                        consumption_hash="sha256:consumption",
+                    )
+                ],
+                "investigation_fuel": [
+                    row(
+                        budget_id="budget-1",
+                        scope_kind="task",
+                        owner_id="verification-task-1",
+                        organization_id="org-1",
+                        task_id="verification-task-1",
+                        axis="campaign",
+                        limit_amount=4,
+                        reserved_amount=0,
+                        consumed_amount=1,
+                        unknown_held_amount=1,
+                        refunded_before_begin_amount=0,
+                        head_version=2,
+                    )
+                ],
+                "investigation_residuals": [
+                    row(
+                        residual_id="residual-1",
+                        organization_id="org-1",
+                        revision_id="hypothesis-revision-1",
+                        snapshot_id="candidate-snapshot-1",
+                        reason_code="operator_followup",
+                        owner_kind="operator",
+                        residual_hash="sha256:residual",
+                        closed_at=None,
+                        created_at="2026-08-02T01:10:00Z",
+                    )
+                ],
+                "investigation_closures": [
+                    row(
+                        closure_id="closure-1",
+                        authority_id="authority-1",
+                        stage_execution_id="investigation-exec-1",
+                        stop_intent_id="stop-1",
+                        stop_epoch=1,
+                        disposition="pass_with_gaps",
+                        work_count=6,
+                        work_set_sha256="sha256:work",
+                        task_plan_count=1,
+                        task_plan_set_sha256="sha256:plans",
+                        dispatch_count=3,
+                        dispatch_set_sha256="sha256:dispatches",
+                        residual_set_sha256="sha256:residuals",
+                        closure_sha256="sha256:closure",
+                        frozen_work_count=6,
+                        frozen_work_set_sha256="sha256:work",
+                        stop_receipt_sha256="sha256:stop",
+                        closed_at="2026-08-02T01:11:00Z",
+                    )
+                ],
+                "investigation_reporting": [
+                    row(
+                        report_id="report-1",
+                        scope_snapshot_id="scope-1",
+                        current_revision_id="report-revision-1",
+                        revision_id="report-revision-1",
+                        revision_number=1,
+                        row_version=2,
+                        source_set_hash="report-source-set",
+                        validation_status="validated",
+                        publication_status="final",
+                        input_seal_id="report-input-seal-1",
+                        input_source_member_count=8,
+                        input_source_set_hash="report-input-source-set",
+                        report_input_hash="report-input-hash",
+                        source_manifest_count=8,
+                    )
+                ],
+            }
+        )
+
+        rendered = "\n".join(
+            run_tree._unified_investigation_lines(query, "operation-1", 240)
+        )
+
+        expected_in_order = [
+            "Main authority=authority-1 execution=investigation-exec-1 request=stage-run-request-1",
+            "org=org-1 read_session=main-read-1",
+            "Analysis authority_snapshot=analysis-authority-1",
+            "Analysis snapshot=candidate-snapshot-1 wave=0 status=sealed_ready",
+            "generation=generation-1 ordinal=0",
+            "Hypothesis revision=hypothesis-revision-1",
+            "Verification admission_set=admission-set-1",
+            "Verification task=verification-task-1 state=terminal",
+            "PentAGI task_plan=task-plan-1 org=org-1 status=sealed",
+            "objective=verification-objective-1 assignment=campaign campaign=campaign-1",
+            "Prepared Action=prepared-action-1 campaign=campaign-1",
+            "Action authorization=authorization-1 prepared=prepared-action-1 decision=authorized",
+            "Action execution=action-execution-1 prepared=prepared-action-1",
+            "FactDelta=fact-delta-1 kind=support consumption=consumption-1",
+            "campaign_outcome_set=outcome-set-1 status=sealed",
+            "Residual=residual-1 org=org-1 revision=hypothesis-revision-1",
+            "Investigation run closure=closure-1 authority=authority-1 stop=stop-1",
+            "Reporting report=report-1 revision=report-revision-1#1",
+        ]
+        positions = []
+        for fragment in expected_in_order:
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, rendered)
+                positions.append(rendered.index(fragment))
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("unknown_held=1", rendered)
+
+        expected_query_ids = {
+            "investigation_authorities",
+            "investigation_read_sessions",
+            "investigation_analysis_authorities",
+            "investigation_candidate_snapshots",
+            "investigation_generations",
+            "investigation_hypotheses",
+            "investigation_admissions",
+            "investigation_tasks",
+            "investigation_delegation_census",
+            "investigation_assignments",
+            "investigation_prepared_actions",
+            "investigation_action_authorizations",
+            "investigation_action_executions",
+            "investigation_outcomes",
+            "investigation_fact_deltas",
+            "investigation_fuel",
+            "investigation_residuals",
+            "investigation_closures",
+            "investigation_reporting",
+        }
+        self.assertEqual({query_id for query_id, _params in query.calls}, expected_query_ids)
+        self.assertTrue(all(params == ("operation-1",) for _query_id, params in query.calls))
+        for query_id in expected_query_ids:
+            sql = query.sql_by_id[query_id].lower()
+            self.assertIn("operation_id = %s", sql)
+            self.assertNotIn("limit 1", sql)
+            self.assertNotRegex(sql, r"order\s+by[^;]+\bdesc\b")
+
+    def test_unified_schema_error_is_unavailable_not_checked_empty(self) -> None:
+        query = FixtureQuery(
+            {
+                "investigation_authorities": [("ERR", "relation does not exist")],
+                "investigation_read_sessions": [("ERR", "relation does not exist")],
+            }
+        )
+
+        rendered = "\n".join(
+            run_tree._unified_investigation_lines(query, "operation-1", 240)
+        )
+
+        self.assertIn("Main authority: unavailable (relation does not exist)", rendered)
+        self.assertIn("Main: unavailable (authority schema/query unavailable)", rendered)
+        self.assertNotIn("checked_empty", rendered)
+
+    def test_legacy_topology_does_not_query_unified_authority_tables(self) -> None:
+        rendered, query = self.render_with_query(
+            {
+                "runtime_operations": [
+                    row(
+                        operation_id="legacy-operation",
+                        runtime_memory_contract="legacy_v1",
+                        attack_execution_contract="legacy_attack_v1",
+                        investigation_contract_version="legacy_candidate_v1",
+                        investigation_rollout_mode="legacy_only",
+                        stage_topology_contract="legacy_candidate_verification_v1",
+                        stage_topology_sha256="sha256:legacy-topology",
+                        stage_topology_freeze_source="legacy_backfill_v1",
+                        profile="red_team",
+                        current_stage="attack_candidate",
+                        project_scope_id="project-1",
+                        engagement_org_id="org-1",
+                        superseded_by=None,
+                        stage_started_at="2026-08-02T01:00:00Z",
+                        state_blob={},
+                    )
+                ]
+            }
+        )
+
+        self.assertIn("topology=legacy_candidate_verification_v1", rendered)
+        self.assertNotIn("unified Investigation authority chain", rendered)
+        self.assertFalse(
+            any(query_id.startswith("investigation_") for query_id, _params in query.calls)
         )
 
 

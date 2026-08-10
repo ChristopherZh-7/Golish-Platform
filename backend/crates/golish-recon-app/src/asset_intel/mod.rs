@@ -39,9 +39,11 @@ pub struct ToolsConfigState(pub Arc<golish_pentest::ConfigManager>);
 
 mod agent_intel;
 mod asn;
+mod authority;
 mod availability;
 mod capability;
 mod commands;
+mod goal_landing;
 mod landing;
 mod merge;
 mod normalize;
@@ -50,15 +52,24 @@ mod profile_patch;
 mod promote;
 mod records;
 mod runtime;
+mod scoping_identity;
 mod service;
 mod template;
 mod types;
+pub(crate) use agent_intel::run_passive_intel_observation_only;
 pub(crate) use agent_intel::{authorized_domain_scope_hosts, whois_domain_scope_hosts};
 pub use agent_intel::{run_passive_intel, PassiveIntelPhase, PassiveIntelSummary};
 pub(crate) use asn::{
     collect_public_ips_for_asn_lookup, normalize_asn, parse_team_cymru_asn_response,
     profile_asn_entries_from_mappings, IpAsnMapping, TEAM_CYMRU_ASN_LOOKUP_TIMEOUT_SECS,
     TEAM_CYMRU_WHOIS_ADDR,
+};
+pub use authority::{
+    record_unsupported_semantic_query, run_fixture_semantic_query, stable_semantic_query_key,
+    CollectedIntelBatch, CollectedIntelObservation, FixtureScopeSubject, IntelPivotReceiptV1,
+    IntelSemanticTerminalStatus, PassiveIntelSemanticSummary, ProjectionAuthorization,
+    RedactedIntelArtifact, SemanticIntelPipelineError, SemanticIntelReceiptStore,
+    INTEL_SEMANTIC_RECEIPT_KIND,
 };
 pub use availability::{list_provider_availability, ProviderAvailability};
 #[cfg(test)]
@@ -69,6 +80,7 @@ pub(crate) use capability::{
     provider_descriptors_from_tools, provider_id_for_tool, provider_output_has_landable_records,
     select_asset_intel_providers, select_enrichment_providers, select_subsidiary_providers,
 };
+pub(crate) use goal_landing::{land_semantic_goal_observations, SemanticPivotLandingContext};
 pub(crate) use merge::{flatten_candidates, merge_candidates};
 pub(crate) use normalize::{
     extract_host_ip_pairs, extract_profile_field_entries, filter_passes, resolve_field_ref,
@@ -89,21 +101,29 @@ pub(crate) use records::{
     dedupe_lookup_matches, extract_lookup_matches, normalize_json_document,
     normalize_json_with_descriptor,
 };
+pub use runtime::native::{
+    fixture_capability_matrix as semantic_fixture_capability_matrix,
+    NativePivotPlanner as SemanticNativePivotPlanner,
+    PlannedNativeQuery as SemanticPlannedNativeQuery,
+};
+pub(crate) use scoping_identity::freeze_company_lookup_result;
 pub(crate) use template::{
     collect_http_secret_refs, render_asset_intel_skill_args, render_http_json_value,
-    render_http_template, render_lookup_skill_args, split_command_args,
+    render_http_template, render_http_url_template, render_lookup_skill_args, split_command_args,
 };
 #[cfg(test)]
 pub(crate) use types::enrichment_hydrate_config_for_organization;
+pub(crate) use types::ObservedProfileField;
 pub(crate) use types::{discovery_hydrate_config, enrichment_hydrate_config};
 pub use types::{
     AssetIntelBatchSource, AssetIntelCapability, AssetIntelEnrichBatchArgs,
     AssetIntelEnrichBatchResult, AssetIntelEnrichBatchSkip, AssetIntelEnrichOrganizationArgs,
-    AssetIntelHydrateArgs, AssetIntelHydrateConfig, AssetIntelIntegrationRequirement,
-    AssetIntelLookupRequest, AssetIntelLookupResult, AssetIntelProviderDescriptor,
-    AssetIntelProviderRecord, AssetIntelProviderRunState, AssetIntelProviderRunStatus,
-    AssetIntelProviderRuntimeKind, AssetIntelProviderStatus, AssetIntelRun, AssetIntelRunStatus,
-    AssetIntelStreamEvent, AssetIntelStreamSource, LookupCompanyMatch, ProfileFieldEntry,
+    AssetIntelExecutionRequest, AssetIntelFixtureContext, AssetIntelHydrateArgs,
+    AssetIntelHydrateConfig, AssetIntelIntegrationRequirement, AssetIntelLookupRequest,
+    AssetIntelLookupResult, AssetIntelProviderDescriptor, AssetIntelProviderRecord,
+    AssetIntelProviderRunState, AssetIntelProviderRunStatus, AssetIntelProviderRuntimeKind,
+    AssetIntelProviderStatus, AssetIntelRun, AssetIntelRunStatus, AssetIntelStreamEvent,
+    AssetIntelStreamSource, LookupCompanyMatch, ProfileFieldEntry,
 };
 
 pub use commands::*;

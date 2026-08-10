@@ -307,11 +307,19 @@ impl HypothesisAnalysisRuntimeRepository for PgHypothesisAnalysisRuntimeReposito
             golish_agent_kit::db_traits::CandidateAnalysisSnapshotDispositionV1::SealedReady => {
                 CandidateRuntimeSnapshotDisposition::SealedReady
             }
+            golish_agent_kit::db_traits::CandidateAnalysisSnapshotDispositionV1::SealedAnalysisReadyWithResiduals => {
+                CandidateRuntimeSnapshotDisposition::SealedAnalysisReadyWithResiduals
+            }
             golish_agent_kit::db_traits::CandidateAnalysisSnapshotDispositionV1::BlockedAuthorityBundle => {
                 CandidateRuntimeSnapshotDisposition::BlockedAuthorityBundle
             }
         };
-        let input_count = if disposition == CandidateRuntimeSnapshotDisposition::SealedReady {
+        let analysis_ready = matches!(
+            disposition,
+            CandidateRuntimeSnapshotDisposition::SealedReady
+                | CandidateRuntimeSnapshotDisposition::SealedAnalysisReadyWithResiduals
+        );
+        let input_count = if analysis_ready {
             let count: i64 = sqlx::query_scalar(
                 "SELECT count(*) FROM candidate_analysis_snapshot_inputs WHERE snapshot_id=$1",
             )
@@ -323,22 +331,21 @@ impl HypothesisAnalysisRuntimeRepository for PgHypothesisAnalysisRuntimeReposito
         } else {
             0
         };
-        let input_chunk_census_set_hash =
-            if disposition == CandidateRuntimeSnapshotDisposition::SealedReady {
-                sqlx::query_scalar(
-                    r#"SELECT tool_truth_sha256(to_jsonb(ARRAY(
+        let input_chunk_census_set_hash = if analysis_ready {
+            sqlx::query_scalar(
+                r#"SELECT tool_truth_sha256(to_jsonb(ARRAY(
                        SELECT census_hash
                          FROM candidate_analysis_input_chunk_censuses
                         WHERE snapshot_id=$1
                         ORDER BY snapshot_input_id
                    ))::TEXT)"#,
-                )
-                .bind(snapshot.snapshot_id)
-                .fetch_one(self.pool.as_ref())
-                .await?
-            } else {
-                snapshot.knowledge_feed_obligation_set_hash.clone()
-            };
+            )
+            .bind(snapshot.snapshot_id)
+            .fetch_one(self.pool.as_ref())
+            .await?
+        } else {
+            snapshot.knowledge_feed_obligation_set_hash.clone()
+        };
         let blocked_residual_hash = (disposition
             == CandidateRuntimeSnapshotDisposition::BlockedAuthorityBundle)
             .then(|| {
@@ -1061,6 +1068,16 @@ impl HypothesisAnalysisRuntimeRepository for PgHypothesisAnalysisRuntimeReposito
             })
             .await
             .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let post_seal_route = match sealed.post_seal_route.as_str() {
+            "verification_campaign_admission" => {
+                CandidatePostSealRoute::VerificationCampaignAdmission
+            }
+            "historical_reporting_placeholder" => {
+                CandidatePostSealRoute::HistoricalReportingPlaceholder
+            }
+            "true_zero_reporting" => CandidatePostSealRoute::TrueZeroReporting,
+            _ => anyhow::bail!("CANDIDATE_POST_SEAL_ROUTE_INVALID"),
+        };
         Ok(CandidateGenerationSealOutcome {
             generation_id: sealed.generation_id,
             generation_ordinal: sealed.generation_ordinal,
@@ -1072,6 +1089,7 @@ impl HypothesisAnalysisRuntimeRepository for PgHypothesisAnalysisRuntimeReposito
             projection_outbox_batch_id: sealed.projection_outbox_batch_id,
             projection_source_batch_seq: sealed.projection_source_batch_seq,
             projection_outbox_member_set_hash: sealed.projection_outbox_member_set_hash,
+            post_seal_route,
             replayed: sealed.replayed,
         })
     }
@@ -1228,6 +1246,10 @@ impl HypothesisAnalysisStageRuntime for PgHypothesisAnalysisStageRuntime {
                 })?,
             });
         }
+        anyhow::ensure!(
+            snapshot.disposition == CandidateRuntimeSnapshotDisposition::SealedReady,
+            "legacy Candidate runtime cannot consume a unified residual-ready snapshot"
+        );
         anyhow::ensure!(
             snapshot.blocked_residual_hash.is_none(),
             "ready snapshot carries blocked residual"
