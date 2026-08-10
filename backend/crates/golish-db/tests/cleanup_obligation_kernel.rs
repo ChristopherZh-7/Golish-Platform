@@ -2048,6 +2048,268 @@ async fn deletion_request_freezes_targets_before_external_cleanup_and_hard_delet
 
 #[tokio::test]
 #[serial]
+async fn organization_deletion_retains_bound_tool_truth_identity() {
+    let (mut db, _data_dir) = fixture().await;
+    let principal = operator_principals::current_local(db.pool())
+        .await
+        .expect("load trusted deletion principal");
+    let job_id = Uuid::new_v4();
+    let project_path = format!("/fixture/delete-retained-tool-truth-{job_id}");
+    let scope = frozen_scope(&db, &project_path, "delete-retained-tool-truth").await;
+    let target_id = Uuid::new_v4();
+    let wave_id = Uuid::new_v4();
+    let binding_id = Uuid::new_v4();
+
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id
+           ) VALUES($1,'retained target','url','https://retained.example.test','in',$2,$3)"#,
+    )
+    .bind(target_id)
+    .bind(&project_path)
+    .bind(scope.organization_id)
+    .execute(db.pool())
+    .await
+    .expect("insert retained Tool Truth target");
+    sqlx::query(
+        r#"INSERT INTO stage_asset_waves(
+               id,operation_id,organization_id,stage_kind,wave_index,status,asset_hash
+           ) VALUES($1,$2,$3,'target_intel',0,'completed','retained-wave-hash')"#,
+    )
+    .bind(wave_id)
+    .bind(scope.operation_id)
+    .bind(scope.organization_id)
+    .execute(db.pool())
+    .await
+    .expect("insert retained Tool Truth wave");
+    sqlx::query(
+        r#"INSERT INTO stage_asset_wave_items(
+               wave_id,target_id,asset_value,asset_type,source
+           ) VALUES($1,$2,'https://retained.example.test','url','cleanup-retention-test')"#,
+    )
+    .bind(wave_id)
+    .bind(target_id)
+    .execute(db.pool())
+    .await
+    .expect("insert retained Tool Truth wave member");
+    sqlx::query(
+        r#"INSERT INTO tool_truth_stage_wave_execution_bindings(
+               id,stage_asset_wave_id,operation_id,project_scope_id,project_path_at_freeze,
+               scope_snapshot_id,organization_id,stage_execution_id,stage_kind,binding_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'target_intel',$9)"#,
+    )
+    .bind(binding_id)
+    .bind(wave_id)
+    .bind(scope.operation_id)
+    .bind(scope.project_scope_id)
+    .bind(&project_path)
+    .bind(scope.snapshot_id)
+    .bind(scope.organization_id)
+    .bind(scope.stage_execution_id)
+    .bind(format!("sha256:{}", "0".repeat(64)))
+    .execute(db.pool())
+    .await
+    .expect("bind retained Tool Truth wave");
+    let binding_hash: String = sqlx::query_scalar(
+        "SELECT binding_hash FROM tool_truth_stage_wave_execution_bindings WHERE id=$1",
+    )
+    .bind(binding_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read retained wave binding hash");
+    let execution_authority_id = Uuid::new_v4();
+    let execution_authority_hash: String = sqlx::query_scalar(
+        r#"INSERT INTO tool_truth_execution_authorities(
+               id,stable_authority_request_id,operation_id,project_scope_id,
+               project_path_at_freeze,scope_snapshot_id,organization_id,
+               stage_execution_id,stage_kind,execution_source_kind,
+               stage_wave_binding_id,stage_wave_binding_hash,execution_owner_kind,
+               authority_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'target_intel','stage_wave',$9,$10,
+                    'host_stage',$11)
+           RETURNING authority_hash"#,
+    )
+    .bind(execution_authority_id)
+    .bind(Uuid::new_v4())
+    .bind(scope.operation_id)
+    .bind(scope.project_scope_id)
+    .bind(&project_path)
+    .bind(scope.snapshot_id)
+    .bind(scope.organization_id)
+    .bind(scope.stage_execution_id)
+    .bind(binding_id)
+    .bind(&binding_hash)
+    .bind(format!("sha256:{}", "1".repeat(64)))
+    .fetch_one(db.pool())
+    .await
+    .expect("seal retained Tool Truth execution authority");
+    let audit_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO audit_log(
+               action,category,details,target_id,project_path,run_id,audit_role,
+               detail,status,source,evidence_technique,evidence_outcome
+           ) VALUES(
+               'retained_tool_truth','test','bound deletion evidence',$1,$2,$3,
+               'evidence',$4,'completed','harness','target_intel','found'
+           ) RETURNING id"#,
+    )
+    .bind(target_id)
+    .bind(&project_path)
+    .bind(scope.operation_id)
+    .bind(serde_json::json!({
+        "organization_id": scope.organization_id,
+        "tool_truth_producer": {
+            "organization_id": scope.organization_id,
+            "stage_execution_id": scope.stage_execution_id,
+        }
+    }))
+    .fetch_one(db.pool())
+    .await
+    .expect("insert retained target-bound evidence audit");
+    let classification_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO evidence_classifications(
+               evidence_audit_id,classification,scope_version,reason,
+               classified_by_session,producing_stage_run_id
+           ) VALUES($1,'in_scope',1,'cleanup retention fixture',$2,$3)
+           RETURNING id"#,
+    )
+    .bind(audit_id)
+    .bind("cleanup-retained-tool-truth")
+    .bind(scope.stage_execution_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("classify retained target-bound evidence");
+    sqlx::query(
+        r#"INSERT INTO tool_truth_evidence_production_bindings(
+               id,execution_authority_id,operation_id,project_scope_id,
+               project_path_at_freeze,scope_snapshot_id,organization_id,
+               stage_execution_id,stage_kind,execution_authority_hash,
+               evidence_audit_id,evidence_classification_id,production_binding_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'target_intel',$9,$10,$11,$12)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(execution_authority_id)
+    .bind(scope.operation_id)
+    .bind(scope.project_scope_id)
+    .bind(&project_path)
+    .bind(scope.snapshot_id)
+    .bind(scope.organization_id)
+    .bind(scope.stage_execution_id)
+    .bind(&execution_authority_hash)
+    .bind(audit_id)
+    .bind(classification_id)
+    .bind(format!("sha256:{}", "2".repeat(64)))
+    .execute(db.pool())
+    .await
+    .expect("bind retained target evidence to Tool Truth authority");
+
+    organization_deletion_jobs::request(
+        db.pool(),
+        &organization_deletion_jobs::RequestOrganizationDeletion {
+            job_id,
+            root_organization_id: scope.organization_id,
+            principal_id: principal.id,
+            expected_project_path: project_path.clone(),
+        },
+    )
+    .await
+    .expect("freeze retained Tool Truth deletion");
+    let worker_id = "cleanup-retained-tool-truth-worker".to_string();
+    let (claimed, plan) = organization_deletion_jobs::claim_next_artifact_cleanup(
+        db.pool(),
+        &organization_deletion_jobs::ClaimOrganizationArtifactCleanup {
+            worker_id: worker_id.clone(),
+            lease_seconds: 60,
+        },
+    )
+    .await
+    .expect("claim retained Tool Truth deletion")
+    .expect("retained Tool Truth deletion ready");
+    assert_eq!(plan.targets.len(), 1);
+    organization_deletion_jobs::complete_artifact_cleanup(
+        db.pool(),
+        &organization_deletion_jobs::CompleteOrganizationArtifactCleanup {
+            job_id,
+            worker_id,
+            lease_token: claimed.lease_token.expect("deletion lease token"),
+            expected_row_version: claimed.row_version,
+            result: Ok(()),
+        },
+    )
+    .await
+    .expect("complete retained Tool Truth artifact cleanup");
+
+    let committed = organization_deletion_jobs::hard_delete(db.pool(), job_id)
+        .await
+        .expect("hard delete live identity without deleting retained Tool Truth");
+    assert_eq!(committed.state, "hard_delete_committed");
+    let live_identity: (bool, bool) = sqlx::query_as(
+        r#"SELECT
+               EXISTS(SELECT 1 FROM organizations WHERE id=$1),
+               EXISTS(SELECT 1 FROM targets WHERE id=$2)"#,
+    )
+    .bind(scope.organization_id)
+    .bind(target_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read deleted live identity");
+    assert_eq!(live_identity, (false, false));
+    let retained_rows: (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+               (SELECT COUNT(*) FROM stage_asset_waves WHERE id=$1),
+               (SELECT COUNT(*) FROM stage_asset_wave_items WHERE wave_id=$1 AND target_id=$2),
+               (SELECT COUNT(*) FROM tool_truth_stage_wave_execution_bindings WHERE id=$3),
+               (SELECT COUNT(*) FROM audit_log WHERE id=$4 AND target_id=$2)"#,
+    )
+    .bind(wave_id)
+    .bind(target_id)
+    .bind(binding_id)
+    .bind(audit_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read retained Tool Truth identity");
+    assert_eq!(retained_rows, (1, 1, 1, 1));
+
+    let missing_org = sqlx::query(
+        r#"INSERT INTO stage_asset_waves(
+               operation_id,organization_id,stage_kind,wave_index,status,asset_hash
+           ) VALUES($1,$2,'target_intel',1,'completed','missing-org')"#,
+    )
+    .bind(scope.operation_id)
+    .bind(scope.organization_id)
+    .execute(db.pool())
+    .await
+    .expect_err("deleted organization cannot authorize a new retained row");
+    assert_eq!(
+        missing_org
+            .as_database_error()
+            .and_then(|error| error.code())
+            .map(|code| code.into_owned())
+            .as_deref(),
+        Some("23503")
+    );
+    let missing_target = sqlx::query(
+        r#"INSERT INTO stage_asset_wave_items(
+               wave_id,target_id,asset_value,asset_type,source
+           ) VALUES($1,$2,'https://deleted.example.test','url','missing-target')"#,
+    )
+    .bind(wave_id)
+    .bind(target_id)
+    .execute(db.pool())
+    .await
+    .expect_err("deleted target cannot authorize a new retained row");
+    assert_eq!(
+        missing_target
+            .as_database_error()
+            .and_then(|error| error.code())
+            .map(|code| code.into_owned())
+            .as_deref(),
+        Some("23503")
+    );
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn deletion_request_requires_the_matching_active_server_project_scope() {
     let (mut db, _data_dir) = fixture().await;
     let principal = operator_principals::current_local(db.pool())

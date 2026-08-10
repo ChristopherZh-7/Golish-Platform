@@ -11,6 +11,25 @@
   ],
   "features": [
     {
+      "id": "organization-deletion-retained-tool-truth-2026-08-11",
+      "priority": 0,
+      "area": "golish-db organization deletion and immutable Tool Truth retention",
+      "title": "Let two-phase organization deletion remove live identity without deleting immutable Tool Truth.",
+      "user_visible_behavior": "Deleting an organization completes after background cleanup even when completed runs have bound Tool Truth, Enumeration, Investigation and Reporting history. The organization and live Targets disappear from the Target page, while immutable evidence remains auditable and cannot be mutated or recreated against deleted identities.",
+      "status": "passing",
+      "design": "docs/design/2026-08-11-organization-deletion-retained-tool-truth.md",
+      "plan": "docs/superpowers/plans/2026-08-11-organization-deletion-retained-tool-truth.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test cleanup_obligation_kernel -E 'test(organization_deletion_retains_bound_tool_truth_identity)' --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test cleanup_obligation_kernel -E 'test(/deletion/)' --status-level fail --test-threads 1",
+        "cd backend && just space-guard && cargo clippy -p golish-db --test cleanup_obligation_kernel -- -D warnings",
+        "rustfmt --edition 2021 --check backend/crates/golish-db/tests/cleanup_obligation_kernel.rs",
+        "jq empty feature_list.json && git diff --check"
+      ],
+      "evidence": "PASS 2026-08-11. RED reproduced tool_truth_bound_wave_source_immutable in nextest 05b83319-0d1e-4c57-b74e-ea5b67cc1d37. Final fresh embedded-Postgres bound-wave + target-bound evidence test passed 1/1 in run 6b8fc8ac-0302-4656-90f7-52012b26e010; deletion regression selector passed 8/8 in run efbd5467-045b-4889-86b6-ba45807c9e06. Scoped golish-db test Clippy -D warnings, rustfmt, jq and diff checks exited 0. The existing GUI job aa504964-c34a-42d0-a488-6178e5b6c27d applied migrations 20260811000001/00002 and naturally retried to hard_delete_committed at attempt 13 with last_error cleared: live org=false and targets=0, while 1 wave, 3 wave items, 1 wave binding, 14 evidence authorities, 3 Enumeration occurrences and 3 hypotheses remain.",
+      "notes": "The fix preserves immutable authority content and physical live-row deletion. Retained-history parent FKs and immutable SET NULL live aliases use FK-equivalent write-time validation; raw mutable scan tables keep cascade semantics, with unprojected endpoint/origin rows explicitly purged. The retained database was not manually bypassed or rewritten."
+    },
+    {
       "id": "fresh-install-v2-agent-tree-recovery-2026-08-10",
       "priority": 0,
       "area": "golish-db pristine-install rollout defaults; frontend unified Stage Agent tree, fixed detail workspace, message-scoped ChatPanel Plans and detail-focus layout; golish-agent-kit/app Target Intel semantic-candidate scope review",

@@ -6,6 +6,18 @@
 
 ---
 
+# 会话记录：2026-08-11 · 组织删除 retained Tool Truth 收敛（PASSING）
+
+- **本轮目标**：修复 Target 页面删除“杭州默安科技有限公司”后长期显示 `Organization deletion is still processing`；必须让原两阶段 job 自然续跑完成，不手工删证据、不重建删除请求，并保留已完成 operation 的 Tool Truth/Enumeration/Investigation/Reporting 历史。
+- **根因与修复**：retained job `aa504964-c34a-42d0-a488-6178e5b6c27d` 已完成 artifact cleanup，但 live Target 删除先级联到 bound `stage_asset_wave_items`，触发 `tool_truth_bound_wave_source_immutable`；拆开该边后，`audit_log.target_id ON DELETE SET NULL` 又试图改写 bound evidence，触发 `tool_truth_evidence_authority_immutable`。新增 forward migrations `20260811000001/00002`：retained authority parent references与 append-only/CAS live-target aliases改为 key-share live-parent + exact org/project + active-deletion admission trigger，parent delete不改写历史 UUID；hard-delete显式清理未被 Enumeration graph引用的 raw endpoint/origin。普通 mutable/raw cascade语义保持。
+- **TDD / 定向验证**：RED nextest `05b83319-0d1e-4c57-b74e-ea5b67cc1d37` 复现 exact wave immutable error。最终 fixture 同时绑定 wave/member/binding与 target-bound Tool Truth evidence，fresh embedded PostgreSQL run `6b8fc8ac-0302-4656-90f7-52012b26e010` 1/1 PASS，并证明 live org/Target删除、历史 audit target UUID不变、删除后新 org/target引用均以 `23503` fail closed。删除模块回归 run `efbd5467-045b-4889-86b6-ba45807c9e06` 8/8 PASS；`cargo clippy -p golish-db --test cleanup_obligation_kernel -- -D warnings` exit 0；scoped rustfmt、`jq empty feature_list.json`、`git diff --check` exit 0。所有 Cargo 前均运行 `just space-guard`。按 AGENTS §0.1 未运行未获授权的 init/precommit/全 workspace门禁。
+- **实体收敛证据**：当前 Tauri dev binary正常应用两条 migration，未执行直接 SQL bypass；catalog checksum 与磁盘 SHA-384 逐条相等（00001=`8c2a64d0…50036`，00002=`f48b2acc…523fd`）。原 job 在既有 durable backoff后第 13 次自动重试，于 2026-08-11 04:52:21+08 进入 `hard_delete_committed`，`last_error=NULL`。只读 DB readback：live organization=false、targets=0；同 operation仍保留 1 wave、3 wave items、1 wave binding、14 evidence authorities、3 Enumeration occurrences、3 hypotheses。Target 页面可由既有 deletion event/poll刷新，不需要用户再点一次删除。
+- **模块与状态**：新增设计、计划、两条 migration与一个 production-path DB回归；同步 `golish-db/repo`、`golish-cleanup-app`、模块索引和 feature evidence。`organization-deletion-retained-tool-truth-2026-08-11` 已按新鲜证据标为 `passing`。
+- **提交记录**：本轮将作为已推送恢复提交之后的独立 fix commit，普通 push `codex/plan-c-d-intel-js`，不 amend/force-push。
+- **已知风险**：未运行全 workspace suite；fresh DB behavior、8条删除回归、scoped Clippy与真实 retained convergence覆盖本次 schema/worker风险。历史 UUID只证明 at-time identity；任何 live authorization仍必须 join live parent并通过 admission trigger。
+- **下一步最佳动作**：提交并 push 后，以远端分支作为新的恢复金本；如 Target 页面尚未自动移除旧卡片，只需刷新页面，不要再次创建删除 job。
+- **以下文件已修改但未提交**：本记录所列 migration、repo、DB test、design/plan/module cards、feature/progress；提交后应 clean。
+
 # 会话记录：2026-08-11 · GUI-origin moresec.cn 续跑、Reporting 与终态重放闭环（PASSING / FINAL COMMIT）
 
 - **本轮目标**：接管用户在新客户端反复发送“继续”仍失败的 retained GUI operation，不另起 operation、不从头跑全链；沿 durable runtime authority 修到 Scoping→Reporting 真正 terminal，并核实 Reporting、终态 resume 与 Memory/RAG，而不是靠自然语言宣布完成。

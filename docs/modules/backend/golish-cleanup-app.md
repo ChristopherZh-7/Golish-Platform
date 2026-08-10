@@ -21,6 +21,7 @@
 - `CleanupCloseoutRuntime` 以 DB-global lease 回收过期 attempt 并推进组织 deletion job；文件 I/O 委托 adapter 且只发生在 claim transaction 提交后。若进程在 artifact cleanup 成功提交后、hard delete 前退出，下一 worker tick 会恢复该 DB-only continuation。
 - `OrganizationDeletionPort` 在 adapter 内解析 C0 local principal，并要求 caller 提交当前 active workspace path witness；DB 将其解析为 server-owned active `project_scopes.canonical_project_path` 后校验完整 subtree，caller/model 不传 actor id 或 artifact root。
 - deletion request 冻结 subtree/target 后，DB trigger 同时把 organization 与其 target identity 设为只读；重叠 parent/child deletion job 被拒绝，避免 committed artifact plan 漂移。
+- hard-delete 物理移除 live organization/Target，但保留已绑定的 Tool Truth、Enumeration、Hypothesis、Reporting 与 append-only live-target alias UUID；未来写入仍必须通过 live parent、exact scope 与 active-deletion fence。未进入 immutable projection 的 raw endpoint/origin 行由 hard-delete transaction显式清理。
 
 ## 公开接口 / 关键类型
 
@@ -48,6 +49,7 @@
 - 组织删除固定为 invalidation deliveries → artifact cleanup lease → 独立 hard-delete transaction；不得在 request transaction 做文件 I/O。每个 invalidation 冻结 event-catalog projector manifest，manifest 外后来新增的 pending projector 不得反向阻塞；artifact/hard-delete 失败写 durable retry-not-before，claim 只选已到期 job 并按 requested time 公平排序，不能让最老失败 job hot-loop 饿死其它 ready job。
 - `OrganizationDeletionPort::request_organization_deletion` 会把 DB 的 active stage-fork admission conflict 保留为 typed `CleanupError`；上层可直接指导用户先终止阶段任务，不能先创建 deletion job、清理 artifact 后才依赖 hard-delete trigger 失败。
 - P2 repo 暂保留兼容字段 `target_live_id`；migration trigger 原子双写 authoritative `target_id_at_time` / nullable `live_target_id` / canonical snapshot，并用约束保证两个 live alias 只能指向同一 at-time target。
+- 不得依赖 `ON DELETE CASCADE/SET NULL` 修改已封存的 authority/evidence 行；这些行的 UUID 是 at-time identity，判断当前实体是否仍 live 必须 join `organizations` / `targets`，不能把 retained UUID 当作 live authorization。
 
 ## 测试入口
 

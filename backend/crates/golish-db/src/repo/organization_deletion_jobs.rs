@@ -1066,11 +1066,63 @@ pub async fn hard_delete(pool: &PgPool, job_id: Uuid) -> Result<OrganizationDele
     .fetch_all(&mut *tx)
     .await?;
     assert_deletion_preconditions(&mut tx, &organization_ids).await?;
+    // The V2 Enumeration projection keeps endpoint/observation rows only when
+    // an immutable endpoint group references them. Once their live parent FKs
+    // become write-time admission triggers, remove the unprojected rows
+    // explicitly so organization deletion still purges mutable/raw scan data.
+    sqlx::query(
+        r#"DELETE FROM enumeration_endpoint_observations AS observation
+           USING organization_deletion_job_targets AS frozen
+           WHERE frozen.job_id=$1
+             AND frozen.live_target_id=observation.target_id
+             AND NOT EXISTS (
+                 SELECT 1 FROM enumeration_endpoint_group_api_links AS link
+                  WHERE link.endpoint_observation_id=observation.id
+             )"#,
+    )
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"DELETE FROM api_endpoints AS endpoint
+           USING organization_deletion_job_targets AS frozen
+           WHERE frozen.job_id=$1
+             AND frozen.live_target_id=endpoint.target_id
+             AND NOT EXISTS (
+                 SELECT 1 FROM enumeration_endpoint_group_api_links AS link
+                  WHERE link.endpoint_id=endpoint.id
+             )"#,
+    )
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query(
         r#"DELETE FROM targets AS target
            USING organization_deletion_job_targets AS frozen
            WHERE frozen.job_id=$1
              AND frozen.live_target_id=target.id"#,
+    )
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"DELETE FROM web_origins AS origin
+           USING organization_deletion_job_units AS frozen
+           WHERE frozen.job_id=$1
+             AND frozen.organization_id_at_time=origin.organization_id
+             AND NOT EXISTS (
+                 SELECT 1 FROM enumeration_endpoint_groups AS endpoint_group
+                  WHERE endpoint_group.resolved_web_origin_id=origin.id
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM enumeration_endpoint_occurrences AS occurrence
+                  WHERE occurrence.source_web_origin_id=origin.id
+                     OR occurrence.resolved_web_origin_id=origin.id
+             )
+             AND NOT EXISTS (
+                 SELECT 1 FROM enumeration_endpoint_observations AS observation
+                  WHERE observation.web_origin_id=origin.id
+             )"#,
     )
     .bind(job_id)
     .execute(&mut *tx)
