@@ -7,9 +7,8 @@
  * `sessions[sessionId].toolDetailRequestIds[0]` and looks up the
  * matching `ai_tool_execution` block in the session timeline.
  *
- * Mirrors the visual structure of `SubAgentDetailView` (header + scroll
- * body) so users get a consistent feel when toggling between sub-agent
- * and tool-call detail views.
+ * Stage tools and historical sub-agent navigation converge here so there is
+ * only one detail surface.
  */
 import { ArrowLeft, CheckCircle2, Clock, Loader2, Wrench, XCircle } from "lucide-react";
 import { memo, useCallback, useMemo } from "react";
@@ -46,6 +45,7 @@ import {
   stripAllAnsi,
   stripOscSequences,
 } from "@/lib/ansi";
+import { stageRunRequestIdFromAgentRequestId } from "@/lib/stage-run-identity";
 import { safeStringify } from "@/lib/text";
 import { formatDurationLong } from "@/lib/time";
 import {
@@ -660,7 +660,29 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
   const { t } = useTranslation();
   const setDetailViewMode = useStore((s) => s.setDetailViewMode);
   const requestIds = useStore((s) => s.sessions[sessionId]?.toolDetailRequestIds);
-  const targetRequestId = requestIds?.[0] ?? null;
+  const rawTargetRequestId = requestIds?.[0] ?? null;
+  const historicalStageRequestId = useStore((state) => {
+    const recovered = stageRunRequestIdFromAgentRequestId(rawTargetRequestId);
+    if (!recovered) return null;
+    const session = state.sessions[sessionId];
+    if (session?.stageRuns?.[recovered] || session?.stageRun?.requestId === recovered) {
+      return recovered;
+    }
+    const stageToolExists = (state.timelines[sessionId] ?? []).some(
+      (block) =>
+        block.type === "ai_tool_execution" &&
+        block.data.requestId === recovered &&
+        block.data.toolName === "stage_run"
+    );
+    return stageToolExists ? recovered : null;
+  });
+  const targetRequestId = historicalStageRequestId ?? rawTargetRequestId;
+  const focusedAgentRequestId =
+    requestIds && requestIds.length > 1
+      ? requestIds[requestIds.length - 1]
+      : historicalStageRequestId
+        ? rawTargetRequestId
+        : null;
   const backgroundJobs = useStore((s) => s.backgroundJobs[sessionId]) ?? EMPTY_BG_JOBS;
   const activeSubAgents = useStore((s) => s.activeSubAgents[sessionId] ?? EMPTY_SUB_AGENT_LIST);
   const stageTeamAgentRequestIds = useMemo(
@@ -712,8 +734,8 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
 
   // Drill from a `stage_run` per-org row into that org's specialist sub-agent:
   // push its `agentRequestId` onto the detail stack and switch to the sub-agent
-  // pane (same pattern as clicking a sub-agent card). `SubAgentDetailView`'s back
-  // nav pops the stack back to this `stage_run` tool row (the org list).
+  // pane. Historical `sub-agent-detail` mode is routed through this same unified
+  // view by PaneLeaf; the request stack preserves the selected Agent identity.
   const handleDrillIntoOrg = useCallback(
     (agentRequestId: string) => {
       const store = useStore.getState();
@@ -831,8 +853,9 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             ) : (
               <StageRunOrgRows
                 rows={stageRun.rows}
+                agentActivities={activeSubAgents}
                 agentRequestIdsByWorker={stageTeamAgentRequestIds}
-                onDrillIn={handleDrillIntoOrg}
+                focusedAgentRequestId={focusedAgentRequestId}
               />
             )}
             {preparedActionOperationId && (
@@ -911,13 +934,22 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     candidateOperationId ??
     getPreparedActionOperationIdFromRows(stageRun?.rows ?? []) ??
     (candidateStageRun ? (candidateReviewHint?.operationId ?? null) : null);
+  const companyStageRun = Boolean(
+    execution.toolName === "stage_run" && stageRun && isCompanyControllerStageRunRows(stageRun.rows)
+  );
+  const hasTypedStageRunDetails = Boolean(
+    execution.toolName === "stage_run" && (companyStageRun || candidateStageRun)
+  );
+  // The company-controller workspace owns its own fixed transcript viewport.
+  // Keep the outer detail surface from becoming a second scrolling page.
+  const hasFixedStageWorkspace = companyStageRun;
   const backgroundJob = execution.backgroundRun
     ? (backgroundJobs.find((job) => job.jobId === execution.backgroundRun?.jobId) ?? null)
     : null;
 
   return (
-    <div className="h-full flex flex-col bg-card">
-      <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
+    <div className="flex h-full min-h-0 flex-col bg-card">
+      <div className="flex min-h-10 flex-shrink-0 items-center gap-3 border-b border-[var(--border-subtle)] px-3 py-1.5">
         <button
           type="button"
           onClick={navigateBack}
@@ -926,59 +958,71 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           <ArrowLeft className="w-3.5 h-3.5" />
           {t("ai.toolDetail.backToTerminal")}
         </button>
-        <div className="w-px h-4 bg-[var(--border-subtle)]" />
-        <Wrench className="w-4 h-4 flex-shrink-0" style={{ color: toolColor }} />
-        <span className="text-sm font-medium truncate" title={execution.toolName}>
-          {toolLabel}
-        </span>
-        <AnchorChip sessionId={sessionId} requestId={execution.requestId} />
-        <Badge
-          variant="outline"
-          className={cn(
-            "gap-1 flex items-center text-[10px] px-2 py-0.5",
-            TOOL_DETAIL_STATUS_BADGE_STYLES[displayStatus]
-          )}
-        >
-          {isRunning && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
-          {isBackgrounded && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
-          {getStatusLabel(displayStatus)}
-        </Badge>
-        {execution.durationMs != null && (
-          <span className="text-[11px] text-muted-foreground/70 tabular-nums flex items-center gap-1">
-            <Clock className="w-3 h-3" />
-            {formatDurationLong(execution.durationMs)}
-          </span>
+        {!hasTypedStageRunDetails && (
+          <>
+            <div className="h-4 w-px bg-[var(--border-subtle)]" />
+            <Wrench className="h-4 w-4 flex-shrink-0" style={{ color: toolColor }} />
+            <span className="truncate text-sm font-medium" title={execution.toolName}>
+              {toolLabel}
+            </span>
+            <AnchorChip sessionId={sessionId} requestId={execution.requestId} />
+            <Badge
+              variant="outline"
+              className={cn(
+                "flex items-center gap-1 px-2 py-0.5 text-[10px]",
+                TOOL_DETAIL_STATUS_BADGE_STYLES[displayStatus]
+              )}
+            >
+              {isRunning && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
+              {isBackgrounded && <Loader2 className={DETAIL_RUNNING_SPINNER_CLASS} />}
+              {getStatusLabel(displayStatus)}
+            </Badge>
+            {execution.durationMs != null && (
+              <span className="flex items-center gap-1 text-[11px] tabular-nums text-muted-foreground/70">
+                <Clock className="h-3 w-3" />
+                {formatDurationLong(execution.durationMs)}
+              </span>
+            )}
+            <div className="ml-auto flex items-center justify-end">
+              <BackgroundJobsBadge
+                jobs={backgroundJobs}
+                sessionId={sessionId}
+                fallbackCount={backgroundedToolCount}
+                reserveSpace
+              />
+            </div>
+          </>
         )}
-        <div className="ml-auto flex items-center justify-end">
-          <BackgroundJobsBadge
-            jobs={backgroundJobs}
-            sessionId={sessionId}
-            fallbackCount={backgroundedToolCount}
-            reserveSpace
-          />
-        </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="px-4 py-3 border-b border-border/20 bg-accent/[0.04]">
-          <div className="flex items-center gap-2 mb-1.5">
-            <span className="text-[10px] font-mono text-muted-foreground/60 uppercase tracking-wider">
-              Tool
-            </span>
-            <span className="text-[12px] font-mono text-foreground/90">{execution.toolName}</span>
+      <div
+        data-testid="tool-detail-content"
+        className={cn(
+          "min-h-0 flex-1",
+          hasFixedStageWorkspace ? "overflow-hidden" : "overflow-y-auto"
+        )}
+      >
+        {!hasTypedStageRunDetails && (
+          <div className="px-4 py-3 border-b border-border/20 bg-accent/[0.04]">
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className="text-[10px] font-mono text-muted-foreground/60 uppercase tracking-wider">
+                Tool
+              </span>
+              <span className="text-[12px] font-mono text-foreground/90">{execution.toolName}</span>
+            </div>
+            <div className="flex items-center gap-2 text-[11px] text-muted-foreground/60">
+              <span>Started: {new Date(execution.startedAt).toLocaleTimeString()}</span>
+              {execution.completedAt && (
+                <>
+                  <span>·</span>
+                  <span>Completed: {new Date(execution.completedAt).toLocaleTimeString()}</span>
+                </>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-muted-foreground/60">
-            <span>Started: {new Date(execution.startedAt).toLocaleTimeString()}</span>
-            {execution.completedAt && (
-              <>
-                <span>·</span>
-                <span>Completed: {new Date(execution.completedAt).toLocaleTimeString()}</span>
-              </>
-            )}
-          </div>
-        </div>
+        )}
 
-        {execution.backgroundRun && (
+        {execution.backgroundRun && !hasTypedStageRunDetails && (
           <BackgroundJobPanel
             sessionId={sessionId}
             backgroundRun={execution.backgroundRun}
@@ -990,14 +1034,12 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         {execution.toolName === "stage_run" &&
           stageRun &&
           isCompanyControllerStageRunRows(stageRun.rows) && (
-            <div className="px-4 py-3 border-b border-border/20">
-              <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
-                Company Controllers
-              </div>
+            <div className="h-full min-h-0 p-2">
               <StageRunOrgRows
                 rows={stageRun.rows}
+                agentActivities={activeSubAgents}
                 agentRequestIdsByWorker={stageTeamAgentRequestIds}
-                onDrillIn={handleDrillIntoOrg}
+                focusedAgentRequestId={focusedAgentRequestId}
               />
             </div>
           )}
@@ -1056,7 +1098,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {intent && (
+        {intent && !hasTypedStageRunDetails && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               Intent
@@ -1100,7 +1142,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {hasToolArgs(execution.args) && (
+        {!hasTypedStageRunDetails && hasToolArgs(execution.args) && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               Input
@@ -1111,7 +1153,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {isShellCmd && displayedShellOutputText && (
+        {!hasTypedStageRunDetails && isShellCmd && displayedShellOutputText && (
           <div className="px-4 py-3 border-b border-border/20">
             <div className="flex items-center gap-1.5 mb-2">
               {(pendingShellOutput || isRunning || isBackgrounded) && (
@@ -1127,21 +1169,25 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
           </div>
         )}
 
-        {!isShellCmd && (isRunning || isBackgrounded) && displayedLiveOutputText && (
-          <div className="px-4 py-3 border-b border-border/20">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />
-              <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
-                Output
-              </span>
+        {!hasTypedStageRunDetails &&
+          !isShellCmd &&
+          (isRunning || isBackgrounded) &&
+          displayedLiveOutputText && (
+            <div className="px-4 py-3 border-b border-border/20">
+              <div className="flex items-center gap-1.5 mb-2">
+                <Loader2 className={DETAIL_PENDING_OUTPUT_SPINNER_CLASS} />
+                <span className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider">
+                  Output
+                </span>
+              </div>
+              <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
+                <Ansi>{displayedLiveOutputText}</Ansi>
+              </pre>
             </div>
-            <pre className="ansi-output max-h-[480px] overflow-auto whitespace-pre-wrap rounded border border-border/15 bg-background/40 px-3 py-2 text-[11px] font-mono text-muted-foreground">
-              <Ansi>{displayedLiveOutputText}</Ansi>
-            </pre>
-          </div>
-        )}
+          )}
 
         {!isShellCmd &&
+          !hasTypedStageRunDetails &&
           !isRunning &&
           !isBackgrounded &&
           execution.result !== undefined &&
@@ -1161,7 +1207,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             </div>
           )}
 
-        {errorMessage && (
+        {errorMessage && !hasTypedStageRunDetails && (
           <div className="mx-4 my-3 rounded-lg bg-destructive/10 border border-destructive/25 p-3.5">
             <div className="flex items-start gap-2">
               <XCircle className="w-3.5 h-3.5 text-destructive mt-0.5 flex-shrink-0" />
@@ -1173,7 +1219,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         )}
       </div>
 
-      {isRunning && (
+      {isRunning && !hasTypedStageRunDetails && (
         <div className="px-3 py-2 border-t border-[var(--border-subtle)] flex items-center gap-2 flex-shrink-0 bg-[var(--ansi-blue)]/10">
           <Loader2 className={cn(DETAIL_RUNNING_SPINNER_CLASS, "text-[var(--ansi-blue)]")} />
           <span className="text-[11px] text-[var(--ansi-blue)]">{t("ai.toolDetail.running")}</span>

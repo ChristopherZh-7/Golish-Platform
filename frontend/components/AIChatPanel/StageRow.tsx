@@ -1,14 +1,14 @@
 /**
  * StageRow
  *
- * One harness stage in the task-mode roadmap (design 2026-06-04 · roadmap UX
- * overhaul). Every stage — future / active / passed — shares ONE visual anatomy:
+ * One harness stage in the task-mode roadmap. Every stage — future / active /
+ * passed — shares one compact, border-light visual anatomy:
  *
  *   [status icon]  Stage Name   c/t   ⌄
  *
- * so the roadmap no longer mixes a heavy "X / Y tasks done" card (active stage)
- * with slim name-only rows (future stages). The stage NAME always leads; the
- * "c/t" progress is a small secondary hint.
+ * The stage name leads and "c/t" remains secondary. No row auto-expands: the
+ * roadmap itself is opt-in, and each stage's local steps require another
+ * explicit click.
  *
  * Seed vs real plan: the backend emits a `version: 0` seed for every stage (a
  * roadmap placeholder, and an `in_progress` marker at stage entry). A seed's step
@@ -54,10 +54,9 @@ export const StageRow = memo(function StageRow({
   const active = !passed && !future;
   const showDetail = hasRealPlan;
 
-  // Default-open the active stage with a real plan; collapse future/passed/seed.
-  // `manualExpanded` overrides once the user clicks.
-  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const expanded = showDetail && (manualExpanded ?? (active && !passed));
+  // The roadmap is secondary detail: even the active stage remains collapsed
+  // until the user explicitly asks for its local plan.
+  const [expanded, setExpanded] = useState(false);
 
   const { total, completed } = plan.summary;
 
@@ -76,16 +75,19 @@ export const StageRow = memo(function StageRow({
   return (
     <div
       className={cn(
-        "rounded-lg border bg-background/30 overflow-hidden",
-        future ? "border-[var(--border-subtle)]/40 opacity-60" : "border-[var(--border-subtle)]"
+        "overflow-hidden rounded-md border-l-2",
+        active
+          ? "border-accent/55 bg-accent/[0.045]"
+          : "border-[var(--border-subtle)]/55 bg-transparent"
       )}
     >
       <button
         type="button"
-        onClick={showDetail ? () => setManualExpanded(!expanded) : undefined}
+        aria-expanded={showDetail ? expanded : undefined}
+        onClick={showDetail ? () => setExpanded((open) => !open) : undefined}
         disabled={!showDetail}
         className={cn(
-          "w-full flex items-center gap-2 px-3 py-1.5 text-left",
+          "flex min-h-8 w-full items-center gap-2 px-2 py-1 text-left",
           showDetail && "hover:bg-accent/[0.05] transition-colors cursor-pointer"
         )}
       >
@@ -93,7 +95,7 @@ export const StageRow = memo(function StageRow({
         <span
           className={cn(
             "text-[12px] font-medium truncate",
-            future ? "text-muted-foreground/60" : "text-foreground"
+            future ? "text-muted-foreground/55" : "text-foreground"
           )}
         >
           {prettyStageName(stageId)}
@@ -120,7 +122,7 @@ export const StageRow = memo(function StageRow({
       </button>
 
       {expanded && (
-        <div className="px-2 pb-1.5">
+        <div className="px-2 pb-1.5 pl-4">
           {plan.steps.map((step, i) => (
             <StepRow key={`${i}-${step.step}`} step={step} index={i} />
           ))}

@@ -1,7 +1,7 @@
 {
   "$schema": "https://walkinglabs.github.io/learn-harness-engineering/schemas/feature_list.json",
   "version": "0.1.13",
-  "last_updated": "2026-07-21",
+  "last_updated": "2026-08-10",
   "notes": "同一时间只能有一个 status=in_progress 的条目；当前 Target Intel / EAS / Enumeration / Vuln 四个按公司执行的普通阶段均为每公司一个 Codex 式 Company Controller，由 Controller 动态调用 0..N durable SubAgent 并自己提交 Gate。Candidate/Verification 仍保留 Wave/CandidateAttempt 合同，真实主动阶段仍要求 exact authorized target。CLI/GUI shared-DB post-Scoping stage fork 已通过定向验证。详见 AGENTS.md §2.1。priority 越小越优先。",
   "status_values": [
     "not_started",
@@ -10,6 +10,38 @@
     "passing"
   ],
   "features": [
+    {
+      "id": "fresh-install-v2-agent-tree-recovery-2026-08-10",
+      "priority": 0,
+      "area": "golish-db pristine-install rollout defaults; frontend unified Stage Agent tree, fixed detail workspace, message-scoped ChatPanel Plans and detail-focus layout; golish-agent-kit/app Target Intel semantic-candidate scope review",
+      "title": "Restore fresh-install V2 admission and the final Stage Agent call-tree detail workspace.",
+      "user_visible_behavior": "A pristine database enters the current V2 Company-stage and Investigation contracts without inheriting legacy defaults. Opening a stage_run or its SubAgent card shows one full-width detail workspace: the left rail is the organization/Controller/dynamic and nested Worker call tree, while the right side shows the selected Agent transcript, plan and tool calls in a fixed internally scrolling viewport. The generic TOOL/INTENT/INPUT/OUTPUT envelope is absent. The ChatPanel remains event-subscribed in projection-only mode but releases its heavy DOM until the user returns to the timeline; the selected Agent view renders a 200-entry transcript tail, pins the current Plan and retains the full durable history. Equal Target poll results reuse stable event subscriptions. Each stage Plan stays on its own historical assistant message while a compact top strip shows current workflow status. After Target Intel passes, exact current-window semantic observations appear in the explicit pre-EAS target review instead of leaving the operation stuck at zero formal targets.",
+      "status": "passing",
+      "design": "docs/design/2026-08-10-fresh-install-v2-and-agent-tree-recovery.md",
+      "plan": "docs/superpowers/plans/2026-08-10-fresh-install-v2-and-agent-tree-recovery.md",
+      "verification": [
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test investigation_rollout_migrations -E 'test(fresh_install_defaults_are_pristine_only_exact_and_audited)' --status-level fail",
+        "cd backend && just space-guard && cargo nextest run -p golish-db --test unified_investigation_topology -E 'test(fresh_install_selects_the_accepted_full_chain_defaults)' --status-level fail",
+        "cd backend && just space-guard && cargo clippy -p golish-db --test investigation_rollout_migrations --test unified_investigation_topology -- -D warnings",
+        "cd backend && just space-guard && cargo test -p golish-agent-app --lib active_recon_scope_ -- --nocapture",
+        "cd backend && just space-guard && cargo nextest run -p golish-agent-kit --lib -E 'test(active_recon_scope_review_accepts_subset_and_skips_generic_phase_approval) | test(direct_eas_stage_slice_without_trusted_target_holds_before_stage_work) | test(red_team_pre_eas_barrier_holds_company_only_scope_before_phase_approval)' --status-level fail",
+        "cd backend && just space-guard && cargo clippy -p golish-agent-app --lib -- -D warnings",
+        "pnpm exec vitest run frontend/App/detailFocus.test.ts frontend/components/Engagement/AgentPlanCard.test.tsx frontend/components/Engagement/AgentTranscriptMessage.test.tsx frontend/components/Engagement/StageRunDetailShell.test.tsx frontend/components/Engagement/StageTeamWorkspaceView.test.tsx frontend/components/Engagement/useTranscriptAutoScroll.test.tsx frontend/components/Engagement/StageRunOrgRows.test.tsx frontend/components/Engagement/StageTeamRunView.test.tsx frontend/components/AIChatPanel/SubAgentInlineCard.test.tsx frontend/components/ToolCallDetailView/ToolCallDetailView.test.ts",
+        "pnpm exec vitest run frontend/components/AIChatPanel/StagePlanStack.test.tsx frontend/components/AIChatPanel/StageProgressBar.test.tsx frontend/components/AIChatPanel/stagePlanPersistence.test.ts frontend/components/AIChatPanel/hooks/useTaskPlanState.test.ts frontend/components/AIChatPanel/hooks/useAiChatEvents.test.tsx frontend/store/workflow.test.ts frontend/components/ToolCallDetailView/ToolCallDetailView.stage-workspace.test.tsx frontend/components/Engagement/StageTeamWorkspaceView.test.tsx frontend/components/AIChatPanel/AIChatPanel.reporting.test.tsx",
+        "pnpm exec vitest run frontend/components/TargetPanel/TargetGroupedView.host-selection.test.tsx",
+    "pnpm exec vitest run frontend/components/AIChatPanel/AIChatPanel.reporting.test.tsx frontend/components/Engagement/StageTeamWorkspaceView.test.tsx frontend/components/TargetPanel/hooks/useTargetSurfaceData.test.ts",
+    "cd backend && just space-guard && cargo nextest run -p golish-db --test runtime_memory_worker_transactions -E 'test(startup_reaper_requeues_expired_aggregator_on_exact_chain) | test(terminalized_final_submitter_without_durable_submission_fails_closed)' --status-level fail --test-threads 1",
+    "cd backend && just space-guard && cargo clippy -p golish-db --lib -- -D warnings",
+    "pnpm typecheck",
+        "pnpm exec biome check <affected frontend files>",
+        "rustfmt --edition 2021 --check backend/crates/golish-db/tests/investigation_rollout_migrations.rs backend/crates/golish-db/tests/unified_investigation_topology.rs",
+        "cd backend && just space-guard && cargo test -p golish-agent-app --lib ai::db_bridge::reporting::tests -- --nocapture",
+        "cd backend && just space-guard && cargo test -p golish --lib terminal_resume_ -- --nocapture",
+        "jq empty feature_list.json && git diff --check"
+      ],
+  "evidence": "PASSING 2026-08-11. Pristine migration/default tests, Target Intel semantic-scope review, recovered Agent-tree/detail/Plan UI, WebContent bounded-DOM regressions, final-turn recovery and scoped Rust/TypeScript/Biome checks are green. The GUI-origin root-only moresec.cn operation 2a92593b-47e9-4d95-a36c-9bad7d4d2281 completed Scoping through Reporting: all eight distinct stages are completed, the superseded first EAS execution was replaced safely, task status is finished, report b497c41d-3119-5086-a33f-1e67520f71ae revision 87127386-d446-58f9-ac0f-fda21d7c1d72 is validated/unpublished, and the revision count is exactly one. Reporting bridge focused tests pass 12/12; terminal resume tests pass 2/2. Exact terminal replay returned the durable result without model/stage/report re-execution and DB readback still showed one validated revision. run_tree.py --db --full exited 0. Scoped cargo clippy for golish-agent-app and golish with -D warnings exited 0. Memory/RAG audit found 70 nonempty knowledge-base search results, 16 read_knowledge results, four evidence-bound knowledge assertions/documents and actual Moresec knowledge use; the optional legacy memories table remained empty and is not claimed as positive legacy-memory retrieval. Full init/precommit/workspace suites were not run under AGENTS.md 0.1.",
+  "notes": "The migration is additive and changes defaults only when operation_state is empty and the singleton rollout rows match the exact known pristine legacy shape; existing operations are never rewritten. The two incompatible local pgdata directories were moved to timestamped recovery backups rather than deleted. The GUI entity run reached Target Intel Gate PASS; the subsequent immediate HOLD was a real bridge bug, not an Intel failure: one provider observation labelled the IP literal as domain while another correctly labelled it ip, and the unfiltered invalid row rejected the whole review denominator. Candidate read and transaction re-read now share one canonical filter, preserving the correctly typed sibling and still requiring explicit scope-review before Targets materialize. Message-scoped Plan anchors are first-write-wins and persist across refresh. The observed white screen was a macOS WebContent memory kill at roughly 4 GB: detail focus had retained the complete hidden ChatPanel DOM beside an unbounded Stage transcript, while unstable Target-id array identity churned listeners. Projection-only ChatPanel rendering, a presentation-only 200-entry transcript tail and a stable sorted Target-id key close those growth paths without deleting store/transcript/run.log history or changing Recon/Naabu truth. A restarted client did reach the new backend; its immediate failure was a durable finalizer recovery bug, not a lost prompt. The finalizer had exhausted attempt 4 after submit_result while the last exact accepted deliverable remained at attempt 3. Recovery now accepts only an earlier-or-equal submission from the same Worker with an exact finished/accepted submit_stage_deliverable tool receipt and ID, while missing or foreign submissions remain fail closed. Full init/precommit/workspace suites are excluded by AGENTS.md 0.1."
+    },
     {
       "id": "codex-style-managed-tool-processes-eas-v3-2026-07-23",
       "priority": 0,

@@ -410,6 +410,40 @@ struct ValidatedResumeTarget {
     needs_task_repair: bool,
 }
 
+#[derive(Debug, Clone)]
+struct TerminalResumeCandidate {
+    session_id: uuid::Uuid,
+    chat_session_key: Option<String>,
+    task_id: uuid::Uuid,
+    task_session_id: uuid::Uuid,
+    task_status: golish_db::models::TaskStatus,
+    task_result: Option<String>,
+    operation_id: uuid::Uuid,
+    profile: String,
+    current_stage: String,
+    runtime_memory_contract: String,
+    investigation_rollout_mode: String,
+    stage_topology_contract: String,
+    stage_topology_canonical_json: String,
+    stage_topology_sha256: String,
+    stage_topology_freeze_source: String,
+    engagement_org_id: Option<uuid::Uuid>,
+    superseded_by: Option<uuid::Uuid>,
+    expectations: ResumeExpectations,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedTerminalResumeReplay {
+    session_id: uuid::Uuid,
+    chat_session_key: String,
+    operation_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    profile: String,
+    stage: StageKind,
+    stage_topology_contract: golish_core::FrozenStageTopologyContractMaterial,
+    result: String,
+}
+
 fn stage_worker_refs_from_blob(
     state_blob: &serde_json::Value,
     stage: StageKind,
@@ -727,6 +761,89 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
         needs_graph_repair,
         needs_task_repair,
     })
+}
+
+fn validate_terminal_resume_candidate(
+    candidate: &TerminalResumeCandidate,
+) -> Result<Option<ValidatedTerminalResumeReplay>> {
+    if candidate.task_status != golish_db::models::TaskStatus::Finished {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        candidate.expectations.has_complete_identity(),
+        "terminal replay requires --expect-session, --expect-task, --expect-operation, --expect-org, and --expect-stage"
+    );
+    let chat_session_key = candidate
+        .chat_session_key
+        .as_deref()
+        .filter(|key| is_supported_resume_chat_key(key))
+        .ok_or_else(|| {
+            anyhow!(
+                "resume refused: terminal task DB session is not owned by a supported stage-run or pentest Task chat key"
+            )
+        })?;
+    anyhow::ensure!(
+        candidate.task_session_id == candidate.session_id,
+        "resume refused: terminal task does not belong to the selected DB session"
+    );
+    anyhow::ensure!(
+        candidate.operation_id == candidate.task_id,
+        "resume refused: terminal operation id does not equal the selected task id"
+    );
+    anyhow::ensure!(
+        candidate.superseded_by.is_none(),
+        "resume refused: terminal operation was superseded"
+    );
+    let stage = StageKind::try_parse(&candidate.current_stage).ok_or_else(|| {
+        anyhow!(
+            "resume refused: unknown terminal operation stage {}",
+            candidate.current_stage
+        )
+    })?;
+    let stage_topology_contract = validate_persisted_stage_topology(
+        &candidate.stage_topology_contract,
+        &candidate.stage_topology_canonical_json,
+        &candidate.stage_topology_sha256,
+        &candidate.stage_topology_freeze_source,
+        &candidate.investigation_rollout_mode,
+    )
+    .context("resume refused: terminal persisted topology is invalid")?;
+    resolve_slice_for_topology(
+        &candidate.profile,
+        stage_topology_contract.topology,
+        Some(stage),
+        stage,
+    )
+    .context("resume refused: terminal stage is not allowed by the persisted profile")?;
+    runtime_v2::persisted_contract(&candidate.runtime_memory_contract)
+        .context("resume refused: invalid terminal frozen runtime-memory contract")?;
+    let organization_id = candidate.engagement_org_id.ok_or_else(|| {
+        anyhow!("resume refused: terminal operation has no engagement organization")
+    })?;
+    anyhow::ensure!(
+        candidate.expectations.session_id == Some(candidate.session_id)
+            && candidate.expectations.task_id == Some(candidate.task_id)
+            && candidate.expectations.operation_id == Some(candidate.operation_id)
+            && candidate.expectations.organization_id == Some(organization_id)
+            && candidate.expectations.stage == Some(stage),
+        "resume refused: terminal replay expected identity does not match the durable operation"
+    );
+    let result = candidate
+        .task_result
+        .as_deref()
+        .map(str::trim)
+        .filter(|result| !result.is_empty())
+        .ok_or_else(|| anyhow!("resume refused: finished task has no durable result"))?;
+    Ok(Some(ValidatedTerminalResumeReplay {
+        session_id: candidate.session_id,
+        chat_session_key: chat_session_key.to_string(),
+        operation_id: candidate.operation_id,
+        organization_id,
+        profile: candidate.profile.clone(),
+        stage,
+        stage_topology_contract,
+        result: result.to_string(),
+    }))
 }
 
 fn synthesize_graph_flow_checkpoint(
@@ -1251,6 +1368,34 @@ async fn resolve_stage_run_resume_target(
         state_blob: operation.state_blob,
         worker_chains,
         relational_v2,
+        expectations: expectations.clone(),
+    })
+}
+
+async fn resolve_terminal_stage_run_resume_replay(
+    pool: &sqlx::PgPool,
+    selector: &ResumeSelector,
+    expectations: &ResumeExpectations,
+) -> Result<Option<ValidatedTerminalResumeReplay>> {
+    let (session, task, operation) = load_resume_rows(pool, selector, expectations).await?;
+    validate_terminal_resume_candidate(&TerminalResumeCandidate {
+        session_id: session.id,
+        chat_session_key: session.chat_session_key,
+        task_id: task.id,
+        task_session_id: task.session_id,
+        task_status: task.status,
+        task_result: task.result,
+        operation_id: operation.operation_id,
+        profile: operation.profile,
+        current_stage: operation.current_stage,
+        runtime_memory_contract: operation.runtime_memory_contract,
+        investigation_rollout_mode: operation.investigation_rollout_mode,
+        stage_topology_contract: operation.stage_topology_contract,
+        stage_topology_canonical_json: operation.stage_topology_canonical_json,
+        stage_topology_sha256: operation.stage_topology_sha256,
+        stage_topology_freeze_source: operation.stage_topology_freeze_source,
+        engagement_org_id: operation.engagement_org_id,
+        superseded_by: operation.superseded_by,
         expectations: expectations.clone(),
     })
 }
@@ -3433,6 +3578,85 @@ async fn run_resume(mut args: Args) -> Result<()> {
     }
 
     let execution_result: Result<()> = async {
+        if let Some(terminal) =
+            resolve_terminal_stage_run_resume_replay(&db_pool, &selector, &expectations).await?
+        {
+            let (requested_terminal, _) = resolve_resume_slice(
+                &terminal.profile,
+                terminal.stage_topology_contract.topology,
+                terminal.stage,
+                args.resume_to.as_deref(),
+            )?;
+            anyhow::ensure!(
+                requested_terminal == terminal.stage,
+                "resume refused: a finished operation can only replay its terminal stage result"
+            );
+            let transcripts_dir =
+                golish_events::op_trace::resolve_transcript_base(Some(&workspace));
+            let transcript_path =
+                golish_events::transcript_path(&transcripts_dir, &terminal.chat_session_key);
+            anyhow::ensure!(
+                transcript_path.is_file(),
+                "resume refused: terminal session transcript is not in this workspace ({})",
+                transcript_path.display()
+            );
+            eprintln!(
+                "[stage-run-resume] terminal replay session={} db_session={} operation={} org={} stage={}",
+                terminal.chat_session_key,
+                terminal.session_id,
+                terminal.operation_id,
+                terminal.organization_id,
+                terminal.stage.as_str(),
+            );
+            let workspace_str = workspace.to_string_lossy().to_string();
+            let db_smoke_summary = if args.db_smoke_summary {
+                Some(
+                    collect_db_smoke_summary(
+                        &db_pool,
+                        &terminal.chat_session_key,
+                        Some(terminal.organization_id),
+                        &workspace_str,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "type": "stage_run_terminal_replay",
+                        "sessionId": terminal.chat_session_key,
+                        "operationId": terminal.operation_id,
+                        "stage": terminal.stage.as_str(),
+                        "result": terminal.result,
+                    })
+                );
+                if let Some(summary) = &db_smoke_summary {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "type": "db_smoke_summary",
+                            "summary": summary,
+                        })
+                    );
+                }
+            } else {
+                println!(
+                    "\n══════════ stage-run terminal replay ══════════\noperation = {}\nstage     = {}\n\n{}\n\nNo stage, worker, model, or report revision was re-executed.\n════════════════════════════════════════════════\n",
+                    terminal.operation_id,
+                    terminal.stage.as_str(),
+                    terminal.result,
+                );
+                if let Some(summary) = &db_smoke_summary {
+                    println!("{}", format_db_smoke_summary(summary));
+                }
+            }
+            wait_for_live_db_diagnostic(&stage_db).await?;
+            return Ok(());
+        }
+
         let initial = resolve_stage_run_resume_target(&db_pool, &selector, &expectations).await?;
         let (resume_terminal, resume_allowlist) = resolve_resume_slice(
             &initial.profile,
@@ -3546,14 +3770,10 @@ async fn run_resume(mut args: Args) -> Result<()> {
 
         if let Some(packet_path) = args.stage_run_campaign_authority.as_deref() {
             anyhow::ensure!(
-                args.stage_run_resume_pgdata.is_some(),
-                "Campaign authority packets are accepted only for an exact retained-DB resume"
-            );
-            anyhow::ensure!(
                 target.stage == StageKind::Investigation,
                 "Campaign authority packets are accepted only while resuming Investigation"
             );
-            campaign_authority::apply_retained_resume_campaign_authority(
+            campaign_authority::apply_exact_resume_campaign_authority(
                 &db_pool,
                 packet_path,
                 target.operation_id,
@@ -6904,6 +7124,63 @@ mod tests {
             relational_v2: None,
             expectations: ResumeExpectations::default(),
         }
+    }
+
+    fn valid_terminal_resume_candidate() -> TerminalResumeCandidate {
+        let candidate = valid_resume_candidate();
+        TerminalResumeCandidate {
+            session_id: candidate.session_id,
+            chat_session_key: candidate.chat_session_key,
+            task_id: candidate.task_id,
+            task_session_id: candidate.task_session_id,
+            task_status: golish_db::models::TaskStatus::Finished,
+            task_result: Some("canonical evidence summary".to_string()),
+            operation_id: candidate.operation_id,
+            profile: candidate.profile,
+            current_stage: candidate.current_stage,
+            runtime_memory_contract: candidate.runtime_memory_contract,
+            investigation_rollout_mode: candidate.investigation_rollout_mode,
+            stage_topology_contract: candidate.stage_topology_contract,
+            stage_topology_canonical_json: candidate.stage_topology_canonical_json,
+            stage_topology_sha256: candidate.stage_topology_sha256,
+            stage_topology_freeze_source: candidate.stage_topology_freeze_source,
+            engagement_org_id: candidate.engagement_org_id,
+            superseded_by: candidate.superseded_by,
+            expectations: complete_expectations(),
+        }
+    }
+
+    #[test]
+    fn terminal_resume_replays_the_durable_result_without_runtime_authority() {
+        let replay = validate_terminal_resume_candidate(&valid_terminal_resume_candidate())
+            .expect("terminal replay validates")
+            .expect("finished task selects terminal replay");
+
+        assert_eq!(replay.operation_id, TASK_ID);
+        assert_eq!(replay.organization_id, ORG_ID);
+        assert_eq!(replay.stage, StageKind::Enumeration);
+        assert_eq!(replay.result, "canonical evidence summary");
+    }
+
+    #[test]
+    fn terminal_resume_requires_complete_exact_identity_and_a_durable_result() {
+        let mut missing_identity = valid_terminal_resume_candidate();
+        missing_identity.expectations.organization_id = None;
+        assert!(validate_terminal_resume_candidate(&missing_identity).is_err());
+
+        let mut drifted_identity = valid_terminal_resume_candidate();
+        drifted_identity.expectations.organization_id = Some(uuid::Uuid::new_v4());
+        assert!(validate_terminal_resume_candidate(&drifted_identity).is_err());
+
+        let mut missing_result = valid_terminal_resume_candidate();
+        missing_result.task_result = None;
+        assert!(validate_terminal_resume_candidate(&missing_result).is_err());
+
+        let mut waiting = valid_terminal_resume_candidate();
+        waiting.task_status = golish_db::models::TaskStatus::Waiting;
+        assert!(validate_terminal_resume_candidate(&waiting)
+            .expect("nonterminal is not a terminal replay error")
+            .is_none());
     }
 
     #[test]

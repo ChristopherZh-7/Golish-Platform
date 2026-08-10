@@ -27,9 +27,20 @@ export interface PersistedStagePlans {
   plansByStage: Record<string, TaskPlan>;
   /** Stages whose authoritative evidence gate PASSED. */
   passedStages: string[];
+  /** First assistant message that owns each stage's inline Plan card. */
+  stagePlanMessageIds?: Record<string, string>;
 }
 
 type StagePlanMap = Record<string, PersistedStagePlans>;
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
+  );
+}
 
 function isPersistedStagePlans(value: unknown): value is PersistedStagePlans {
   if (!value || typeof value !== "object") return false;
@@ -38,7 +49,8 @@ function isPersistedStagePlans(value: unknown): value is PersistedStagePlans {
     Array.isArray(v.stageOrder) &&
     Array.isArray(v.passedStages) &&
     !!v.plansByStage &&
-    typeof v.plansByStage === "object"
+    typeof v.plansByStage === "object" &&
+    (v.stagePlanMessageIds === undefined || isStringRecord(v.stagePlanMessageIds))
   );
 }
 
@@ -124,7 +136,13 @@ export function rewindPersistedStagePlans(
     ];
     const affected = new Set(reconciledAffectedStages);
     const plansByStage = { ...snapshot.plansByStage };
-    for (const stage of affected) delete plansByStage[stage];
+    const stagePlanMessageIds = snapshot.stagePlanMessageIds
+      ? { ...snapshot.stagePlanMessageIds }
+      : undefined;
+    for (const stage of affected) {
+      delete plansByStage[stage];
+      if (stagePlanMessageIds) delete stagePlanMessageIds[stage];
+    }
     plansByStage[selectedStage] = createResetStageSeed(selectedStage, updatedAt);
     const stageOrder = snapshot.stageOrder.filter((stage) => !affected.has(stage));
     stageOrder.push(selectedStage);
@@ -132,6 +150,7 @@ export function rewindPersistedStagePlans(
       stageOrder,
       plansByStage,
       passedStages: snapshot.passedStages.filter((stage) => !affected.has(stage)),
+      ...(stagePlanMessageIds ? { stagePlanMessageIds } : {}),
     };
     globalThis.localStorage?.setItem(STAGE_PLAN_STORAGE_KEY, JSON.stringify(map));
   } catch {

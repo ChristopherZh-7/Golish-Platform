@@ -61,8 +61,8 @@ use golish_agent_kit::harness::org_gate::stage_pass_token;
 use golish_agent_kit::harness::{CanonicalFactKey, CanonicalFactRef, StageKind};
 use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
 use golish_agent_kit::task_orchestrator::stage_execution::{
-    CompleteTerminalStageExecution, StageExecution, StageExecutionStatus, TransitionStageExecution,
-    TransitionedStageExecution,
+    CompleteTerminalStageExecution, PauseAfterStageSlice, StageExecution, StageExecutionStatus,
+    TransitionStageExecution, TransitionedStageExecution,
 };
 use golish_db::repo::runtime_memory_rollout::RuntimeMemoryContract as DbRuntimeMemoryContract;
 use golish_db::repo::runtime_memory_tx::{
@@ -1509,6 +1509,27 @@ impl RuntimeMemoryRepository for GolishDbRepoProvider {
         input: TransitionStageExecution,
     ) -> Result<TransitionedStageExecution, RuntimeMemoryError> {
         let transitioned = golish_db::repo::runtime_memory_tx::transition_stage_execution(
+            &self.pool,
+            &TransitionStageExecutionRow {
+                operation_id: input.operation_id,
+                current_stage_execution_id: input.current_stage_execution_id,
+                next_stage_execution_id: input.next_stage_execution_id,
+                next_stage: input.next_stage.as_str().to_string(),
+            },
+        )
+        .await
+        .map_err(runtime_memory_error_from_db)?;
+        Ok(TransitionedStageExecution {
+            previous: stage_execution_from_db(transitioned.previous_stage_execution)?,
+            current: stage_execution_from_db(transitioned.current_stage_execution)?,
+        })
+    }
+
+    async fn pause_after_stage_slice(
+        &self,
+        input: PauseAfterStageSlice,
+    ) -> Result<TransitionedStageExecution, RuntimeMemoryError> {
+        let transitioned = golish_db::repo::runtime_memory_tx::pause_after_stage_slice(
             &self.pool,
             &TransitionStageExecutionRow {
                 operation_id: input.operation_id,

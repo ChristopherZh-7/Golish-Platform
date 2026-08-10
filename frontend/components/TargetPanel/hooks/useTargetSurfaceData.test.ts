@@ -1,10 +1,12 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/events", () => ({
+const eventMocks = vi.hoisted(() => ({
   onCustomEvent: vi.fn(async () => vi.fn()),
   onEvent: vi.fn(async () => vi.fn()),
 }));
+
+vi.mock("@/lib/events", () => eventMocks);
 
 vi.mock("@/lib/pentest/api", () => ({
   listDirectoryEntries: vi.fn(),
@@ -122,5 +124,24 @@ describe("useTargetSurfaceData", () => {
       directoryEntries: [],
       logs: [],
     });
+  });
+
+  it("keeps reload callbacks and Tauri listeners stable for an equivalent target-id set", async () => {
+    const { rerender, result } = renderHook(
+      ({ relatedTargetIds }: { relatedTargetIds: string[] }) =>
+        useTargetSurfaceData("target-1", relatedTargetIds),
+      { initialProps: { relatedTargetIds: ["target-3", "target-2"] } }
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await waitFor(() => expect(eventMocks.onEvent).toHaveBeenCalledTimes(1));
+    expect(eventMocks.onCustomEvent).toHaveBeenCalledTimes(1);
+    const loadsBeforeEquivalentRender = mockTargetAssetsList.mock.calls.length;
+
+    rerender({ relatedTargetIds: ["target-2", "target-3", "target-2"] });
+
+    expect(eventMocks.onEvent).toHaveBeenCalledTimes(1);
+    expect(eventMocks.onCustomEvent).toHaveBeenCalledTimes(1);
+    expect(mockTargetAssetsList).toHaveBeenCalledTimes(loadsBeforeEquivalentRender);
   });
 });

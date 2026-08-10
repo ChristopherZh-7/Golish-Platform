@@ -23,6 +23,7 @@ import {
   getToolActionLabel,
   getToolColor,
   getToolPrimaryArg,
+  getToolTerminalPresentation,
   toolResultIndicatesFailure,
 } from "@/lib/tools";
 import { cn } from "@/lib/utils";
@@ -187,7 +188,12 @@ function ToolCallCard({
   const isExpired = isNoResult && isMessageComplete;
   const isBackgrounded = toolResultIsBackgrounded(tc.result);
   const isRunning = isNoResult && !isMessageComplete;
-  const isError = tc.success === false || toolResultIsFailure(tc.result);
+  const terminalPresentation =
+    tc.success !== undefined ? getToolTerminalPresentation(tc.name, tc.result, tc.success) : null;
+  const isError = terminalPresentation?.kind === "failed";
+  const isSubmitted = terminalPresentation?.kind === "submitted";
+  const isBlocked = terminalPresentation?.kind === "blocked";
+  const isReadyToClose = terminalPresentation?.kind === "ready_to_close";
   const isShell = tc.name === "run_command" || tc.name === "run_pty_cmd";
   const primary = parseToolPrimary(tc.name, tc.args);
 
@@ -261,8 +267,15 @@ function ToolCallCard({
             ? "border-l-2 animate-[pulse-border_2s_ease-in-out_infinite]"
             : isError
               ? "border-red-500/30 hover:border-red-500/50"
-              : "border-border/30 hover:border-accent/40"
+              : isSubmitted
+                ? "border-[var(--ansi-green)]/30 hover:border-[var(--ansi-green)]/50"
+                : isBlocked
+                  ? "border-amber-500/30 hover:border-amber-500/50"
+                  : isReadyToClose
+                    ? "border-cyan-500/30 hover:border-cyan-500/50"
+                    : "border-border/30 hover:border-accent/40"
       )}
+      data-terminal-state={terminalPresentation?.kind}
       style={
         isRunning || isBackgrounded
           ? { borderLeftColor: isBackgrounded ? "var(--ansi-yellow)" : color }
@@ -287,6 +300,15 @@ function ToolCallCard({
             <Loader2 className="w-3 h-3 text-blue-400 animate-spin" />
           ) : isError ? (
             <XCircle className="w-3 h-3 text-red-400" />
+          ) : isSubmitted ? (
+            <CheckCircle2
+              aria-label="Submission completed"
+              className="w-3 h-3 text-[var(--ansi-green)]"
+            />
+          ) : isBlocked ? (
+            <XCircle className="w-3 h-3 text-amber-300" />
+          ) : isReadyToClose ? (
+            <CheckCircle2 className="w-3 h-3 text-cyan-300" />
           ) : (
             <CheckCircle2 className="w-3 h-3 text-[var(--ansi-green)]" />
           )}
@@ -294,6 +316,19 @@ function ToolCallCard({
             <span className="text-[10px] text-[#565f89]">Expired</span>
           ) : isBackgrounded ? (
             <span className="text-[10px] text-[var(--ansi-yellow)]/80">Background →</span>
+          ) : isSubmitted ? (
+            <span className="text-[10px] text-[var(--ansi-green)] transition-colors">
+              {terminalPresentation?.label}
+            </span>
+          ) : isBlocked || isReadyToClose ? (
+            <span
+              className={cn(
+                "text-[10px] transition-colors",
+                isReadyToClose ? "text-cyan-300" : "text-amber-300"
+              )}
+            >
+              {terminalPresentation?.label} →
+            </span>
           ) : (
             <span className="text-[10px] text-muted-foreground/60 group-hover:text-accent/60 transition-colors">
               {blockedCopy.detailLabel}
@@ -469,6 +504,26 @@ export function CollapsibleToolCall({
                 <span className="ml-auto inline-flex items-center gap-1 text-[var(--ansi-yellow)]">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Background
+                </span>
+              );
+            }
+            const presentation = getToolTerminalPresentation(tc.name, tc.result, !failed);
+            if (presentation.kind !== "completed" && presentation.kind !== "failed") {
+              return (
+                <span
+                  className={cn(
+                    "ml-auto",
+                    presentation.kind === "submitted"
+                      ? "inline-flex items-center gap-1 text-green-500"
+                      : presentation.kind === "ready_to_close"
+                        ? "text-cyan-400"
+                        : "text-amber-400"
+                  )}
+                >
+                  {presentation.kind === "submitted" && (
+                    <CheckCircle2 aria-label="Submission completed" className="h-3 w-3" />
+                  )}
+                  {presentation.label}
                 </span>
               );
             }

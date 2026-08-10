@@ -169,3 +169,10 @@ cd backend && cargo nextest run -p golish-db
 - `repo::investigation_projection` 仅消费 outbox-owned typed source snapshot，按 `source_batch_seq` 和 direct predecessor 整批物化并在最后 CAS head；response-loss replay复用receipt，重建排除 projector/source clock 后 identity/manifest稳定。读模型在同一 repeatable-read snapshot 内锁定 operation joint contract、projection head、四-root/temporal target epoch/managed-feed exact census与最早TTL，列表辅助查询按当页 root/revision SQL-bounded，Timeline重算typed body/change/event identity。进程级 worker 先监听事务内 `pg_notify`，再以250ms bounded keyset poll补偿丢通知/重启 backlog，并隔离 poison operation。`repo::hypothesis_legacy_projection` 只是兼容 projection 边界。
 - Plan B 唯一 migration `00006` 同步收紧 Candidate Gate mutation length-prefixed exact-set trigger，以及 narrow successor 的无 predecessor creating-event形状；未修改 `00005` 或任何既有 migration。
 - focused repository入口：`hypothesis_registry`、`candidate_analysis_exact_closure`、`investigation_projection_authority`、`investigation_read_model`、`investigation_projection_worker`、`investigation_legacy_projection`。Plan C capability assessment/adjudication/terminal authority仍不存在。
+
+## 2026-08-10 · Pristine-install full-chain defaults
+
+- Migration `20260810000003_fresh_install_full_chain_defaults.sql` promotes only a database with zero `operation_state` rows and exact known pristine legacy singleton rollout values.
+- The selected defaults are runtime/attack `v2_only`, Enumeration `agent_team_v2`, Tool Truth `receipt_v1`, and Investigation `hypothesis_registry_v1/new_only`; a durable `fresh_install_full_chain_bootstrap_receipts` row records the exact before/after census.
+- Any existing operation makes the migration a no-op. Unknown or partially changed singleton values fail closed instead of being silently rewritten.
+- Focused tests live in `tests/investigation_rollout_migrations.rs` and `tests/unified_investigation_topology.rs`.

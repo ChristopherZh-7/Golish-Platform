@@ -96,6 +96,42 @@ fn effective_stage_run_specialist(
     }
 }
 
+/// Resolve the successor hidden by a headless stage allowlist after the
+/// projected graph reports `Completed`. The full frozen-profile DAG remains the
+/// routing authority; the projected DAG is only an execution boundary.
+fn completed_slice_successor(
+    full_profile_dag: &crate::harness::operation_graph::AllowedDag,
+    terminal_stage: crate::harness::StageKind,
+    state: &crate::harness::operation_flow::OperationFlowState,
+) -> anyhow::Result<Option<crate::harness::StageKind>> {
+    use crate::harness::StageKind;
+
+    if terminal_stage == StageKind::Verification
+        && state.reopen_wave
+        && full_profile_dag.contains(StageKind::AttackCandidate)
+    {
+        return Ok(Some(StageKind::AttackCandidate));
+    }
+
+    let next = full_profile_dag.next_stages(terminal_stage);
+    match next.as_slice() {
+        [] => Ok(None),
+        [only] => Ok(Some(*only)),
+        candidates => {
+            let outcome = state.applied.get(&terminal_stage).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "completed stage slice has no applied flow outcome for {}",
+                    terminal_stage.as_str()
+                )
+            })?;
+            Ok(crate::harness::operation_flow::branch_target(
+                candidates,
+                outcome.made_progress,
+            ))
+        }
+    }
+}
+
 impl TaskOrchestrator {
     /// Execute a single subtask with enrichment, planning, reflector retry,
     /// and optional user input pause.
@@ -1429,7 +1465,9 @@ impl TaskOrchestrator {
                 .collect();
 
         let profile_id = operation.profile.as_str();
-        let dag = match crate::harness::operation_graph_for_topology(frozen_topology) {
+        let (dag, full_profile_dag) = match crate::harness::operation_graph_for_topology(
+            frozen_topology,
+        ) {
             Ok(g) => {
                 // S0 · observability: which profile drove this run + which stages
                 // the DAG was projected to + per-stage planner subtask counts.
@@ -1440,9 +1478,11 @@ impl TaskOrchestrator {
                 // 方案 2 · if a stage allowlist is set (headless single/range run),
                 // intersect it so the executable DAG is just that slice; the
                 // slice's terminal has no successors → run finishes it then stops.
-                let mut allowed = op_profile
+                let profile_allowed = op_profile
                     .allowed_stage_set_for_topology(frozen_topology)
                     .context("project persisted profile through operation-frozen topology")?;
+                let full_profile_dag = g.project(&profile_allowed);
+                let mut allowed = profile_allowed;
                 if let Some(ref allowlist) = self.stage_allowlist {
                     allowed = allowed.intersection(allowlist).copied().collect();
                     tracing::info!(
@@ -1474,7 +1514,7 @@ impl TaskOrchestrator {
                         "graph-flow: stage→planner-subtask mapping"
                     );
                 }
-                g.project(&allowed)
+                (g.project(&allowed), full_profile_dag)
             }
             Err(error) => {
                 tracing::error!(target: "harness::hook", %error, topology = %frozen_topology, "graph-flow: frozen DAG load failed");
@@ -1595,15 +1635,17 @@ impl TaskOrchestrator {
                         planner_subtasks = indices.len(),
                         "graph-flow: entering stage"
                     );
-                    // Defense in depth for a direct CLI stage slice (or any
-                    // restored cursor) whose entry node is already EAS. The
-                    // normal full-profile path checks the same invariant before
-                    // TargetIntel crosses into EAS; checking again here closes
-                    // the direct-entry bypass and the TOCTOU gap. Return a
-                    // blocked flow before rotating stage identity or invoking
-                    // the executor so the graph persists a resumable Interrupt.
+                    // Defense in depth for a direct CLI stage slice or a graph
+                    // cursor restored exactly between Target Intel PASS and EAS
+                    // entry. Use the review-capable guard here: a direct EAS
+                    // slice has no current Target Intel candidate window and
+                    // still holds, while a restored crossing can emit the one
+                    // exact scope review it did not reach before interruption.
+                    // Return a blocked flow before rotating stage identity or
+                    // invoking the executor so the graph persists a resumable
+                    // Interrupt.
                     if req.stage == crate::harness::StageKind::ExternalAttackSurface
-                        && !self.active_recon_trusted_target_ready(task_id).await
+                        && !self.ensure_active_recon_target_scope(task_id).await
                     {
                         let _ = req.reply.send(
                             crate::harness::operation_flow::StageFlowOutcome::blocked(),
@@ -1694,8 +1736,8 @@ impl TaskOrchestrator {
             return Ok(paused);
         }
 
-        match &final_outcome {
-            Ok(crate::harness::graph_engine::RunOutcome::Completed(_)) => {}
+        let completed_flow = match &final_outcome {
+            Ok(crate::harness::graph_engine::RunOutcome::Completed(state)) => state,
             Ok(crate::harness::graph_engine::RunOutcome::Failed { node, error, .. }) => {
                 anyhow::bail!("graph-flow failed at {node}: {error}");
             }
@@ -1703,11 +1745,65 @@ impl TaskOrchestrator {
                 unreachable!("interrupted graph-flow returned before terminal completion")
             }
             Err(error) => anyhow::bail!("graph-flow executor failed: {error}"),
-        }
+        };
 
         let terminal_stage = exec_ctx
             .harness_stage
             .context("completed graph-flow has no terminal stage identity")?;
+        if self.stage_allowlist.is_some() {
+            if let Some(next_stage) =
+                completed_slice_successor(&full_profile_dag, terminal_stage, completed_flow)?
+            {
+                // A headless allowlist makes its final node look terminal to the
+                // projected graph, but it is not terminal in the operation's
+                // frozen profile. Advance the relational V2 cursor to the exact
+                // successor and park the same Task for a later Turn. Treating
+                // this as whole-operation completion used to close the stage
+                // execution, write a synthetic report, and make every later
+                // "continue" unselectable.
+                use crate::task_orchestrator::stage_execution::{
+                    PauseAfterStageSlice, StageExecutionStatus,
+                };
+                let current_stage_execution_id = exec_ctx
+                    .stage_execution_id
+                    .context("completed stage slice has no source execution identity")?;
+                let next_stage_execution_id = Uuid::new_v4();
+                let transitioned = self
+                    .runtime_repo
+                    .pause_after_stage_slice(PauseAfterStageSlice {
+                        operation_id: task_id,
+                        current_stage_execution_id,
+                        next_stage_execution_id,
+                        next_stage,
+                    })
+                    .await
+                    .map_err(anyhow::Error::new)
+                    .context("atomically park completed stage slice at its successor")?;
+                anyhow::ensure!(
+                    transitioned.previous.id == current_stage_execution_id
+                        && transitioned.previous.stage == terminal_stage
+                        && transitioned.previous.status == StageExecutionStatus::Completed
+                        && transitioned.current.id == next_stage_execution_id
+                        && transitioned.current.stage == next_stage
+                        && transitioned.current.status == StageExecutionStatus::Started,
+                    "repository returned an invalid paused stage-slice transition"
+                );
+                exec_ctx.stage_execution_id = Some(next_stage_execution_id);
+                exec_ctx.stage_run_unit_id = None;
+                exec_ctx.worker_lease = None;
+                let paused = format!(
+                    "Stage {} completed; operation is waiting at {} for the next continuation.",
+                    terminal_stage.as_str(),
+                    next_stage.as_str()
+                );
+                self.emit(AiEvent::TaskProgress {
+                    task_id: task_id.to_string(),
+                    status: "waiting".to_string(),
+                    message: paused.clone(),
+                });
+                return Ok(paused);
+            }
+        }
         let report = if terminal_stage == crate::harness::StageKind::Reporting {
             // Reporting already persisted and revalidated its concise canonical
             // evidence summary. Do not send that summary through a second LLM
@@ -5565,6 +5661,54 @@ mod dag_driven_helper_tests {
         assert!(
             paused_disposition(&failed).is_none(),
             "failed must NOT be treated as a resumable pause"
+        );
+    }
+
+    #[test]
+    fn completed_headless_slice_advances_by_the_full_frozen_profile() {
+        use crate::harness::operation_flow::{OperationFlowState, StageFlowOutcome};
+        use crate::harness::StageKind;
+
+        let graph = crate::harness::operation_graph_for_topology(
+            golish_core::StageTopologyContract::UnifiedInvestigationV1,
+        )
+        .expect("load unified topology");
+        let allowed = std::collections::HashSet::from([
+            StageKind::Scoping,
+            StageKind::TargetIntel,
+            StageKind::ExternalAttackSurface,
+            StageKind::Enumeration,
+            StageKind::VulnTriage,
+            StageKind::ApplicationUnderstanding,
+            StageKind::Investigation,
+            StageKind::Reporting,
+        ]);
+        let full = graph.project(&allowed);
+
+        let mut state = OperationFlowState::default();
+        state.applied.insert(
+            StageKind::ExternalAttackSurface,
+            StageFlowOutcome::pass_with_progress(),
+        );
+        assert_eq!(
+            completed_slice_successor(&full, StageKind::ExternalAttackSurface, &state)
+                .expect("resolve progress successor"),
+            Some(StageKind::Enumeration)
+        );
+
+        state.applied.insert(
+            StageKind::ExternalAttackSurface,
+            StageFlowOutcome::pass_no_progress(),
+        );
+        assert_eq!(
+            completed_slice_successor(&full, StageKind::ExternalAttackSurface, &state)
+                .expect("resolve no-progress successor"),
+            Some(StageKind::Reporting)
+        );
+        assert_eq!(
+            completed_slice_successor(&full, StageKind::Reporting, &state)
+                .expect("resolve actual terminal"),
+            None
         );
     }
 

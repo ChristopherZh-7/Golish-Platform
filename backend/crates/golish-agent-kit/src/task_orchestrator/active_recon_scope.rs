@@ -15,27 +15,6 @@ pub(super) const ACTIVE_RECON_TRUSTED_TARGET_REQUIRED: &str =
 const ACTIVE_RECON_SCOPE_REVIEW_TIMEOUT_SECS: u64 = 600;
 
 impl TaskOrchestrator {
-    /// Direct-stage preflight and post-review verification. This never promotes
-    /// provider rows; callers that need the boundary review use
-    /// [`Self::ensure_active_recon_target_scope`].
-    pub(super) async fn active_recon_trusted_target_ready(&self, task_id: Uuid) -> bool {
-        match self.active_recon_target_authority(task_id).await {
-            Ok(true) => true,
-            Ok(false) => {
-                self.emit_active_recon_target_hold(
-                    task_id,
-                    "the trusted Scoping snapshot has no canonical in-scope domain, IP, CIDR, URL, or wildcard target",
-                    "waiting_target_scope",
-                );
-                false
-            }
-            Err(detail) => {
-                self.emit_active_recon_target_hold(task_id, &detail, "waiting_target_scope");
-                false
-            }
-        }
-    }
-
     /// TargetIntel -> EAS's single human boundary. Existing exact intake is
     /// already authorized; otherwise the current Target Intel candidates are
     /// shown in a scope-review table and the accepted subset is frozen before

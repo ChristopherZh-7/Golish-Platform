@@ -77,6 +77,54 @@
     },
     "runLog": "/Users/christopherzheng/golish-platform/RecoveryAcceptanceMoresecRootOnly-20260810-Fresh01/.golish/transcripts/stage-run-2d7aed6b-2ada-4f5a-ae99-a4983451af0a/run.log"
   },
+  "realGuiContinuationEntity": {
+    "workspace": "/Users/christopherzheng/golish-platform/Test1",
+    "organization": "杭州默安科技有限公司",
+    "subsidiariesIncluded": false,
+    "operationId": "2a92593b-47e9-4d95-a36c-9bad7d4d2281",
+    "sessionId": "0d35028d-7452-4c7f-9594-552cce2882d5",
+    "chatSessionId": "pentest-chat-1786350293301-1",
+    "organizationId": "f149b880-b726-4d24-bc0c-1fd102d03864",
+    "reportingStageExecutionId": "b5d386bb-1bde-4d95-a0e5-6368157a2434",
+    "reportId": "b497c41d-3119-5086-a33f-1e67520f71ae",
+    "reportRevisionId": "87127386-d446-58f9-ac0f-fda21d7c1d72",
+    "terminal": {
+      "taskStatus": "finished",
+      "distinctCompletedStages": 8,
+      "recoveredSupersededEasRuns": 1,
+      "verificationCampaignsTerminal": 3,
+      "factDeltasInconclusive": 3,
+      "preparedActions": 0,
+      "actionAuthorizations": 0,
+      "actionExecutions": 0,
+      "reportValidation": "validated",
+      "reportPublication": "unpublished",
+      "reportRevisionCount": 1,
+      "sourceManifestMembers": 174,
+      "reportClaims": 45,
+      "reportCitations": 66
+    },
+    "terminalReplay": {
+      "exitCode": 0,
+      "resultReplayed": true,
+      "stageReexecuted": false,
+      "workerReexecuted": false,
+      "modelReexecuted": false,
+      "reportRevisionCountAfterReplay": 1
+    },
+    "memoryAndRag": {
+      "searchKnowledgeBaseResults": 178,
+      "nonEmptyKnowledgeBaseResults": 70,
+      "readKnowledgeResults": 16,
+      "searchMemoryResults": 68,
+      "nonEmptyLegacyMemoryResults": 0,
+      "legacyMemoryRowsForOperation": 0,
+      "activeKnowledgeAssertionsGenerated": 4,
+      "activeKnowledgeDocumentsGenerated": 4,
+      "assessment": "RAG retrieval and read paths were exercised and the Moresec target overview was read into worker reasoning. The evidence-bound knowledge projection generated four active assertion documents. The optional legacy memories table had no operation-owned rows, so no positive legacy-memory retrieval is claimed."
+    },
+    "runLog": "/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1786350293301-1/run.log"
+  },
   "controlledFixture": {
     "workspace": "/Users/christopherzheng/golish-platform/ControlledFixtureAcceptance-20260810-Fresh02",
     "target": "http://127.0.0.1:62140",

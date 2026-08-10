@@ -1,5 +1,9 @@
 # Codex 同会话受管进程与可调 yield 设计
 
+> Extended by `2026-08-10-codex-style-durable-continuation.md`: generic jobs
+> still have no elapsed watchdog, while an exact security producer may install
+> a versioned server-owned policy deadline and durable launch admission.
+
 ## 决策
 
 这不是 EAS 特例。所有由 AI 直接启动、可能长时间运行的本地命令进程统一采用一个生命周期合同：进程从创建起就由 server 进程管理器持有；一次工具调用只在可调 `yield_time_ms` 窗口内等待输出或退出；窗口结束而进程仍存活时，返回同一个 `job_id` 并把控制权交还 AI。它不是重新启动、detach 或“30 秒后搬到后台”，也不会因等待窗口结束而 kill。

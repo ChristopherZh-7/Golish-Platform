@@ -340,6 +340,8 @@ fn test_prober_prompt_is_active_surface() {
     assert!(prompt.contains("found cells are credited from the database"));
     assert!(prompt.contains("Do NOT hand-copy found coverage cells"));
     assert!(prompt.contains("Never include a bare IP, IP:port, or CIDR"));
+    assert!(prompt.contains("pass its ONE bare domain value exactly once"));
+    assert!(prompt.contains("do not expand it into separate"));
     assert!(prompt.contains("run eas_discover_ports first"));
     assert!(prompt.contains("WEB-FINGERPRINT"));
     assert!(prompt.contains("HTTP liveness alone"));

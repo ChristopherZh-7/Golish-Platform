@@ -15,7 +15,6 @@
  */
 
 import React, { lazy, Suspense, useCallback, useEffect } from "react";
-import { SubAgentDetailView } from "@/components/SubAgentDetailView";
 import { ToolCallDetailView } from "@/components/ToolCallDetailView/ToolCallDetailView";
 import { UnifiedInput } from "@/components/UnifiedInput";
 import { UnifiedTimeline } from "@/components/UnifiedTimeline";
@@ -176,15 +175,14 @@ export const PaneLeaf = React.memo(function PaneLeaf({ paneId, sessionId, tabId 
                         <span className="text-sm">Restoring session...</span>
                       </div>
                     </div>
-                  ) : detailViewMode === "sub-agent-detail" ? (
-                    <SubAgentDetailView sessionId={sessionId} />
-                  ) : detailViewMode === "tool-detail" ? (
+                  ) : detailViewMode === "tool-detail" || detailViewMode === "sub-agent-detail" ? (
                     <ToolCallDetailView sessionId={sessionId} />
                   ) : (
                     <UnifiedTimeline sessionId={sessionId} />
                   )}
                 </div>
-                {detailViewMode === "timeline" &&
+                {detailViewMode !== "sub-agent-detail" &&
+                  detailViewMode !== "tool-detail" &&
                   // Hide ONLY when both (a) a command is still running AND
                   // (b) interactive mode is active — i.e. the user is
                   // actively typing into the RunningCommandCard's capture

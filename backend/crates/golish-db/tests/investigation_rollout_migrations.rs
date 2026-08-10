@@ -113,6 +113,29 @@ fn plan_d_migration_reuses_plan_b_projection_authority() {
 }
 
 #[test]
+fn fresh_install_defaults_are_pristine_only_exact_and_audited() {
+    let sql = include_str!("../migrations/20260810000003_fresh_install_full_chain_defaults.sql");
+    for guard in [
+        "LOCK TABLE operation_state IN SHARE ROW EXCLUSIVE MODE",
+        "IF operation_count<>0 THEN",
+        "FRESH_INSTALL_FULL_CHAIN_DEFAULT_SOURCE_DRIFT",
+        "dual_write_legacy_read",
+        "dual_write_read_legacy",
+        "agent_team_v2",
+        "receipt_v1",
+        "hypothesis_registry_v1",
+        "new_only",
+        "unified_investigation_v1",
+        "fresh_install_full_chain_bootstrap_receipts_append_only",
+    ] {
+        assert!(sql.contains(guard), "missing {guard}");
+    }
+    assert!(!sql.contains("UPDATE operation_state"));
+    assert!(!sql.contains("DELETE FROM"));
+    assert!(!sql.contains("TRUNCATE"));
+}
+
+#[test]
 fn analysis_post_synthesis_rearm_migration_keeps_blocked_terminal_by_default() {
     let sql = include_str!(
         "../migrations/20260809000002_investigation_analysis_post_synthesis_rearm.sql"

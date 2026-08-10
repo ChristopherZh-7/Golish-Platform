@@ -592,7 +592,7 @@ pub async fn list_final_sealed_enumeration_origins(
     )
 }
 
-fn enumeration_origins_from_optional_final_sealed_watermark(
+pub(crate) fn enumeration_origins_from_optional_final_sealed_watermark(
     watermark: Option<&Value>,
     organization_id: Uuid,
 ) -> anyhow::Result<BTreeSet<String>> {

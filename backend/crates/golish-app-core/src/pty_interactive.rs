@@ -142,7 +142,7 @@ pub async fn run_shell_command_detail(
     } else {
         ShellRunMode::ManagedYield
     };
-    run_shell_command_detail_with_mode(command, workspace, initial_yield_ms, mode, None).await
+    run_shell_command_detail_with_mode(command, workspace, initial_yield_ms, mode, None, None).await
 }
 
 /// Run a command with a server-owned typed completion reconciler. The inline
@@ -161,6 +161,29 @@ pub async fn run_shell_command_detail_managed(
         initial_yield_ms,
         ShellRunMode::ManagedYield,
         Some(reconciler),
+        None,
+    )
+    .await
+}
+
+/// Run a typed managed producer with a trusted, server-authored process
+/// deadline. This is intentionally separate from the generic managed API so a
+/// model-authored argument can never turn an ordinary background job into an
+/// elapsed-time-killed process.
+pub async fn run_shell_command_detail_managed_with_deadline(
+    command: &str,
+    workspace: &Path,
+    initial_yield_ms: u64,
+    reconciler: Arc<dyn crate::background_jobs::BackgroundJobReconciler>,
+    producer_deadline: Duration,
+) -> Result<Value> {
+    run_shell_command_detail_with_mode(
+        command,
+        workspace,
+        initial_yield_ms,
+        ShellRunMode::ManagedYield,
+        Some(reconciler),
+        Some(producer_deadline),
     )
     .await
 }
@@ -182,6 +205,7 @@ pub async fn run_shell_command_detail_foreground_only(
         legacy_wait_ms,
         ShellRunMode::SynchronousAuthority,
         None,
+        None,
     )
     .await
 }
@@ -192,6 +216,7 @@ async fn run_shell_command_detail_with_mode(
     requested_yield_ms: u64,
     mode: ShellRunMode,
     reconciler: Option<Arc<dyn crate::background_jobs::BackgroundJobReconciler>>,
+    producer_deadline: Option<Duration>,
 ) -> Result<Value> {
     let initial_yield_ms = requested_yield_ms.clamp(MIN_INITIAL_YIELD_MS, MAX_INITIAL_YIELD_MS);
     let started_at = std::time::Instant::now();
@@ -213,13 +238,25 @@ async fn run_shell_command_detail_with_mode(
         ),
     };
     let job_id = if let Some(reconciler) = reconciler {
-        crate::background_jobs::manager().try_spawn_for_session_and_tool_with_reconciler(
-            command,
-            workspace,
-            None,
-            tool_context,
-            reconciler,
-        )
+        match producer_deadline {
+            Some(deadline) => crate::background_jobs::manager()
+                .try_spawn_for_session_and_tool_with_reconciler_and_deadline(
+                    command,
+                    workspace,
+                    None,
+                    tool_context,
+                    reconciler,
+                    deadline,
+                ),
+            None => crate::background_jobs::manager()
+                .try_spawn_for_session_and_tool_with_reconciler(
+                    command,
+                    workspace,
+                    None,
+                    tool_context,
+                    reconciler,
+                ),
+        }
     } else {
         crate::background_jobs::manager().try_spawn_for_session_and_tool(
             command,
@@ -232,10 +269,11 @@ async fn run_shell_command_detail_with_mode(
     .map_err(|error| anyhow::anyhow!("{}: {}", error.code(), error))?;
 
     tracing::info!(
-        "[run_pty_cmd] spawn: command={}, mode={:?}, initial_yield_ms={}, automatic_kill=false, job_id={}, session={:?}",
+        "[run_pty_cmd] spawn: command={}, mode={:?}, initial_yield_ms={}, producer_deadline_ms={:?}, job_id={}, session={:?}",
         command,
         mode,
         initial_yield_ms,
+        producer_deadline.map(|deadline| deadline.as_millis() as u64),
         job_id,
         desired_session_id
     );
@@ -346,7 +384,8 @@ async fn run_shell_command_detail_with_mode(
         "stderr_total_bytes": activity.map(|value| value.stderr_total_bytes).unwrap_or(0),
         "last_output_age_ms": activity.and_then(|value| value.last_output_age_ms),
         "initial_yield_ms": effective_yield_ms,
-        "automatic_kill": false,
+        "automatic_kill": producer_deadline.is_some(),
+        "producer_deadline_ms": producer_deadline.map(|deadline| deadline.as_millis() as u64),
         "hint": hint,
     }))
 }
@@ -415,10 +454,8 @@ fn job_snapshot_value(
     snap: crate::background_jobs::JobSnapshot,
 ) -> Value {
     let activity = manager.activity(job_id);
-    let termination_reason = manager
-        .termination_reason(job_id)
-        .map(|reason| reason.as_str());
-    json!({
+    let termination_reason = manager.termination_reason(job_id);
+    let mut value = json!({
         "job_id": job_id,
         "status": snap.status.as_str(),
         "running": !snap.finished,
@@ -430,9 +467,17 @@ fn job_snapshot_value(
         "stdout_total_bytes": activity.map(|value| value.stdout_total_bytes).unwrap_or(0),
         "stderr_total_bytes": activity.map(|value| value.stderr_total_bytes).unwrap_or(0),
         "last_output_age_ms": activity.and_then(|value| value.last_output_age_ms),
-        "termination_reason": termination_reason,
-        "automatic_kill": false,
-    })
+        "termination_reason": termination_reason.map(|reason| reason.as_str()),
+        "automatic_kill": termination_reason == Some(crate::background_jobs::JobTerminationReason::ProducerDeadline),
+    });
+    if let Some(reconciliation) = manager.reconciliation(job_id) {
+        value["reconciled_tool_result"] = reconciliation.tool_result;
+        value["reconciliation_evidence_ids"] = json!(reconciliation.evidence_ids);
+        if let Some(note) = reconciliation.note {
+            value["reconciliation_note"] = Value::String(note);
+        }
+    }
+    value
 }
 
 /// Drop-in replacement for `RunPtyCmdTool` that returns shell output to the
@@ -613,7 +658,11 @@ impl Tool for CheckJobTool {
                     truncated: stderr_truncated,
                     original_bytes: stderr_original_bytes,
                 } = truncate_output(snap.stderr);
-                Ok(json!({
+                let automatic_kill = termination_reason
+                    == Some(
+                        crate::background_jobs::JobTerminationReason::ProducerDeadline.as_str(),
+                    );
+                let observation = json!({
                 "job_id": job_id,
                 "status": snap.status.as_str(),
                 "running": !snap.finished,
@@ -633,11 +682,26 @@ impl Tool for CheckJobTool {
                 "stderr_total_bytes": activity.map(|value| value.stderr_total_bytes).unwrap_or(0),
                 "last_output_age_ms": activity.and_then(|value| value.last_output_age_ms),
                 "termination_reason": termination_reason,
-                "automatic_kill": false,
+                "automatic_kill": automatic_kill,
                 "read_yield_ms": yield_ms,
                 "waited_ms": started_at.elapsed().as_millis() as u64,
                 "poll_reason": poll_reason,
-                }))
+                });
+                if snap.finished {
+                    if let Some(reconciliation) = manager.reconciliation(job_id) {
+                        let mut typed = reconciliation.tool_result;
+                        if !typed.is_object() {
+                            typed = json!({ "result": typed });
+                        }
+                        typed["managed_job_observation"] = observation;
+                        typed["reconciliation_evidence_ids"] = json!(reconciliation.evidence_ids);
+                        if let Some(note) = reconciliation.note {
+                            typed["reconciliation_note"] = Value::String(note);
+                        }
+                        return Ok(typed);
+                    }
+                }
+                Ok(observation)
             }
             None => Ok(json!({
                 "error": format!("No background job with id '{job_id}' (it may have finished and been cleared)."),
@@ -1122,6 +1186,30 @@ mod tests {
         assert_eq!(res.get("termination_reason"), Some(&json!("exited")));
         assert_eq!(res.get("automatic_kill"), Some(&json!(false)));
         assert_eq!(res.get("poll_reason"), Some(&json!("terminal")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn check_job_returns_the_typed_reconciled_result_for_terminal_producers() {
+        let job_id = crate::background_jobs::manager()
+            .try_spawn_for_session_and_tool_with_reconciler(
+                "printf typed-check-job",
+                &ws(),
+                None,
+                None,
+                Arc::new(InlineTypedReconciler),
+            )
+            .expect("typed producer starts");
+
+        let res = CheckJobTool
+            .execute(json!({ "job_id": job_id, "yield-time_ms": 5_000 }), &ws())
+            .await
+            .expect("check_job returns the reconciled producer result");
+
+        assert_eq!(res.get("typed"), Some(&json!(true)));
+        assert_eq!(res.get("termination_reason"), Some(&json!("exited")));
+        assert_eq!(res["managed_job_observation"]["status"], "done");
+        assert_eq!(res["managed_job_observation"]["poll_reason"], "terminal");
     }
 
     #[cfg(unix)]

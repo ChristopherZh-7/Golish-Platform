@@ -130,6 +130,48 @@ fn exact_root_stage_preclaim(
     specialist.is_none() && execution_status == "started" && unit_count == 0 && worker_count == 0
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StageSliceBoundary {
+    source_stage: StageKind,
+    source_stage_execution_id: Uuid,
+}
+
+fn exact_stage_slice_boundary(
+    operation: &golish_db::repo::operation_state::OperationStateRow,
+    execution: &golish_db::repo::stage_runs::StageRunRow,
+    unit_count: usize,
+    worker_count: usize,
+) -> Option<StageSliceBoundary> {
+    if execution.status != "started"
+        || execution.completed_at.is_some()
+        || execution.started_at != operation.stage_started_at
+        || unit_count != 0
+        || worker_count != 0
+    {
+        return None;
+    }
+    let marker = operation
+        .state_blob
+        .get("stage_slice_boundary_v1")?
+        .as_object()?;
+    if marker.len() != 5
+        || marker.get("schema_version")?.as_u64()? != 1
+        || marker.get("successor_stage")?.as_str()? != operation.current_stage
+        || marker.get("successor_stage_execution_id")?.as_str()? != execution.id.to_string()
+    {
+        return None;
+    }
+    let source_stage = StageKind::try_parse(marker.get("source_stage")?.as_str()?)?;
+    let source_stage_execution_id =
+        Uuid::parse_str(marker.get("source_stage_execution_id")?.as_str()?).ok()?;
+    (source_stage != StageKind::try_parse(&operation.current_stage)?
+        && source_stage_execution_id != execution.id)
+        .then_some(StageSliceBoundary {
+            source_stage,
+            source_stage_execution_id,
+        })
+}
+
 /// A stage specialist is the durable scheduler role, while message chains use
 /// the coarser DB agent enum. Keep this mapping identical to the worker claim
 /// path; comparing the two strings directly rejects every valid specialist
@@ -225,6 +267,7 @@ struct StageTeamResumeAuthority {
     work_items: Vec<StageWorkItemRow>,
     outputs: Vec<StageWorkerOutputRow>,
     completed_synthesis_primary_worker_ids: HashSet<Uuid>,
+    recoverable_company_finalizer_worker_ids: HashSet<Uuid>,
     recoverable_target_intel_finalizer_worker_ids: HashSet<Uuid>,
 }
 
@@ -295,6 +338,89 @@ fn exact_target_intel_finalizer_recovery_preflight(
             .any(|code| code == "STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED")
         && team
             .recoverable_target_intel_finalizer_worker_ids
+            .contains(&worker.id)
+}
+
+fn exact_company_finalizer_recovery_preflight(
+    worker: &StageWorkerRunRow,
+    team: &StageTeamResumeAuthority,
+) -> bool {
+    let plan = &team.plan;
+    let leader_items = team
+        .work_items
+        .iter()
+        .filter(|item| {
+            item.role == plan.leader_role
+                && item.stable_key == "leader:primary"
+                && !item.required_for_barrier
+                && item.created_by == "server_seed"
+        })
+        .collect::<Vec<_>>();
+    let [item] = leader_items.as_slice() else {
+        return false;
+    };
+    let outputs = team
+        .outputs
+        .iter()
+        .filter(|output| output.work_item_id == item.id && output.worker_run_id == worker.id)
+        .collect::<Vec<_>>();
+    let [output] = outputs.as_slice() else {
+        return false;
+    };
+    let required_items = team
+        .work_items
+        .iter()
+        .filter(|candidate| candidate.required_for_barrier)
+        .collect::<Vec<_>>();
+    let required_outputs_are_complete = required_items.iter().all(|required| {
+        matches!(required.status.as_str(), "completed" | "exhausted")
+            && team
+                .outputs
+                .iter()
+                .any(|candidate| candidate.work_item_id == required.id)
+    });
+    plan.stage_kind != "target_intel"
+        && plan.requests_closed_at.is_some()
+        && plan.final_submitter_worker_run_id == Some(worker.id)
+        && plan.final_submitter_kind == "worker"
+        && plan.aggregator_kind == "worker"
+        && plan.aggregator_role.as_deref() == Some(plan.leader_role.as_str())
+        && plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(serde_json::Value::as_str)
+            == Some("company_controller")
+        && item.status == "exhausted"
+        && item.terminal_at.is_some()
+        && worker.work_item_id == Some(item.id)
+        && worker.status == "failed"
+        && worker.terminal_at.is_some()
+        && worker.lease_token.is_none()
+        && worker.active_tool_call_id.is_none()
+        && worker.message_chain_id.is_some()
+        && worker
+            .checkpoint
+            .pointer("/stage_team_execution_failure/code")
+            .and_then(serde_json::Value::as_str)
+            == Some("stage_team_worker_lease_expired")
+        && output.business_disposition == "blocked"
+        && output
+            .canonical_output
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("stage_team_attempts_exhausted")
+        && output
+            .canonical_output
+            .get("failure_code")
+            .and_then(serde_json::Value::as_str)
+            == Some("stage_team_worker_lease_expired")
+        && output
+            .blocker_codes
+            .iter()
+            .any(|code| code == "STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED")
+        && required_outputs_are_complete
+        && team
+            .recoverable_company_finalizer_worker_ids
             .contains(&worker.id)
 }
 
@@ -925,6 +1051,73 @@ async fn load_stage_team_resume_authorities(
         } else {
             HashSet::new()
         };
+        let recoverable_company_finalizer_worker_ids = if let (false, Some(final_submitter)) = (
+            plan.stage_kind == "target_intel",
+            plan.final_submitter_worker_run_id,
+        ) {
+            let rows = sqlx::query_scalar::<_, Uuid>(
+                r#"SELECT submission.worker_run_id
+                     FROM operation_state operation
+                     JOIN stage_worker_runs worker
+                       ON worker.id=$6
+                      AND worker.operation_id=operation.operation_id
+                      AND worker.stage_execution_id=$3
+                      AND worker.stage_run_unit_id=$4
+                      AND worker.organization_id=$2
+                      AND worker.status='failed'
+                      AND worker.terminal_at IS NOT NULL
+                      AND worker.lease_token IS NULL
+                      AND worker.active_tool_call_id IS NULL
+                      AND worker.checkpoint #>> '{stage_team_execution_failure,code}'=
+                          'stage_team_worker_lease_expired'
+                     JOIN stage_deliverable_submissions submission
+                       ON submission.operation_id=operation.operation_id
+                      AND submission.stage_execution_id=$3
+                      AND submission.stage_run_unit_id=$4
+                      AND submission.organization_id=$2
+                      AND submission.worker_run_id=worker.id
+                      AND submission.stage_kind=$5
+                      AND submission.attempt_epoch IS NOT NULL
+                      AND submission.attempt_epoch<=worker.attempt_epoch
+                      AND submission.lease_token IS NOT NULL
+                     JOIN tool_calls tool
+                       ON tool.id=submission.tool_call_record_id
+                      AND tool.call_id=submission.tool_request_id
+                      AND tool.name='submit_stage_deliverable'
+                      AND tool.status='finished'
+                      AND tool.operation_id=submission.operation_id
+                      AND tool.stage_execution_id=submission.stage_execution_id
+                      AND tool.stage_run_unit_id=submission.stage_run_unit_id
+                      AND tool.worker_run_id=submission.worker_run_id
+                      AND tool.organization_id=submission.organization_id
+                      AND tool.attempt_epoch=submission.attempt_epoch
+                      AND tool.lease_token=submission.lease_token
+                      AND tool.result::jsonb->>'status'='accepted'
+                      AND (tool.result::jsonb->>'deliverable_submission_id')::uuid=submission.id
+                    WHERE operation.operation_id=$1
+                      AND operation.superseded_by IS NULL
+                      AND operation.current_stage=$5
+                      AND operation.runtime_memory_contract='v2_only'
+                    ORDER BY submission.submitted_at DESC,submission.id DESC
+                    LIMIT 1"#,
+            )
+            .bind(plan.operation_id)
+            .bind(plan.organization_id)
+            .bind(plan.stage_execution_id)
+            .bind(plan.stage_run_unit_id)
+            .bind(&plan.stage_kind)
+            .bind(final_submitter)
+            .fetch_all(pool)
+            .await
+            .context("load ordinary Company finalizer recovery witness")?;
+            if rows.len() == 1 {
+                rows.into_iter().collect()
+            } else {
+                HashSet::new()
+            }
+        } else {
+            HashSet::new()
+        };
         authorities.insert(
             unit.id,
             StageTeamResumeAuthority {
@@ -932,6 +1125,7 @@ async fn load_stage_team_resume_authorities(
                 work_items,
                 outputs,
                 completed_synthesis_primary_worker_ids,
+                recoverable_company_finalizer_worker_ids,
                 recoverable_target_intel_finalizer_worker_ids,
             },
         );
@@ -1171,11 +1365,12 @@ pub(crate) async fn load_cli_report(
                                         .contains(&worker.id)
                                 })
                         });
-                    let recoverable_target_intel_finalizer = primary_worker.is_some_and(|worker| {
+                    let recoverable_terminalized_finalizer = primary_worker.is_some_and(|worker| {
                         stage_team_authorities
                             .get(&unit.id)
                             .is_some_and(|authority| {
                                 exact_target_intel_finalizer_recovery_preflight(worker, authority)
+                                    || exact_company_finalizer_recovery_preflight(worker, authority)
                             })
                     });
                     let worker = primary_worker.and_then(|worker| {
@@ -1222,7 +1417,7 @@ pub(crate) async fn load_cli_report(
                             worker,
                             seeded_stage_team_preclaim,
                             sealed_stage_team_completed_primary,
-                            recoverable_target_intel_finalizer,
+                            recoverable_terminalized_finalizer,
                             now: Utc::now(),
                         }),
                         None => RuntimeV2ResumeDecision::Reject(
@@ -1350,7 +1545,7 @@ pub(crate) async fn load_relational_resume_authority(
             worker: None,
             seeded_stage_team_preclaim: false,
             sealed_stage_team_completed_primary: false,
-            recoverable_target_intel_finalizer: false,
+            recoverable_terminalized_finalizer: false,
             now: Utc::now(),
         });
         anyhow::ensure!(
@@ -1372,6 +1567,34 @@ pub(crate) async fn load_relational_resume_authority(
             && !scope.units.is_empty(),
         "relational V2 frozen scope does not match operation authority"
     );
+    if let Some(boundary) =
+        exact_stage_slice_boundary(operation, execution, units.len(), workers.len())
+    {
+        let source = executions
+            .iter()
+            .find(|candidate| candidate.id == boundary.source_stage_execution_id)
+            .ok_or_else(|| {
+                relational_resume_incomplete("stage-slice source execution is missing")
+            })?;
+        anyhow::ensure!(
+            source.operation_id == operation.operation_id
+                && source.stage_kind == boundary.source_stage.as_str()
+                && source.status == "completed"
+                && source
+                    .completed_at
+                    .is_some_and(|completed_at| completed_at <= execution.started_at)
+                && executions
+                    .iter()
+                    .filter(|candidate| candidate.id != execution.id)
+                    .max_by_key(|candidate| (candidate.started_at, candidate.id))
+                    .is_some_and(|latest| latest.id == source.id),
+            "relational V2 stage-slice boundary source is not the latest completed execution"
+        );
+        return Ok(RuntimeV2ResumeAuthority {
+            active_stage_execution_id: execution.id,
+            organization_id: scope.snapshot.root_organization_id,
+        });
+    }
     let configured_specialist = golish_agent_kit::harness::load_embedded_stage_spec(stage)
         .context("load stage spec for relational V2 resume")?
         .specialist
@@ -1606,7 +1829,7 @@ pub(crate) async fn load_relational_resume_authority(
                         .contains(&worker.id)
                 })
         });
-        let recoverable_target_intel_finalizer = worker_snapshot.as_ref().is_some_and(|worker| {
+        let recoverable_terminalized_finalizer = worker_snapshot.as_ref().is_some_and(|worker| {
             stage_team_authorities
                 .get(&unit.id)
                 .is_some_and(|authority| {
@@ -1615,6 +1838,7 @@ pub(crate) async fn load_relational_resume_authority(
                         .find(|candidate| candidate.id == worker.id)
                         .is_some_and(|candidate| {
                             exact_target_intel_finalizer_recovery_preflight(candidate, authority)
+                                || exact_company_finalizer_recovery_preflight(candidate, authority)
                         })
                 })
         });
@@ -1638,7 +1862,7 @@ pub(crate) async fn load_relational_resume_authority(
             worker: worker_snapshot,
             seeded_stage_team_preclaim,
             sealed_stage_team_completed_primary,
-            recoverable_target_intel_finalizer,
+            recoverable_terminalized_finalizer,
             now,
         });
         match decision {
@@ -1721,7 +1945,7 @@ pub(crate) struct RuntimeV2ResumeSnapshot {
     pub worker: Option<ResumeWorkerSnapshot>,
     pub seeded_stage_team_preclaim: bool,
     pub sealed_stage_team_completed_primary: bool,
-    pub recoverable_target_intel_finalizer: bool,
+    pub recoverable_terminalized_finalizer: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -1840,7 +2064,7 @@ pub(crate) fn classify_runtime_v2_resume(
     {
         return Decision::ResumeSpecialist;
     }
-    if snapshot.recoverable_target_intel_finalizer
+    if snapshot.recoverable_terminalized_finalizer
         && unit.status == Unit::Running
         && worker.status == Worker::Failed
         && worker.lease_expires_at.is_none()
@@ -2159,6 +2383,7 @@ mod tests {
             work_items: vec![leader_item, child_item],
             outputs: Vec::new(),
             completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
@@ -2168,6 +2393,61 @@ mod tests {
             .expect("leader Worker");
 
         assert_eq!(selected.id, leader_worker.id);
+    }
+
+    #[test]
+    fn ordinary_company_finalizer_preflight_requires_the_exact_terminal_witness() {
+        let mut unit = stage_team_resume_unit();
+        unit.status = "running".to_string();
+        unit.terminal_at = None;
+        let mut plan = stage_team_resume_plan(&unit);
+        plan.dynamic_request_policy =
+            serde_json::json!({"coordination_mode": "company_controller"});
+        let mut leader_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "company_stage_controller",
+            "aggregate_stage_unit",
+            "leader:primary",
+            false,
+        );
+        leader_item.status = "exhausted".to_string();
+        let mut leader_worker = stage_team_resume_worker(&unit, &leader_item);
+        leader_worker.status = "failed".to_string();
+        leader_worker.checkpoint = serde_json::json!({
+            "stage_team_execution_failure": {
+                "code": "stage_team_worker_lease_expired"
+            }
+        });
+        let output = exhausted_primary_output(&unit, &plan, &leader_item, &leader_worker);
+        plan.final_submitter_worker_run_id = Some(leader_worker.id);
+        let mut authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![leader_item],
+            outputs: vec![output],
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        assert!(!exact_company_finalizer_recovery_preflight(
+            &leader_worker,
+            &authority
+        ));
+        authority
+            .recoverable_company_finalizer_worker_ids
+            .insert(leader_worker.id);
+        assert!(exact_company_finalizer_recovery_preflight(
+            &leader_worker,
+            &authority
+        ));
+
+        authority.outputs[0].canonical_output["failure_code"] =
+            serde_json::json!("different_failure");
+        assert!(!exact_company_finalizer_recovery_preflight(
+            &leader_worker,
+            &authority
+        ));
     }
 
     #[test]
@@ -2192,6 +2472,7 @@ mod tests {
             work_items: vec![leader_item],
             outputs: Vec::new(),
             completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
@@ -2234,6 +2515,7 @@ mod tests {
             work_items: vec![leader_item],
             outputs: Vec::new(),
             completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
@@ -2276,6 +2558,7 @@ mod tests {
             work_items: vec![leader_item, child_item],
             outputs: Vec::new(),
             completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
@@ -2325,6 +2608,7 @@ mod tests {
             work_items: vec![leader_item, recovery_item],
             outputs: vec![output],
             completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
@@ -2387,6 +2671,7 @@ mod tests {
             work_items: vec![leader_item, recovery_v1, recovery_v2.clone()],
             outputs: vec![leader_output, recovery_v1_output],
             completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
         };
 
@@ -2566,7 +2851,7 @@ mod tests {
             worker: None,
             seeded_stage_team_preclaim: false,
             sealed_stage_team_completed_primary: false,
-            recoverable_target_intel_finalizer: false,
+            recoverable_terminalized_finalizer: false,
             now: Utc::now(),
         }
     }
@@ -2700,7 +2985,7 @@ mod tests {
             RuntimeV2ResumeDecision::Reject(RuntimeV2ResumeReject::InvalidWorkerState)
         );
 
-        recovery.recoverable_target_intel_finalizer = true;
+        recovery.recoverable_terminalized_finalizer = true;
         assert_eq!(
             classify_runtime_v2_resume(&recovery),
             RuntimeV2ResumeDecision::ResumeSpecialist

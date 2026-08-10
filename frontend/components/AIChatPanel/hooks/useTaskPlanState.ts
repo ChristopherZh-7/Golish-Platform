@@ -1,4 +1,4 @@
-import { type MutableRefObject, useCallback, useEffect, useMemo } from "react";
+import { type MutableRefObject, useCallback, useEffect, useMemo, useRef } from "react";
 import { getPlan } from "@/lib/ai";
 import { collectStageMarkers, writeStageMarkers } from "@/lib/stage-marker-persistence";
 import { type ChatMessage, useStore } from "@/store";
@@ -11,6 +11,7 @@ export function useTaskPlanState(
   messages: ChatMessage[],
   planMessageIdRef: MutableRefObject<string | null>
 ) {
+  const skipStagePersistOnceRef = useRef<string | null>(null);
   const activeAiSessionId = useStore((s) => {
     if (!s.activeConversationId) return null;
     return s.conversations[s.activeConversationId]?.aiSessionId ?? null;
@@ -21,9 +22,11 @@ export function useTaskPlanState(
   const activeConversationId = useStore((s) => s.activeConversationId);
   // The terminal/PTY session id the live event path writes per-stage state
   // under (setStagePlan / markStagePassed). Restore must target the SAME id.
-  const activeTermId = useStore((s) =>
-    s.activeConversationId ? (s.conversationTerminals[s.activeConversationId]?.[0] ?? null) : null
-  );
+  const activeTermId = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    const termId = s.conversationTerminals[s.activeConversationId]?.[0];
+    return termId && s.sessions[termId] ? termId : null;
+  });
 
   const storePlan = useStore((s) => {
     if (!s.activeConversationId) return null;
@@ -73,6 +76,16 @@ export function useTaskPlanState(
     const termId = s.conversationTerminals[s.activeConversationId]?.[0];
     if (termId && s.sessions[termId]?.passedStages?.length)
       return s.sessions[termId].passedStages ?? null;
+    return null;
+  });
+  const storeStagePlanMessageIds = useStore((s) => {
+    if (!s.activeConversationId) return null;
+    const sid = s.conversations[s.activeConversationId]?.aiSessionId;
+    if (sid && s.sessions[sid]?.stagePlanMessageIds)
+      return s.sessions[sid].stagePlanMessageIds ?? null;
+    const termId = s.conversationTerminals[s.activeConversationId]?.[0];
+    if (termId && s.sessions[termId]?.stagePlanMessageIds)
+      return s.sessions[termId].stagePlanMessageIds ?? null;
     return null;
   });
 
@@ -127,40 +140,59 @@ export function useTaskPlanState(
     };
   }, [activeAiSessionId, storePlan, storeStageOrder]);
 
-  // Persist the per-stage roadmap so it survives a webview refresh / app restart
-  // (design 2026-06-04). Unlike the single `plan` (DB-backed via
-  // `terminal_state.planJson`), the per-stage buckets live only in memory and are
-  // rebuilt from streamed events that don't replay on restore — so snapshot them
-  // to localStorage (keyed by the stable conversation id), mirroring
-  // `contextUsagePersistence`. `writeStagePlans` no-ops on an empty `stageOrder`,
-  // so an uninitialized store can never clobber a saved snapshot.
+  // Merge the persisted roadmap when a conversation activates. Live/replayed
+  // plans win, but persisted anchors still fill any missing message ownership;
+  // this matters when a replay writes stageOrder before localStorage restores.
+  useEffect(() => {
+    if (!activeConversationId || !activeTermId) return;
+    const persisted = readStagePlans(activeConversationId);
+    if (!persisted || persisted.stageOrder.length === 0) return;
+    skipStagePersistOnceRef.current = activeConversationId;
+    const st = useStore.getState();
+    const liveStageOrder = st.sessions[activeTermId]?.stageOrder ?? [];
+    const hasLiveRoadmap = liveStageOrder.length > 0;
+    const mergedStages = new Set<string>();
+    for (const stageId of persisted.stageOrder) {
+      const plan = persisted.plansByStage[stageId];
+      const livePlan = st.sessions[activeTermId]?.plansByStage?.[stageId];
+      if (livePlan) {
+        mergedStages.add(stageId);
+      } else if (plan && !hasLiveRoadmap) {
+        st.setStagePlan(activeTermId, stageId, plan);
+        mergedStages.add(stageId);
+      }
+      const anchor = persisted.stagePlanMessageIds?.[stageId];
+      if (anchor && mergedStages.has(stageId)) {
+        st.anchorStagePlan(activeTermId, stageId, anchor);
+      }
+    }
+    for (const stageId of persisted.passedStages) {
+      if (mergedStages.has(stageId)) st.markStagePassed(activeTermId, stageId);
+    }
+  }, [activeConversationId, activeTermId]);
+
+  // Persist only after the restore effect above had its chance to merge saved
+  // anchors. Effect declaration order matters here: an already-live plan with
+  // no in-memory anchor must not overwrite localStorage with an empty map first.
   useEffect(() => {
     if (!activeConversationId || !storeStageOrder?.length || !storePlansByStage) return;
+    if (skipStagePersistOnceRef.current === activeConversationId) {
+      skipStagePersistOnceRef.current = null;
+      return;
+    }
     writeStagePlans(activeConversationId, {
       stageOrder: storeStageOrder,
       plansByStage: storePlansByStage,
       passedStages: storePassedStages ?? [],
+      stagePlanMessageIds: storeStagePlanMessageIds ?? {},
     });
-  }, [activeConversationId, storeStageOrder, storePlansByStage, storePassedStages]);
-
-  // Restore the persisted per-stage roadmap into the store when a conversation
-  // activates with no in-memory per-stage state (e.g. right after a refresh).
-  // Writes under the resolved terminal id — the same id the live event path uses
-  // — so the cards read it back and a later live update supersedes it cleanly.
-  useEffect(() => {
-    if (!activeConversationId || !activeTermId) return;
-    if (storeStageOrder?.length) return; // live/restored state already present
-    const persisted = readStagePlans(activeConversationId);
-    if (!persisted || persisted.stageOrder.length === 0) return;
-    const st = useStore.getState();
-    for (const stageId of persisted.stageOrder) {
-      const plan = persisted.plansByStage[stageId];
-      if (plan) st.setStagePlan(activeTermId, stageId, plan);
-    }
-    for (const stageId of persisted.passedStages) {
-      st.markStagePassed(activeTermId, stageId);
-    }
-  }, [activeConversationId, activeTermId, storeStageOrder]);
+  }, [
+    activeConversationId,
+    storeStageOrder,
+    storePlansByStage,
+    storePassedStages,
+    storeStagePlanMessageIds,
+  ]);
 
   // Persist task-mode stage dividers ("Stage/Step complete" bubbles). They're
   // runtime-only `role:"system"` messages dropped by the conversation DB
@@ -205,34 +237,41 @@ export function useTaskPlanState(
   );
 
   const planTargetIdx = useMemo(() => {
-    const hasStagePlanCards = !!stagePlans && stagePlans.stageOrder.length > 0;
+    // Harness stage cards have their own immutable message anchors. This index
+    // now belongs exclusively to the legacy chat/non-harness single plan.
+    if (!taskPlan) return -1;
     const msgId = storePlanMessageId ?? planMessageIdRef.current;
     if (msgId) {
       const idx = messages.findIndex((m) => m.id === msgId);
       if (idx >= 0) return idx;
     }
-    // Per-stage (harness) mode: the roadmap renders ALL stages in one stack and
-    // must stay anchored at a STABLE spot — the first assistant message of the
-    // run. Chasing the first `update_plan` toolCall made the whole roadmap jump
-    // to a later stage's message (and vanish from its original spot) the moment
-    // that stage planned, which read as "the previous stage's card disappeared".
-    // The toolCall anchor is therefore reserved for the legacy single chat-plan
-    // card (chat mode), where the plan belongs to the message that emitted it.
-    if (!hasStagePlanCards) {
-      for (let i = 0; i < messages.length; i++) {
-        if (
-          messages[i].role === "assistant" &&
-          messages[i].toolCalls?.some((tc) => tc.name === "update_plan")
-        )
-          return i;
-      }
+    for (let i = 0; i < messages.length; i++) {
+      if (
+        messages[i].role === "assistant" &&
+        messages[i].toolCalls?.some((tc) => tc.name === "update_plan")
+      )
+        return i;
     }
-    if (taskPlan || hasStagePlanCards) {
-      const firstAssistant = messages.findIndex((m) => m.role === "assistant");
-      if (firstAssistant >= 0) return firstAssistant;
-    }
+    const firstAssistant = messages.findIndex((m) => m.role === "assistant");
+    if (firstAssistant >= 0) return firstAssistant;
     return -1;
-  }, [messages, taskPlan, stagePlans, storePlanMessageId, planMessageIdRef.current]);
+  }, [messages, taskPlan, storePlanMessageId, planMessageIdRef.current]);
+
+  const stageIdsByMessage = useMemo(() => {
+    const result = new Map<string, string[]>();
+    if (!stagePlans || !storeStagePlanMessageIds) return result;
+    const assistantMessageIds = new Set(
+      messages.filter((message) => message.role === "assistant").map((message) => message.id)
+    );
+    for (const stageId of stagePlans.stageOrder) {
+      const messageId = storeStagePlanMessageIds[stageId];
+      if (!messageId || !assistantMessageIds.has(messageId)) continue;
+      const stages = result.get(messageId) ?? [];
+      stages.push(stageId);
+      result.set(messageId, stages);
+    }
+    return result;
+  }, [messages, stagePlans, storeStagePlanMessageIds]);
 
   const retiredPlansByMsg = useMemo(() => {
     const map = new Map<string, TaskPlanViewModel[]>();
@@ -254,6 +293,7 @@ export function useTaskPlanState(
     taskPlan,
     stagePlans,
     planTargetIdx,
+    stageIdsByMessage,
     retiredPlansByMsg,
   };
 }

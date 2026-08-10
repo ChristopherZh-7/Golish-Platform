@@ -1949,6 +1949,16 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         Err(RuntimeMemoryError::Unavailable)
     }
 
+    /// Atomically cross a projected stage-slice boundary and park the same
+    /// Task at the unseeded successor execution for a later continuation Turn.
+    async fn pause_after_stage_slice(
+        &self,
+        input: crate::task_orchestrator::stage_execution::PauseAfterStageSlice,
+    ) -> Result<TransitionedStageExecution, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     /// Atomically close the exact active terminal execution and finish the
     /// operation task with the generated result. No successor is created.
     async fn complete_terminal_stage_execution(

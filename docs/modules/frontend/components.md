@@ -99,6 +99,7 @@ detail 里的状态图标不能只信 transport/completed 状态；`whatweb` 这
 `SubAgentDetailView` header 也不能只信原始 `subAgent.status`：如果 completed agent 仍有 running/backgrounded 工具，header 要显示运行态/后台态；如果 completed agent 的最后一个工具调用失败（典型是 `submit_stage_deliverable` needs_fix/error 后无成功提交），header 要显示错误，避免“业务卡住但顶部已完成”的误导。
 
 TargetPanel 左侧树默认只做组织导航：子组织和公司计数保留，但 IP/URL/域名资产不在左树展开；左树主数字只表示该组织自己的目标数，含子公司汇总只能作为弱化 `Σ` 口径展示，不能再和本级计数同权重混用；右侧资产页默认展示本公司资产，父公司有子公司资产时才提供“本公司 / 含子公司”切换。asset-map 的 current-run normalized domain/IP 已由后端直接落成 org-bound `scope=in, source=asset_intel` Targets，因此 TargetPanel 不再显示 target candidate tab，也不再提供 approve/reject/promote 动作；结果直接进入 Targets/Activity。旧 candidate DTO/command/`intel.engagement.candidates` schema 暂时保留兼容，但不作为 TargetPanel read model；子公司候选继续留在聊天 `ask_human(unit_review)`。右侧 Targets 面板按 IP 联合展示资产；IP 行是可进入的聚合主体，域名/URL 子行只是该 IP 下的 HTTP identity/origin，不作为独立 target workbench 入口；只有没有解析 IP 的 unresolved 域名/URL 才保留直接进入详情的兜底入口。不要把大量 IP 重新铺成 org 的第一层 children，否则母子公司层级会被资产列表淹没。
+右侧 host selection 必须从独立 `buildHostTree` 投影取 node，不能从仅含组织导航的 `buildOrgTree` 查找；只有 domain 的 `real_ip`、没有独立 IP Target 的 resolution-only 分组也必须可打开 synthetic IP workbench，并显示其 related domains。
 资产覆盖 compact/header summary 必须使用后端 `StageAssetCoverageSnapshot.summary`，不要从 rows 重新计算分母；EAS 这种 wave-aware stage 还要把父 `stage_run` 工具的 startedAt 传给 `ai_get_stage_asset_coverage(stageStartedAt)`，让后端能把运行中新发现资产标成 `next_wave_pending` 而不是混进当前 wave 的 done/total。
 Target detail 展开区必须显式展示 active landing 写回的 top-level recon fields（`real_ip` / `http_status` / `http_title` / `webserver` / `cdn_waf` / `os_info` / `content_type`），即使 `ports[]` 还没有对应 entry；per-port metadata 和 fingerprints 继续在 Services / Fingerprints 区展示。
 `StageAssetCoveragePanel` 对后端运行时扩展字段 `suggested_capabilities` 只做 tooltip/可读提示（例如 `capability: Fingerprint services`），不改 generated TS 类型、不参与 done/pending 计算，也不能替代 DB/gate truth；旧 `suggested_tools` 仍显示为 fallback/hint。
@@ -193,3 +194,36 @@ just test-fe    # vitest（含组件快照/交互测试）
 - `InvestigationWorkspaceRoute` 是唯一 production adapter：首次 summary 用 exact operation/execution/request 且四个 expected snapshot 字段全为 null；其后的 hypothesis/campaign/timeline page 与 hypothesis/campaign detail 全部固定到 summary 返回的 change-seq、temporal cutoff、authority epoch set hash 与 earliest valid-until。任何 continuation identity/snapshot 冲突都 fail closed，refresh event/gap 与 stale stop只触发新的 no-seq bootstrap，绝不改用 latest selector或重试 stop。
 - Hypothesis click 只改组件本地 `agent | hypothesis | campaign` selection；JIT prepared-action surface、stop、reset 与 successor fork 是独立 DOM/authority path。JIT只按 exact mode policy出现并传 exact operation/campaign；stop只提交 server control projection 的 exact run-state head/change seq与稳定idempotency key；reset/fork availability只来自同一 control projection。
 - actor transcript由 exact `transcriptRequestId` 匹配同session live/restored `ActiveSubAgent.parentRequestId`，0条或多条均显示unavailable，不能猜最新Agent。Plan D旧 `InvestigationWorkspace/` 保留为legacy source且默认 API fail closed，不再由 `PaneLeaf`、`DetailViewMode` 或全局 store提供独立 route。focused入口：`InvestigationWorkspaceRoute.test.tsx`、`InvestigationWorkspaceView.test.tsx`、`ToolCallDetailView.investigation.test.tsx`。
+
+## 2026-08-10 · Stage Agent tree recovery
+
+- Production Stage/SubAgent navigation has one detail surface: `ToolCallDetailView` resolves the owning `stage_run`, then mounts `StageRunDetailShell` and `StageTeamWorkspaceView`.
+- The left rail is the exact organization → Company Controller → dynamic/nested Worker call tree. The right pane renders only the selected Agent's transcript, current visible plan and tool calls; a ChatPanel SubAgent card selects the same Agent inside this tree.
+- `App/detailFocus.ts` makes `tool-detail` and historical `sub-agent-detail` full-width workspace modes. `AIChatPanel` stays mounted for event projection but enters `renderUi=false`: its hooks continue projecting conversation events while the heavy ChatPanel DOM, resize handle and reopen control are released until timeline mode resumes.
+- The retired standalone `SubAgentDetailView` and its private `StageAssetCoveragePanel` are removed; they must not be registered as a second production detail route.
+- Focused tests: `frontend/App/detailFocus.test.ts`, `StageRunDetailShell.test.tsx`, `StageTeamWorkspaceView.test.tsx`, `StageTeamRunView.test.tsx`, `StageRunOrgRows.test.tsx`, and `SubAgentInlineCard.test.tsx`.
+
+## 2026-08-10 · WebContent memory stability
+
+- Stage detail never renders the full ChatPanel tree and the selected Agent transcript at the same time. Projection-only ChatPanel mode preserves event ingestion and local conversation state without retaining its message/tool/SubAgent DOM.
+- `StageTeamWorkspaceView` renders at most the newest 200 transcript entries, pins the current visible Plan when it falls outside that tail, and shows the exact omitted count. This is a presentation bound only: the store, `transcript.json`, and `run.log` keep the complete history.
+- `useTargetSurfaceData` derives subscriptions from a sorted, de-duplicated target-id value key. Poll refreshes that return the same target set must not tear down and recreate AI-event or custom-event listeners because an array instance changed.
+- The focused memory regressions are `AIChatPanel.reporting.test.tsx`, `StageTeamWorkspaceView.test.tsx`, and `useTargetSurfaceData.test.ts`.
+
+## 2026-08-10 · Message-scoped Stage Plans and fixed Stage workspace
+
+- Harness Plan cards are message-scoped. `useAiChatEvents` freezes an entered stage onto the next
+  assistant message; projected future seeds remain absent. `anchorStagePlan` is first-write-wins,
+  and `stagePlanPersistence` stores the same immutable mapping for refresh/restart recovery.
+- `useTaskPlanState.stageIdsByMessage` is the only inline projection. A stage's later plan versions
+  update that historical card in place; unanchored stages are visible only in the explicit workflow
+  control, never guessed onto an arbitrary old message.
+- `StageProgressBar` is a compact status strip below the conversation tabs. It does not duplicate
+  the active Plan; the full stage roadmap opens only from its workflow button.
+- A Company Controller `stage_run` replaces the generic Tool header/body/footer. The unified Stage
+  workspace receives `h-full/min-h-0/overflow-hidden`; `StageTeamWorkspaceView` owns the bounded
+  Agent transcript viewport and scrolls output internally.
+- Focused tests: `StagePlanStack.test.tsx`, `StageProgressBar.test.tsx`,
+  `hooks/useAiChatEvents.test.tsx`, `hooks/useTaskPlanState.test.ts`,
+  `stagePlanPersistence.test.ts`, `store/workflow.test.ts`,
+  `ToolCallDetailView.stage-workspace.test.tsx`, and `StageTeamWorkspaceView.test.tsx`.

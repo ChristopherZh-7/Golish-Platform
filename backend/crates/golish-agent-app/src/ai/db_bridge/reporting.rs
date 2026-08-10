@@ -555,11 +555,9 @@ struct LegacyEasLivenessAuthority {
 struct LegacyEasWebFingerprintAuthority {
     organization_id: Uuid,
     run_id: String,
-    stage_execution_id: Uuid,
-    stage_run_unit_id: Uuid,
-    freshness_floor: chrono::DateTime<chrono::Utc>,
     gate_passed_at: chrono::DateTime<chrono::Utc>,
     claim_evidence_sets: Vec<BTreeSet<i64>>,
+    handoff_evidence: BTreeSet<i64>,
 }
 
 type LegacyEasAssetEvidence = BTreeMap<String, BTreeSet<i64>>;
@@ -822,10 +820,35 @@ fn exact_legacy_eas_web_fingerprint_claims(
             Ok(evidence)
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    if claim_evidence_sets.is_empty() {
-        anyhow::bail!("report_eas_web_fingerprint_claim_missing");
-    }
     Ok(Some((run_id.to_string(), claim_evidence_sets)))
+}
+
+fn exact_legacy_eas_web_fingerprint_evidence_membership(
+    claim_evidence_sets: &[BTreeSet<i64>],
+    handoff_evidence: &BTreeSet<i64>,
+    row_evidence: &BTreeSet<i64>,
+) -> bool {
+    if row_evidence.is_empty() {
+        return false;
+    }
+    if claim_evidence_sets.is_empty() {
+        return row_evidence.is_subset(handoff_evidence);
+    }
+    claim_evidence_sets
+        .iter()
+        .any(|evidence| evidence == row_evidence)
+}
+
+fn technique_outcome_evidence_shape_is_reportable(outcome: &str, evidence_ids: &[i64]) -> bool {
+    !evidence_ids.is_empty() || matches!(outcome, "blocked" | "not_applicable")
+}
+
+#[cfg(test)]
+fn eas_evidence_producer_status_is_terminal(unit_status: &str, worker_status: &str) -> bool {
+    matches!(
+        (unit_status, worker_status),
+        ("passed", "passed") | ("superseded", "superseded")
+    )
 }
 
 /// Enumerate every exact operation-bound TechniqueOutcome and require it to be
@@ -983,32 +1006,12 @@ async fn authoritative_technique_outcome_sources_on(
                 &authorized_run_ids,
                 &handoff_evidence,
             )? {
-                let freshness_floor = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
-                    r#"SELECT unit.started_at
-                             FROM stage_run_units AS unit
-                            WHERE unit.id=$1 AND unit.operation_id=$2
-                              AND unit.stage_execution_id=$3
-                              AND unit.organization_id=$4
-                              AND unit.stage_kind='external_attack_surface'
-                              AND unit.status='passed' AND unit.started_at IS NOT NULL"#,
-                )
-                .bind(handoff.source_stage_run_unit_id)
-                .bind(operation_id)
-                .bind(handoff.stage_execution_id)
-                .bind(organization_id)
-                .fetch_optional(&mut *connection)
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("report_eas_web_fingerprint_handoff_lineage_invalid")
-                })?;
                 legacy_eas_web_fingerprint_authorities.push(LegacyEasWebFingerprintAuthority {
                     organization_id: *organization_id,
                     run_id,
-                    stage_execution_id: handoff.stage_execution_id,
-                    stage_run_unit_id: handoff.source_stage_run_unit_id,
-                    freshness_floor,
                     gate_passed_at: handoff.gate_passed_at,
                     claim_evidence_sets,
+                    handoff_evidence: handoff_evidence.clone(),
                 });
             }
             let mut contains_technique_ref = false;
@@ -1024,7 +1027,6 @@ async fn authoritative_technique_outcome_sources_on(
                         if *ref_org != *organization_id
                             || reference.organization_id != *organization_id
                             || !authorized_run_ids.iter().any(|allowed| allowed == run_id)
-                            || reference.evidence_ids.is_empty()
                             || reference
                                 .evidence_ids
                                 .iter()
@@ -1328,10 +1330,11 @@ async fn authoritative_technique_outcome_sources_on(
             .filter(|authority| {
                 authority.organization_id == key.organization_id
                     && authority.run_id == key.run_id
-                    && authority
-                        .claim_evidence_sets
-                        .iter()
-                        .any(|evidence| evidence == &row_evidence)
+                    && exact_legacy_eas_web_fingerprint_evidence_membership(
+                        &authority.claim_evidence_sets,
+                        &authority.handoff_evidence,
+                        &row_evidence,
+                    )
             })
             .collect::<Vec<_>>();
         if matching.len() > 1 {
@@ -1340,9 +1343,11 @@ async fn authoritative_technique_outcome_sources_on(
         let Some(authority) = matching.first().copied() else {
             continue;
         };
-        let row_is_frozen_in_handoff = row.collected_at.as_ref().is_some_and(|collected_at| {
-            *collected_at >= authority.freshness_floor && *collected_at <= authority.gate_passed_at
-        }) && row.updated_at <= authority.gate_passed_at
+        let row_is_frozen_in_handoff = row
+            .collected_at
+            .as_ref()
+            .is_some_and(|collected_at| *collected_at <= authority.gate_passed_at)
+            && row.updated_at <= authority.gate_passed_at
             && !row_evidence.is_empty()
             && row_evidence.len() == row.evidence_ids.len();
         if !row_is_frozen_in_handoff {
@@ -1351,13 +1356,24 @@ async fn authoritative_technique_outcome_sources_on(
         let evidence_count: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*)
                  FROM audit_log AS evidence
+                 JOIN stage_run_units AS source_unit
+                   ON source_unit.id::text=(evidence.detail #>> '{tool_truth_producer,stage_run_unit_id}')
+                  AND source_unit.operation_id=$2
+                  AND source_unit.stage_execution_id::text=(evidence.detail #>> '{tool_truth_producer,stage_execution_id}')
+                  AND source_unit.organization_id=$3
+                  AND source_unit.stage_kind='external_attack_surface'
+                  AND source_unit.status IN ('passed','superseded')
+                  AND source_unit.started_at <= evidence.created_at
+                  AND source_unit.terminal_at IS NOT NULL
+                  AND source_unit.terminal_at <= $8
                  JOIN stage_worker_runs AS worker
                    ON worker.id::text=(evidence.detail #>> '{tool_truth_producer,worker_run_id}')
                   AND worker.operation_id=$2
-                  AND worker.stage_execution_id=$9
-                  AND worker.stage_run_unit_id=$10
-                  AND worker.organization_id=$3
-                  AND worker.status='passed'
+                 AND worker.stage_execution_id=source_unit.stage_execution_id
+                 AND worker.stage_run_unit_id=source_unit.id
+                 AND worker.organization_id=$3
+                  AND ((source_unit.status='passed' AND worker.status='passed')
+                    OR (source_unit.status='superseded' AND worker.status='superseded'))
                  JOIN tool_calls AS tool
                    ON tool.id::text=(evidence.detail #>> '{tool_truth_producer,source_tool_call_id}')
                   AND tool.worker_run_id=worker.id
@@ -1374,9 +1390,7 @@ async fn authoritative_technique_outcome_sources_on(
                   AND evidence.evidence_asset=$5
                   AND evidence.evidence_technique=$6
                   AND evidence.evidence_outcome=$7
-                  AND evidence.created_at BETWEEN $8 AND $11
-                  AND evidence.detail #>> '{tool_truth_producer,stage_execution_id}'=$9::text
-                  AND evidence.detail #>> '{tool_truth_producer,stage_run_unit_id}'=$10::text
+                  AND evidence.created_at <= $8
                   AND evidence.detail #>> '{tool_truth_producer,organization_id}'=$3::text
                   AND evidence.detail #>> '{tool_truth_producer,producer_tool_name}'='eas_fingerprint_web_stack'"#,
         )
@@ -1387,9 +1401,6 @@ async fn authoritative_technique_outcome_sources_on(
         .bind(&row.asset)
         .bind(&row.technique)
         .bind(&row.outcome)
-        .bind(authority.freshness_floor)
-        .bind(authority.stage_execution_id)
-        .bind(authority.stage_run_unit_id)
         .bind(authority.gate_passed_at)
         .fetch_one(&mut *connection)
         .await?;
@@ -1424,6 +1435,9 @@ async fn authoritative_technique_outcome_sources_on(
             .ok_or_else(|| anyhow::anyhow!("report_technique_outcome_unsealed"))?;
         if authority.content_sha256 != current_hash || authority.evidence_ids != row.evidence_ids {
             anyhow::bail!("report_technique_outcome_source_changed");
+        }
+        if !technique_outcome_evidence_shape_is_reportable(&row.outcome, &row.evidence_ids) {
+            anyhow::bail!("report_technique_evidence_missing");
         }
         let evidence_count: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*) FROM audit_log
@@ -5045,10 +5059,13 @@ impl ReportPublicationPort for PgReportPublicationPort {
 #[cfg(test)]
 mod tests {
     use super::{
-        exact_legacy_eas_liveness_claims, exact_legacy_eas_web_fingerprint_claims,
+        eas_evidence_producer_status_is_terminal, exact_legacy_eas_liveness_claims,
+        exact_legacy_eas_web_fingerprint_claims,
+        exact_legacy_eas_web_fingerprint_evidence_membership,
         reporting_source_kind_is_authoritative, reporting_source_stages,
-        reporting_terminal_authority_stage, CanonicalFactKey, CanonicalFactRef, ReportSourceKind,
-        StageHandoffPayload, StageTopologyContract,
+        reporting_terminal_authority_stage, technique_outcome_evidence_shape_is_reportable,
+        CanonicalFactKey, CanonicalFactRef, ReportSourceKind, StageHandoffPayload,
+        StageTopologyContract,
     };
 
     #[test]
@@ -5259,6 +5276,121 @@ mod tests {
             &std::collections::BTreeSet::from([999]),
         )
         .is_err());
+    }
+
+    #[test]
+    fn legacy_eas_web_fingerprint_compatibility_uses_sealed_handoff_evidence_without_a_model_claim()
+    {
+        let organization_id = uuid::Uuid::new_v4();
+        let run_id = "stage-run-web-fingerprint".to_string();
+        let payload = StageHandoffPayload {
+            canonical_fact_refs: Vec::new(),
+            typed_claims: vec![serde_json::json!({
+                "kind": "port_scan",
+                "payload": {
+                    "subject": "127.0.0.1",
+                    "evidence_ids": [402]
+                }
+            })],
+            coverage_watermark: serde_json::json!({
+                "kind": "information_coverage_v1",
+                "stage": "external_attack_surface",
+                "organization_id": organization_id,
+                "run_id": run_id.clone(),
+                "terminal_cells": 1,
+                "terminal_cell_set_sha256": "1".repeat(64),
+                "found": 1,
+                "checked_empty": 0,
+                "blocked": 0,
+                "not_applicable": 0,
+                "canonical_ref_total": 0,
+                "canonical_ref_included": 0,
+                "canonical_ref_truncated": false,
+                "typed_claim_total": 1,
+                "typed_claim_included": 1,
+                "typed_claim_truncated": false,
+                "evidence_id_total": 2,
+                "evidence_id_included": 2,
+                "evidence_id_truncated": false,
+                "assets": ["https://moresec.cn:443"],
+                "techniques": [golish_db::repo::coverage_truth::TECH_EAS_WEB_FP]
+            }),
+            evidence_ids: vec![372, 402],
+        };
+        let handoff_evidence = std::collections::BTreeSet::from([372, 402]);
+
+        let claims = exact_legacy_eas_web_fingerprint_claims(
+            &payload,
+            organization_id,
+            std::slice::from_ref(&run_id),
+            &handoff_evidence,
+        )
+        .expect("the complete final-sealed handoff remains an authority")
+        .expect("web fingerprint authority exists");
+        assert_eq!(claims.0, run_id);
+        assert!(claims.1.is_empty());
+        assert!(exact_legacy_eas_web_fingerprint_evidence_membership(
+            &claims.1,
+            &handoff_evidence,
+            &std::collections::BTreeSet::from([372]),
+        ));
+        assert!(!exact_legacy_eas_web_fingerprint_evidence_membership(
+            &claims.1,
+            &handoff_evidence,
+            &std::collections::BTreeSet::from([999]),
+        ));
+
+        let typed_claim_evidence = vec![std::collections::BTreeSet::from([372])];
+        assert!(!exact_legacy_eas_web_fingerprint_evidence_membership(
+            &typed_claim_evidence,
+            &handoff_evidence,
+            &std::collections::BTreeSet::from([402]),
+        ));
+    }
+
+    #[test]
+    fn reportable_technique_outcomes_require_evidence_except_for_typed_terminal_gaps() {
+        assert!(technique_outcome_evidence_shape_is_reportable(
+            "found",
+            &[372]
+        ));
+        assert!(technique_outcome_evidence_shape_is_reportable(
+            "checked_empty",
+            &[369]
+        ));
+        assert!(technique_outcome_evidence_shape_is_reportable(
+            "blocked",
+            &[]
+        ));
+        assert!(technique_outcome_evidence_shape_is_reportable(
+            "not_applicable",
+            &[]
+        ));
+        assert!(!technique_outcome_evidence_shape_is_reportable(
+            "found",
+            &[]
+        ));
+        assert!(!technique_outcome_evidence_shape_is_reportable(
+            "checked_empty",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn recovered_eas_evidence_requires_matching_unit_and_worker_terminal_status() {
+        assert!(eas_evidence_producer_status_is_terminal("passed", "passed"));
+        assert!(eas_evidence_producer_status_is_terminal(
+            "superseded",
+            "superseded"
+        ));
+        assert!(!eas_evidence_producer_status_is_terminal(
+            "superseded",
+            "passed"
+        ));
+        assert!(!eas_evidence_producer_status_is_terminal(
+            "passed",
+            "superseded"
+        ));
     }
 
     #[test]

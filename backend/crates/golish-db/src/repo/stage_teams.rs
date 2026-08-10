@@ -1488,6 +1488,86 @@ pub(crate) struct ReapedCleanStageWorkerRow {
     pub retry_scheduled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompanyFinalizerRecoveryWitness {
+    pub deliverable_submission_id: Uuid,
+    pub expected_dispatch_epoch: i64,
+    pub expected_manifest_hash: String,
+    pub payload_sha256: String,
+    pub retry_count: i64,
+    pub source_attempt_epoch: i64,
+    pub source_checkpoint_version: i64,
+}
+
+pub(crate) fn company_finalizer_recovery_witness(
+    worker: &stage_worker_runs::StageWorkerRunRow,
+) -> Option<CompanyFinalizerRecoveryWitness> {
+    let marker = worker
+        .checkpoint
+        .get("_runtime_company_finalizer_recovery")?;
+    let deliverable_submission_id =
+        Uuid::parse_str(marker.get("deliverable_submission_id")?.as_str()?).ok()?;
+    let expected_dispatch_epoch = marker.get("expected_dispatch_epoch")?.as_i64()?;
+    let expected_manifest_hash = marker.get("expected_manifest_hash")?.as_str()?.to_string();
+    let payload_sha256 = marker.get("payload_sha256")?.as_str()?.to_string();
+    let retry_count = marker
+        .get("retry_count")
+        .map(serde_json::Value::as_i64)
+        .unwrap_or(Some(0))?;
+    let source_attempt_epoch = marker.get("source_attempt_epoch")?.as_i64()?;
+    let source_checkpoint_version = marker.get("source_checkpoint_version")?.as_i64()?;
+    let expected_attempt_epoch = source_attempt_epoch
+        .checked_add(1)?
+        .checked_add(retry_count)?;
+    let expected_checkpoint_version = source_checkpoint_version
+        .checked_add(1)?
+        .checked_add(retry_count)?;
+    if marker
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        || deliverable_submission_id.is_nil()
+        || expected_dispatch_epoch < 0
+        || expected_manifest_hash.len() != 71
+        || !expected_manifest_hash.starts_with("sha256:")
+        || payload_sha256.len() != 64
+        || payload_sha256
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+        || retry_count < 0
+        || source_attempt_epoch < 0
+        || source_checkpoint_version < 0
+        || worker.attempt_epoch != expected_attempt_epoch
+        || worker.checkpoint_version != expected_checkpoint_version
+    {
+        return None;
+    }
+    Some(CompanyFinalizerRecoveryWitness {
+        deliverable_submission_id,
+        expected_dispatch_epoch,
+        expected_manifest_hash,
+        payload_sha256,
+        retry_count,
+        source_attempt_epoch,
+        source_checkpoint_version,
+    })
+}
+
+pub(crate) fn advance_company_finalizer_recovery_checkpoint(
+    worker: &stage_worker_runs::StageWorkerRunRow,
+) -> Option<serde_json::Value> {
+    let witness = company_finalizer_recovery_witness(worker)?;
+    let mut checkpoint = worker.checkpoint.as_object()?.clone();
+    let marker = checkpoint
+        .get_mut("_runtime_company_finalizer_recovery")?
+        .as_object_mut()?;
+    marker.insert(
+        "retry_count".to_string(),
+        serde_json::json!(witness.retry_count.checked_add(1)?),
+    );
+    Some(serde_json::Value::Object(checkpoint))
+}
+
 pub(crate) async fn work_item_attempts_used(
     connection: &mut PgConnection,
     work_item_id: Uuid,
@@ -1526,25 +1606,72 @@ async fn is_exact_closed_coordinator_final_submitter_with_submission(
         return Ok(false);
     }
 
+    let recovery = company_finalizer_recovery_witness(worker);
+    if let Some(witness) = recovery.as_ref() {
+        let barrier = load_barrier_with_connection_ignoring_worker(
+            &mut *connection,
+            plan.id,
+            Some(worker.id),
+        )
+        .await?;
+        if !barrier.ready_to_finalize()
+            || witness.expected_dispatch_epoch != plan.dispatch_epoch
+            || witness.expected_dispatch_epoch != barrier.dispatch_epoch
+            || witness.expected_manifest_hash != barrier.manifest_hash
+        {
+            return Ok(false);
+        }
+    }
+    let (submission_id, maximum_attempt_epoch, payload_sha256) = recovery
+        .map(|witness| {
+            (
+                Some(witness.deliverable_submission_id),
+                witness.source_attempt_epoch,
+                Some(witness.payload_sha256),
+            )
+        })
+        .unwrap_or((None, worker.attempt_epoch, None));
     Ok(sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(
-               SELECT 1
-                 FROM stage_deliverable_submissions submission
-                WHERE submission.operation_id=$1
-                  AND submission.stage_execution_id=$2
-                  AND submission.stage_run_unit_id=$3
-                  AND submission.organization_id=$4
-                  AND submission.worker_run_id=$5
-                  AND submission.attempt_epoch=$6
-                  AND submission.lease_token=$7
-           )"#,
+        r#"SELECT COUNT(*)=1 AND BOOL_AND(
+                     tool.status='finished'
+                 AND tool.result::jsonb->>'status'='accepted'
+                 AND (tool.result::jsonb->>'deliverable_submission_id')::UUID=submission.id
+               )
+             FROM stage_deliverable_submissions submission
+             JOIN tool_calls tool
+               ON tool.id=submission.tool_call_record_id
+              AND tool.call_id=submission.tool_request_id
+              AND tool.name='submit_stage_deliverable'
+              AND tool.operation_id=submission.operation_id
+              AND tool.stage_execution_id=submission.stage_execution_id
+              AND tool.stage_run_unit_id=submission.stage_run_unit_id
+              AND tool.worker_run_id=submission.worker_run_id
+              AND tool.organization_id=submission.organization_id
+              AND tool.attempt_epoch=submission.attempt_epoch
+              AND tool.lease_token=submission.lease_token
+            WHERE submission.operation_id=$1
+              AND submission.stage_execution_id=$2
+              AND submission.stage_run_unit_id=$3
+              AND submission.organization_id=$4
+              AND submission.worker_run_id=$5
+              AND submission.stage_kind=$6
+              AND submission.attempt_epoch IS NOT NULL
+              AND submission.attempt_epoch<=$7
+              AND submission.lease_token IS NOT NULL
+              AND (($8::UUID IS NULL AND submission.attempt_epoch=$7
+                    AND submission.lease_token=$10)
+                   OR ($8::UUID IS NOT NULL AND submission.id=$8))
+              AND ($9::TEXT IS NULL OR submission.payload_sha256=$9)"#,
     )
     .bind(plan.operation_id)
     .bind(plan.stage_execution_id)
     .bind(plan.stage_run_unit_id)
     .bind(plan.organization_id)
     .bind(worker.id)
-    .bind(worker.attempt_epoch)
+    .bind(&plan.stage_kind)
+    .bind(maximum_attempt_epoch)
+    .bind(submission_id)
+    .bind(payload_sha256)
     .bind(worker.lease_token)
     .fetch_one(connection)
     .await?)
@@ -1592,7 +1719,13 @@ pub(crate) async fn reap_expired_clean_stage_worker(
     let retry_scheduled = finalizer_retry_scheduled || attempts_used < max_attempts;
 
     let (next_worker_status, next_item_status, terminal_checkpoint) = if retry_scheduled {
-        ("queued", "retry_pending", worker.checkpoint.clone())
+        let checkpoint = if finalizer_retry_scheduled {
+            advance_company_finalizer_recovery_checkpoint(worker)
+                .unwrap_or_else(|| worker.checkpoint.clone())
+        } else {
+            worker.checkpoint.clone()
+        };
+        ("queued", "retry_pending", checkpoint)
     } else {
         (
             "failed",

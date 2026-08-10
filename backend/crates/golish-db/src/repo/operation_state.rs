@@ -118,8 +118,52 @@ const GET_OPERATION_EPOCH_SQL: &str = r#"SELECT operation_id, current_stage, sta
        WHERE operation_id = $1"#;
 
 pub const EAS_WEB_TRANSPORT_FAILURES_NAMESPACE: &str = "eas_web_transport_failures";
+pub const EAS_PORT_SCAN_ATTEMPTS_NAMESPACE: &str = "eas_port_scan_attempts";
 const MAX_EAS_WEB_TRANSPORT_FAILURE_SLOTS: i64 = 512;
 const MAX_EAS_WEB_TRANSPORT_FAILURE_BYTES: i32 = 262_144;
+const MAX_EAS_PORT_SCAN_ATTEMPT_SLOTS: i64 = 512;
+const MAX_EAS_PORT_SCAN_ATTEMPT_BYTES: i32 = 262_144;
+
+const RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL: &str = r#"UPDATE operation_state
+SET state_blob = jsonb_set(
+    jsonb_set(
+        CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
+        ARRAY[$3],
+        CASE WHEN jsonb_typeof(state_blob -> $3) = 'object' THEN state_blob -> $3
+             ELSE '{}'::jsonb END,
+        true
+    ),
+    ARRAY[$3, $4],
+    jsonb_build_object(
+        'epoch_started_at', to_jsonb($2::timestamptz),
+        'organization_id', $5::text,
+        'target_ids_sha256', $6::text,
+        'profile_version', $7::int,
+        'target_manifest_sha256', $8::text,
+        'attempts', 1,
+        'producer_deadline_secs', $9::bigint,
+        'reserved_at', to_jsonb(NOW())
+    ),
+    true
+)
+WHERE operation_id = $1
+  AND current_stage = 'external_attack_surface'
+  AND stage_started_at = $2
+  AND superseded_by IS NULL
+  AND NOT (COALESCE(state_blob -> $3, '{}'::jsonb) ? $4)
+  AND (SELECT COUNT(*) FROM jsonb_object_keys(
+      CASE WHEN jsonb_typeof(state_blob -> $3) = 'object'
+           THEN state_blob -> $3 ELSE '{}'::jsonb END
+  )) < $10
+  AND pg_column_size(COALESCE(state_blob -> $3, '{}'::jsonb)) < $11
+RETURNING (state_blob #>> ARRAY[$3, $4, 'attempts'])::int"#;
+
+const GET_EAS_PORT_SCAN_ATTEMPT_SQL: &str = r#"SELECT state_blob #> ARRAY[$3, $4]
+FROM operation_state
+WHERE operation_id = $1
+  AND current_stage = 'external_attack_surface'
+  AND stage_started_at = $2
+  AND superseded_by IS NULL"#;
 
 const INCREMENT_EAS_WEB_TRANSPORT_FAILURE_SQL: &str = r#"UPDATE operation_state
 SET state_blob = jsonb_set(
@@ -326,10 +370,16 @@ WHERE os.operation_id = $1
 
 const WRITE_STATE_BLOB_SQL: &str = r#"UPDATE operation_state
 SET state_blob = jsonb_set(
-    CASE WHEN jsonb_typeof($2::jsonb) = 'object' THEN $2::jsonb ELSE '{}'::jsonb END,
-    ARRAY[$3],
-    CASE WHEN jsonb_typeof(state_blob -> $3) = 'object'
-         THEN state_blob -> $3 ELSE '{}'::jsonb END,
+    jsonb_set(
+        CASE WHEN jsonb_typeof($2::jsonb) = 'object' THEN $2::jsonb ELSE '{}'::jsonb END,
+        ARRAY[$3],
+        CASE WHEN jsonb_typeof(state_blob -> $3) = 'object'
+             THEN state_blob -> $3 ELSE '{}'::jsonb END,
+        true
+    ),
+    ARRAY[$4],
+    CASE WHEN jsonb_typeof(state_blob -> $4) = 'object'
+         THEN state_blob -> $4 ELSE '{}'::jsonb END,
     true
 )
 WHERE operation_id = $1
@@ -340,8 +390,13 @@ SET current_stage = $2,
     stage_started_at = NOW(),
     state_blob = CASE WHEN $2 = 'external_attack_surface'
         THEN jsonb_set(
-            CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
-            ARRAY[$3],
+            jsonb_set(
+                CASE WHEN jsonb_typeof(state_blob) = 'object' THEN state_blob ELSE '{}'::jsonb END,
+                ARRAY[$3],
+                '{}'::jsonb,
+                true
+            ),
+            ARRAY[$4],
             '{}'::jsonb,
             true
         )
@@ -359,6 +414,24 @@ pub struct EasWebTransportFailureInput {
     pub origin: String,
     pub technique: String,
     pub failure_class: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct EasPortScanAttemptInput {
+    pub operation_id: Uuid,
+    pub stage_started_at: DateTime<Utc>,
+    pub slot_key: String,
+    pub organization_id: Uuid,
+    pub target_ids_sha256: String,
+    pub profile_version: i32,
+    pub target_manifest_sha256: String,
+    pub producer_deadline_secs: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EasPortScanAttemptReservation {
+    Reserved { attempt: i32 },
+    Exhausted { attempts: i32 },
 }
 
 /// `operation_state` 行映射 (`sqlx::FromRow`).
@@ -695,6 +768,7 @@ pub async fn advance_stage(pool: &PgPool, operation_id: Uuid, new_stage: &str) -
         .bind(operation_id)
         .bind(new_stage)
         .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
         .execute(pool)
         .await?;
     Ok(())
@@ -732,9 +806,91 @@ pub async fn write_state_blob(
         .bind(operation_id)
         .bind(state_blob)
         .bind(EAS_WEB_TRANSPORT_FAILURES_NAMESPACE)
+        .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Reserve the one server-owned exhaustive port producer attempt for an exact
+/// EAS epoch and target manifest. The reservation lands before network launch,
+/// so a lost process handle or app restart cannot silently launch the same
+/// expensive producer again. `None` means the operation epoch changed or the
+/// bounded namespace refused a new slot; malformed or foreign slots fail
+/// closed with a typed DB error.
+pub async fn reserve_eas_port_scan_attempt(
+    pool: &PgPool,
+    input: &EasPortScanAttemptInput,
+) -> Result<Option<EasPortScanAttemptReservation>> {
+    let reserved = sqlx::query_scalar::<_, i32>(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL)
+        .bind(input.operation_id)
+        .bind(input.stage_started_at)
+        .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
+        .bind(&input.slot_key)
+        .bind(input.organization_id)
+        .bind(&input.target_ids_sha256)
+        .bind(input.profile_version)
+        .bind(&input.target_manifest_sha256)
+        .bind(input.producer_deadline_secs)
+        .bind(MAX_EAS_PORT_SCAN_ATTEMPT_SLOTS)
+        .bind(MAX_EAS_PORT_SCAN_ATTEMPT_BYTES)
+        .fetch_optional(pool)
+        .await?;
+    if let Some(attempt) = reserved {
+        return Ok(Some(EasPortScanAttemptReservation::Reserved { attempt }));
+    }
+
+    let existing =
+        sqlx::query_scalar::<_, Option<serde_json::Value>>(GET_EAS_PORT_SCAN_ATTEMPT_SQL)
+            .bind(input.operation_id)
+            .bind(input.stage_started_at)
+            .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
+            .bind(&input.slot_key)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    let Some(existing) = existing else {
+        return Ok(None);
+    };
+    let exact = existing
+        .get("epoch_started_at")
+        .and_then(|value| value.as_str())
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        == Some(input.stage_started_at)
+        && existing
+            .get("organization_id")
+            .and_then(|value| value.as_str())
+            .and_then(|value| Uuid::parse_str(value).ok())
+            == Some(input.organization_id)
+        && existing
+            .get("target_ids_sha256")
+            .and_then(|value| value.as_str())
+            == Some(input.target_ids_sha256.as_str())
+        && existing
+            .get("profile_version")
+            .and_then(|value| value.as_i64())
+            == Some(i64::from(input.profile_version))
+        && existing
+            .get("target_manifest_sha256")
+            .and_then(|value| value.as_str())
+            == Some(input.target_manifest_sha256.as_str())
+        && existing
+            .get("producer_deadline_secs")
+            .and_then(|value| value.as_i64())
+            == Some(input.producer_deadline_secs);
+    let attempts = existing
+        .get("attempts")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok());
+    if !exact || attempts.is_none_or(|attempts| attempts < 1) {
+        return Err(crate::DbError::Other(anyhow::anyhow!(
+            "EAS_PORT_SCAN_ATTEMPT_AUTHORITY_MISMATCH"
+        )));
+    }
+    Ok(Some(EasPortScanAttemptReservation::Exhausted {
+        attempts: attempts.unwrap_or_default(),
+    }))
 }
 
 /// Atomically advance one EAS exact-origin transport failure counter without
@@ -1020,6 +1176,7 @@ mod tests {
     fn generic_state_blob_checkpoint_preserves_reserved_transport_namespace() {
         assert!(WRITE_STATE_BLOB_SQL.contains("jsonb_set"));
         assert!(WRITE_STATE_BLOB_SQL.contains("state_blob -> $3"));
+        assert!(WRITE_STATE_BLOB_SQL.contains("state_blob -> $4"));
         assert!(WRITE_STATE_BLOB_SQL.contains("runtime_memory_contract <> 'v2_only'"));
         assert!(!WRITE_STATE_BLOB_SQL.contains("SET state_blob = $2"));
     }
@@ -1028,7 +1185,22 @@ mod tests {
     fn stage_advance_resets_breaker_only_on_new_eas_epoch() {
         assert!(ADVANCE_STAGE_SQL.contains("$2 = 'external_attack_surface'"));
         assert!(ADVANCE_STAGE_SQL.contains("ARRAY[$3]"));
+        assert!(ADVANCE_STAGE_SQL.contains("ARRAY[$4]"));
         assert!(ADVANCE_STAGE_SQL.contains("ELSE state_blob"));
+    }
+
+    #[test]
+    fn exhaustive_port_attempt_is_reserved_before_network_and_exactly_once() {
+        assert!(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("NOT (COALESCE(state_blob -> $3"));
+        assert!(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("'attempts', 1"));
+        assert!(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("producer_deadline_secs"));
+        assert!(
+            RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("current_stage = 'external_attack_surface'")
+        );
+        assert!(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("stage_started_at = $2"));
+        assert!(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("jsonb_object_keys"));
+        assert!(RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL.contains("pg_column_size"));
+        assert!(GET_EAS_PORT_SCAN_ATTEMPT_SQL.contains("state_blob #> ARRAY[$3, $4]"));
     }
 
     #[test]
@@ -1174,6 +1346,7 @@ mod tests {
             .bind(operation_id)
             .bind(serde_json::json!({"graph_flow": {}}))
             .bind(namespace)
+            .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
             .fetch_all(&pool)
             .await
             .expect("EXPLAIN namespace-preserving checkpoint write");
@@ -1183,8 +1356,26 @@ mod tests {
             .bind(operation_id)
             .bind("enumeration")
             .bind(namespace)
+            .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
             .fetch_all(&pool)
             .await
             .expect("EXPLAIN stage transition");
+
+        let sql = format!("EXPLAIN {RESERVE_EAS_PORT_SCAN_ATTEMPT_SQL}");
+        sqlx::query(&sql)
+            .bind(operation_id)
+            .bind(epoch)
+            .bind(EAS_PORT_SCAN_ATTEMPTS_NAMESPACE)
+            .bind("port-explain-only-slot")
+            .bind(organization_id)
+            .bind("sha256:target-ids")
+            .bind(3_i32)
+            .bind("sha256:manifest")
+            .bind(300_i64)
+            .bind(MAX_EAS_PORT_SCAN_ATTEMPT_SLOTS)
+            .bind(MAX_EAS_PORT_SCAN_ATTEMPT_BYTES)
+            .fetch_all(&pool)
+            .await
+            .expect("EXPLAIN exhaustive port producer reservation");
     }
 }

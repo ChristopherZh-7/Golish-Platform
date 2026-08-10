@@ -37,6 +37,11 @@ fn is_target_intel_reviewer_role(agent_id: &str) -> bool {
     agent_id == "target_intel_reviewer"
 }
 
+fn final_submission_only_tool_definitions(mut tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    tools.retain(|tool| tool.name == "submit_stage_deliverable");
+    tools
+}
+
 /// Fail closed if a mutable/custom definition attempts to widen one of the
 /// three built-in Candidate reasoning roles.
 pub(super) fn validate_closed_candidate_analysis_definition(
@@ -142,6 +147,20 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
                 tools.push(td);
             }
         }
+    }
+
+    // A closed Company Controller plan has already frozen its child barrier
+    // and exact final submitter. This server-owned retry mode exists only to
+    // persist the StageDeliverable on that same WorkerRun/message chain. Do
+    // not expose the generic submit_result barrier (or any work tool): it is a
+    // valid specialist terminator but can never satisfy the stage finalizer,
+    // which otherwise creates an endless FINAL_SUBMISSION_MISSING resume loop.
+    if ctx
+        .bound_worker_chain
+        .as_ref()
+        .is_some_and(|bound| bound.return_on_first_durable_stage_submission)
+    {
+        return final_submission_only_tool_definitions(tools);
     }
 
     // Universal barrier tool — every sub-agent uses this to submit its final
@@ -919,6 +938,24 @@ mod tests {
         );
         assert!(tools.iter().all(|tool| tool.name != BARRIER_TOOL_NAME));
         assert!(tools[1].description.contains("sole terminal barrier"));
+    }
+
+    #[test]
+    fn closed_final_submitter_exposes_only_the_stage_deliverable_writer() {
+        let tools = final_submission_only_tool_definitions(vec![
+            td("query_target_data"),
+            td(BARRIER_TOOL_NAME),
+            td("submit_stage_deliverable"),
+            td("stage_team_prepare_final_submission"),
+        ]);
+
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["submit_stage_deliverable"]
+        );
     }
 
     #[test]

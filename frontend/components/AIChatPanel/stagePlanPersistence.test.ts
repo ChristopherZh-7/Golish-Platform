@@ -37,6 +37,18 @@ describe("stagePlanPersistence", () => {
     expect(restored?.plansByStage.target_intel?.version).toBe(2);
   });
 
+  it("round-trips immutable per-stage message anchors", () => {
+    writeStagePlans("conv-1", {
+      ...SNAPSHOT,
+      stagePlanMessageIds: { scoping: "a1", target_intel: "a2" },
+    });
+
+    expect(readStagePlans("conv-1")?.stagePlanMessageIds).toEqual({
+      scoping: "a1",
+      target_intel: "a2",
+    });
+  });
+
   it("returns null for an unknown conversation", () => {
     expect(readStagePlans("nope")).toBeNull();
   });
@@ -63,7 +75,10 @@ describe("stagePlanPersistence", () => {
   });
 
   it("atomically rewinds affected stages in the persisted roadmap", () => {
-    writeStagePlans("conv-1", SNAPSHOT);
+    writeStagePlans("conv-1", {
+      ...SNAPSHOT,
+      stagePlanMessageIds: { scoping: "a1", target_intel: "a2" },
+    });
     const affected = rewindPersistedStagePlans(
       "conv-1",
       ["target_intel", "reporting"],
@@ -85,6 +100,7 @@ describe("stagePlanPersistence", () => {
         },
       },
       passedStages: ["scoping"],
+      stagePlanMessageIds: { scoping: "a1" },
     });
   });
 
@@ -126,6 +142,16 @@ describe("stagePlanPersistence", () => {
     localStorage.setItem(
       STAGE_PLAN_STORAGE_KEY,
       JSON.stringify({ "conv-1": { stageOrder: "x", plansByStage: {} } })
+    );
+    expect(readStagePlans("conv-1")).toBeNull();
+  });
+
+  it("rejects malformed non-string message anchors", () => {
+    localStorage.setItem(
+      STAGE_PLAN_STORAGE_KEY,
+      JSON.stringify({
+        "conv-1": { ...SNAPSHOT, stagePlanMessageIds: { scoping: 42 } },
+      })
     );
     expect(readStagePlans("conv-1")).toBeNull();
   });

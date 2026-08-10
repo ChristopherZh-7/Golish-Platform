@@ -3,6 +3,25 @@ use golish_db::{DbConfig, GolishDb};
 use serial_test::serial;
 use uuid::Uuid;
 
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct FreshDefaultsRow {
+    runtime_contract: String,
+    runtime_contract_rank: i16,
+    runtime_row_version: i64,
+    attack_contract: String,
+    attack_rank: i16,
+    attack_row_version: i64,
+    enumeration_contract: String,
+    enumeration_generation: i64,
+    tool_truth_contract: String,
+    tool_truth_row_version: i64,
+    investigation_contract: String,
+    investigation_rollout_mode: String,
+    investigation_mode_rank: i16,
+    investigation_row_version: i64,
+    joint_contract_rank: Option<i16>,
+}
+
 fn reserve_local_port() -> u16 {
     std::net::TcpListener::bind(("127.0.0.1", 0))
         .expect("reserve local postgres port")
@@ -66,6 +85,55 @@ async fn select_unified_deployment(db: &GolishDb) {
     .await
     .expect("restore Investigation fixture guard");
     transaction.commit().await.expect("commit rollout fixture");
+}
+
+async fn select_legacy_authority_deployment(db: &GolishDb) {
+    let mut transaction = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin legacy rollout fixture");
+    sqlx::query(
+        "ALTER TABLE tool_truth_rollout DISABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("disable Tool Truth fixture guard");
+    sqlx::query("UPDATE tool_truth_rollout SET new_operation_contract='legacy_v1',row_version=0")
+        .execute(&mut *transaction)
+        .await
+        .expect("select legacy Tool Truth fixture contract");
+    sqlx::query(
+        "ALTER TABLE tool_truth_rollout ENABLE TRIGGER tool_truth_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("restore Tool Truth fixture guard");
+
+    sqlx::query(
+        "ALTER TABLE investigation_rollout DISABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("disable Investigation fixture guard");
+    sqlx::query(
+        r#"UPDATE investigation_rollout
+              SET contract_version='legacy_candidate_v1',
+                  rollout_mode='legacy_only',mode_rank=0,row_version=0"#,
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("select legacy Investigation fixture contract");
+    sqlx::query(
+        "ALTER TABLE investigation_rollout ENABLE TRIGGER investigation_rollout_direct_mutation_guard",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("restore Investigation fixture guard");
+    transaction
+        .commit()
+        .await
+        .expect("commit legacy rollout fixture");
 }
 
 async fn current_runtime_memory_contract(db: &GolishDb) -> String {
@@ -143,8 +211,77 @@ async fn topology_sql_catalog_matches_rust_contract_hash_and_closed_ranks() {
 
 #[tokio::test]
 #[serial]
+async fn fresh_install_selects_the_accepted_full_chain_defaults() {
+    let (db, _data_dir) = migrated_db("fresh_defaults").await;
+    let selected = sqlx::query_as::<_, FreshDefaultsRow>(
+        r#"SELECT runtime.contract AS runtime_contract,
+                      runtime.contract_rank AS runtime_contract_rank,
+                      runtime.row_version AS runtime_row_version,
+                      attack.contract AS attack_contract,
+                      attack.rank AS attack_rank,
+                      attack.row_version AS attack_row_version,
+                      enumeration.new_operation_contract AS enumeration_contract,
+                      enumeration.generation AS enumeration_generation,
+                      tool.new_operation_contract AS tool_truth_contract,
+                      tool.row_version AS tool_truth_row_version,
+                      investigation.contract_version AS investigation_contract,
+                      investigation.rollout_mode AS investigation_rollout_mode,
+                      investigation.mode_rank AS investigation_mode_rank,
+                      investigation.row_version AS investigation_row_version,
+                      operation_joint_contract_rank(
+                          tool.new_operation_contract,
+                          investigation.contract_version,
+                          investigation.rollout_mode
+                      ) AS joint_contract_rank
+                 FROM runtime_memory_rollout runtime
+                 CROSS JOIN attack_execution_rollout attack
+                 CROSS JOIN enumeration_analysis_rollout enumeration
+                 CROSS JOIN tool_truth_rollout tool
+                 CROSS JOIN investigation_rollout investigation
+                WHERE runtime.singleton_id=1 AND attack.singleton=TRUE
+                  AND enumeration.singleton=TRUE AND tool.singleton=TRUE
+                  AND investigation.singleton=TRUE"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("read fresh full-chain defaults");
+    assert_eq!(
+        selected,
+        FreshDefaultsRow {
+            runtime_contract: "v2_only".to_owned(),
+            runtime_contract_rank: 3,
+            runtime_row_version: 3,
+            attack_contract: "v2_only".to_owned(),
+            attack_rank: 3,
+            attack_row_version: 3,
+            enumeration_contract: "agent_team_v2".to_owned(),
+            enumeration_generation: 2,
+            tool_truth_contract: "receipt_v1".to_owned(),
+            tool_truth_row_version: 1,
+            investigation_contract: "hypothesis_registry_v1".to_owned(),
+            investigation_rollout_mode: "new_only".to_owned(),
+            investigation_mode_rank: 4,
+            investigation_row_version: 1,
+            joint_contract_rank: Some(6),
+        }
+    );
+    let receipt: (String, String) = sqlx::query_as(
+        r#"SELECT bootstrap_mode,receipt_sha256
+             FROM fresh_install_full_chain_bootstrap_receipts
+            WHERE singleton=TRUE"#,
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("read fresh-install bootstrap receipt");
+    assert_eq!(receipt.0, "selected");
+    assert!(receipt.1.starts_with("sha256:"));
+}
+
+#[tokio::test]
+#[serial]
 async fn new_operations_freeze_deployment_topology_and_old_rows_do_not_drift() {
     let (db, _data_dir) = migrated_db("freeze").await;
+    select_legacy_authority_deployment(&db).await;
     let runtime_memory_contract = current_runtime_memory_contract(&db).await;
     let legacy_operation_id = Uuid::new_v4();
     operation_state::insert(
@@ -203,7 +340,6 @@ async fn new_operations_freeze_deployment_topology_and_old_rows_do_not_drift() {
 #[serial]
 async fn unified_operation_rejects_legacy_stages_and_non_graph_transitions() {
     let (db, _data_dir) = migrated_db("runtime_guard").await;
-    let runtime_memory_contract = current_runtime_memory_contract(&db).await;
     select_unified_deployment(&db).await;
     let operation_id = Uuid::new_v4();
     operation_state::insert(

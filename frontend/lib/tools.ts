@@ -40,7 +40,7 @@ export function getStageRunAgentLabel(roleLabel?: string): string | null {
         .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
         .join(" ")
     : raw;
-  return /agent$/i.test(readable) ? readable : `${readable} Agent`;
+  return /(agent|controller)$/i.test(readable) ? readable : `${readable} Agent`;
 }
 
 const TOOL_COLORS: Record<string, string> = {
@@ -527,6 +527,34 @@ function topLevelStatusIndicatesFailure(status: unknown): boolean {
   return typeof status === "string" && FAILURE_STATUSES.has(status.toLowerCase());
 }
 
+function companyControllerStorageHaltIndicatesFailure(obj: Record<string, unknown>): boolean {
+  const runtimeControl =
+    obj.runtime_control != null &&
+    typeof obj.runtime_control === "object" &&
+    !Array.isArray(obj.runtime_control)
+      ? (obj.runtime_control as Record<string, unknown>)
+      : null;
+  const hasStorageGap =
+    Array.isArray(obj.gaps) &&
+    obj.gaps.some(
+      (gap) =>
+        gap != null &&
+        typeof gap === "object" &&
+        !Array.isArray(gap) &&
+        (gap as Record<string, unknown>).code === "COMPANY_CONTROLLER_STORAGE_FAILED"
+    );
+
+  return (
+    obj.scheduler === "company_controller_v1" &&
+    obj.passed === false &&
+    obj.operator_recovery_required === false &&
+    obj.retry_budget_exhausted === true &&
+    runtimeControl?.kind === "halt_current_request" &&
+    runtimeControl.reason === "company_controller_storage_failed" &&
+    hasStorageGap
+  );
+}
+
 /**
  * Some tools return success at the transport layer while their payload is a
  * domain failure (e.g. `submit_stage_deliverable` needs_fix) or a shell-like
@@ -543,6 +571,7 @@ export function toolResultIndicatesFailure(result?: unknown): boolean {
   }
 
   if (topLevelStatusIndicatesFailure(obj.status)) return true;
+  if (companyControllerStorageHaltIndicatesFailure(obj)) return true;
 
   const exitCode =
     typeof obj.exit_code === "number"
@@ -561,6 +590,48 @@ export function toolResultIndicatesFailure(result?: unknown): boolean {
     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
     .join("\n");
   return OUTPUT_FAILURE_RE.test(stripAnsiForDisplay(outputText));
+}
+
+export type ToolTerminalPresentationKind =
+  | "failed"
+  | "submitted"
+  | "blocked"
+  | "ready_to_close"
+  | "completed";
+
+export interface ToolTerminalPresentation {
+  kind: ToolTerminalPresentationKind;
+  label: string;
+}
+
+/**
+ * Present domain completion truth without conflating a successful tool call
+ * transport with a successful stage Gate. In particular, submit `accepted`
+ * means only that the closeout entered the authoritative Gate path. The tool
+ * result is immutable and has no later Gate identity, so its terminal label is
+ * the completed submission action (`Submitted`), while a separate stage event
+ * owns the later Gate PASS/BLOCK truth.
+ */
+export function getToolTerminalPresentation(
+  toolName: string,
+  result: unknown,
+  success: boolean
+): ToolTerminalPresentation {
+  if (!success || toolResultIndicatesFailure(result)) {
+    return { kind: "failed", label: "Needs attention" };
+  }
+
+  const obj = parseResultObject(result);
+  if (toolName === "submit_stage_deliverable" && obj?.status === "accepted") {
+    return { kind: "submitted", label: "Submitted" };
+  }
+  if (toolName === "stage_run" && obj?.passed === false) {
+    return { kind: "blocked", label: "Blocked" };
+  }
+  if (toolName === "stage_run" && obj?.passed === true) {
+    return { kind: "ready_to_close", label: "Ready to close" };
+  }
+  return { kind: "completed", label: "Completed" };
 }
 
 /** Type guard to check if a result is a shell command result */

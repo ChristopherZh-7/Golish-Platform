@@ -78,6 +78,7 @@ vi.mock("./hooks/useTaskPlanState", () => ({
     taskPlan: null,
     stagePlans: null,
     planTargetIdx: -1,
+    stageIdsByMessage: new Map(),
   }),
 }));
 vi.mock("./useChatAutoScroll", () => ({
@@ -151,6 +152,13 @@ describe("AIChatPanel Reporting production entry", () => {
       pendingTerminalRestoreData: null,
       pendingAskHuman: {},
     });
+  });
+
+  it("keeps projection hooks mounted without retaining the heavy ChatPanel DOM", () => {
+    const { container } = render(<AIChatPanel renderUi={false} />);
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId("chat-message")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ai-chat-report-read-model")).not.toBeInTheDocument();
   });
 
   it("mounts and refreshes the DB-backed report from the active conversation session hint", () => {

@@ -25,7 +25,7 @@ struct HostStageRootItem {
     expected_capability: String,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 struct HostStageOutcome {
     asset: String,
     technique: String,
@@ -34,6 +34,234 @@ struct HostStageOutcome {
     evidence_ids: Vec<i64>,
     updated_at: chrono::DateTime<chrono::Utc>,
     seq: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VulnEnumerationSurfaceAuthority {
+    origins: BTreeSet<String>,
+    evidence_ids: Vec<i64>,
+    gate_passed_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn vuln_enumeration_surface_authority(
+    operation_id: Uuid,
+    organization_id: Uuid,
+    handoffs: &[golish_db::repo::stage_handoffs::FinalSealedStageHandoffRow],
+) -> anyhow::Result<VulnEnumerationSurfaceAuthority> {
+    let [handoff] = handoffs else {
+        anyhow::bail!("TOOL_TRUTH_VULN_ENUMERATION_SURFACE_AMBIGUOUS");
+    };
+    anyhow::ensure!(
+        handoff.operation_id == operation_id
+            && handoff.organization_id == organization_id
+            && handoff.from_stage_kind == "enumeration"
+            && handoff
+                .coverage_watermark
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                == Some("information_coverage_v1")
+            && handoff
+                .coverage_watermark
+                .get("stage")
+                .and_then(serde_json::Value::as_str)
+                == Some("enumeration")
+            && handoff
+                .coverage_watermark
+                .get("organization_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                == Some(organization_id),
+        "TOOL_TRUTH_VULN_ENUMERATION_SURFACE_IDENTITY_MISMATCH"
+    );
+    let origins = handoff
+        .coverage_watermark
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_VULN_ENUMERATION_SURFACE_MISSING"))?
+        .iter()
+        .map(|asset| {
+            asset
+                .as_str()
+                .and_then(golish_pentest_domain::canonical_web_origin)
+                .map(|origin| origin.key)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("TOOL_TRUTH_VULN_ENUMERATION_SURFACE_INVALID_ORIGIN")
+                })
+        })
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    anyhow::ensure!(
+        !origins.is_empty()
+            && !handoff.evidence_ids.is_empty()
+            && handoff
+                .evidence_ids
+                .iter()
+                .all(|evidence_id| *evidence_id > 0)
+            && handoff
+                .evidence_ids
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]),
+        "TOOL_TRUTH_VULN_ENUMERATION_SURFACE_AUTHORITY_INVALID"
+    );
+    Ok(VulnEnumerationSurfaceAuthority {
+        origins,
+        evidence_ids: handoff.evidence_ids.clone(),
+        gate_passed_at: handoff.gate_passed_at,
+    })
+}
+
+/// Compatibility for denominators sealed before Vuln inherited the exact
+/// Enumeration Web-Origin axis. It never shrinks or rewrites the sealed root:
+/// an old raw domain/IP member is either mapped to exactly one inherited
+/// origin's real producer outcome, or is closed as evidence-backed N/A because
+/// it is absent from the immutable executable surface. Exact-origin members
+/// remain strict and must have their own terminal outcome.
+fn legacy_vuln_root_surface_outcomes(
+    items: &[HostStageRootItem],
+    outcomes: &[HostStageOutcome],
+    authority: &VulnEnumerationSurfaceAuthority,
+) -> anyhow::Result<Vec<HostStageOutcome>> {
+    let mut projected = Vec::new();
+    for item in items {
+        if host_stage_outcome_for_item("vuln_triage", item, items, outcomes).is_some()
+            || golish_pentest_domain::canonical_web_origin(&item.exact_asset).is_some()
+        {
+            continue;
+        }
+        let asset_key = golish_pentest_domain::canonical_asset_key(&item.exact_asset)
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_VULN_LEGACY_ASSET_INVALID"))?
+            .key;
+        let matching_origins = authority
+            .origins
+            .iter()
+            .filter(|origin| {
+                golish_pentest_domain::canonical_asset_key(origin)
+                    .is_some_and(|candidate| candidate.key == asset_key)
+            })
+            .collect::<Vec<_>>();
+        match matching_origins.as_slice() {
+            [] => projected.push(HostStageOutcome {
+                asset: item.exact_asset.clone(),
+                technique: item.technique.clone(),
+                outcome: "not_applicable".to_string(),
+                source: Some("enumeration_final_seal:excluded_from_vuln_surface".to_string()),
+                evidence_ids: authority.evidence_ids.clone(),
+                updated_at: authority.gate_passed_at,
+                seq: 0,
+            }),
+            [origin] => {
+                let candidate = outcomes
+                    .iter()
+                    .filter(|outcome| {
+                        outcome.technique == item.technique
+                            && golish_pentest_domain::canonical_web_origin(&outcome.asset)
+                                .is_some_and(|candidate| candidate.key == origin.as_str())
+                    })
+                    .max_by_key(|outcome| {
+                        (outcome.updated_at, outcome.seq, outcome.asset.as_str())
+                    });
+                if let Some(candidate) = candidate {
+                    let mut alias = candidate.clone();
+                    alias.asset = item.exact_asset.clone();
+                    projected.push(alias);
+                }
+            }
+            _ => anyhow::bail!("TOOL_TRUTH_VULN_LEGACY_ASSET_AMBIGUOUS"),
+        }
+    }
+    Ok(projected)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct ExactHostStageEvidenceFact {
+    evidence_asset: String,
+    evidence_technique: String,
+    evidence_outcome: String,
+    evidence_id: i64,
+    evidence_organization_id: String,
+    tool_name: Option<String>,
+    evidence_kind: Option<String>,
+    evidence_raw_output: Option<String>,
+    target_id: Uuid,
+    target_organization_id: Option<Uuid>,
+    target_type: String,
+    target_name: String,
+    target_value: String,
+    target_ports: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl ExactHostStageEvidenceFact {
+    fn target_bound(&self) -> golish_db::repo::audit::TargetBoundEvidenceFactRow {
+        golish_db::repo::audit::TargetBoundEvidenceFactRow {
+            evidence_asset: self.evidence_asset.clone(),
+            evidence_technique: self.evidence_technique.clone(),
+            evidence_outcome: self.evidence_outcome.clone(),
+            evidence_id: self.evidence_id,
+            evidence_organization_id: self.evidence_organization_id.clone(),
+            tool_name: self.tool_name.clone(),
+            evidence_kind: self.evidence_kind.clone(),
+            evidence_raw_output: self.evidence_raw_output.clone(),
+            target_id: self.target_id,
+            target_organization_id: self.target_organization_id,
+            target_type: self.target_type.clone(),
+            target_name: self.target_name.clone(),
+            target_value: self.target_value.clone(),
+            target_ports: self.target_ports.clone(),
+        }
+    }
+}
+
+fn strengthen_host_stage_outcomes_from_exact_evidence(
+    stage_kind: &str,
+    organization_id: Uuid,
+    evidence: &[ExactHostStageEvidenceFact],
+    outcomes: &mut Vec<HostStageOutcome>,
+) {
+    if stage_kind != "external_attack_surface" {
+        return;
+    }
+    let metadata = evidence
+        .iter()
+        .map(|row| (row.evidence_id, (row.created_at, row.tool_name.clone())))
+        .collect::<BTreeMap<_, _>>();
+    let facts = super::evidence::eas_target_bound_evidence_facts(
+        organization_id,
+        evidence
+            .iter()
+            .map(ExactHostStageEvidenceFact::target_bound),
+    );
+    for (asset, technique, outcome, evidence_id) in facts {
+        let Some((created_at, source)) = metadata.get(&evidence_id) else {
+            continue;
+        };
+        outcomes.push(HostStageOutcome {
+            asset: asset.clone(),
+            technique: technique.clone(),
+            outcome: outcome.clone(),
+            source: source.clone(),
+            evidence_ids: vec![evidence_id],
+            updated_at: *created_at,
+            seq: evidence_id,
+        });
+        if technique == golish_db::repo::coverage_truth::TECH_EAS_PORT
+            && outcome == "blocked"
+            && source.as_deref() == Some("eas_discover_ports")
+        {
+            // Service fingerprinting has no executable input when the exact
+            // exhaustive-port producer is policy-blocked. Preserve that
+            // inconclusive residual as evidence-backed blocked truth rather
+            // than pretending the service producer ran or rescanning.
+            outcomes.push(HostStageOutcome {
+                asset,
+                technique: golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP.to_string(),
+                outcome: "blocked".to_string(),
+                source: Some("eas_discover_ports:blocked_prerequisite".to_string()),
+                evidence_ids: vec![evidence_id],
+                updated_at: *created_at,
+                seq: evidence_id,
+            });
+        }
+    }
 }
 
 fn host_stage_terminal_observation(outcome: Option<&HostStageOutcome>) -> Option<&'static str> {
@@ -199,11 +427,11 @@ impl GolishDbRepoProvider {
         let denominator_id = *denominator_ids
             .first()
             .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_HOST_STAGE_ROOT_MISSING"))?;
-        let project_root = std::fs::canonicalize(
-            project_paths
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_HOST_STAGE_PROJECT_MISSING"))?,
-        )?;
+        let project_path_at_freeze = project_paths
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("TOOL_TRUTH_HOST_STAGE_PROJECT_MISSING"))?
+            .to_string();
+        let project_root = std::fs::canonicalize(&project_path_at_freeze)?;
         let assets = items
             .iter()
             .map(|item| item.exact_asset.clone())
@@ -223,7 +451,7 @@ impl GolishDbRepoProvider {
         .into_iter()
         .map(|(asset, technique)| (asset, technique.to_string()))
         .collect::<BTreeSet<_>>();
-        let outcomes = sqlx::query_as::<_, HostStageOutcome>(
+        let mut outcomes = sqlx::query_as::<_, HostStageOutcome>(
             r#"SELECT DISTINCT ON (asset,technique)
                       asset,technique,outcome,source,evidence_ids,updated_at,seq
                  FROM technique_outcomes
@@ -238,6 +466,92 @@ impl GolishDbRepoProvider {
         .into_iter()
         .filter(|outcome| host_stage_outcome_is_fresh(outcome, request.stage_started_at))
         .collect::<Vec<_>>();
+        let target_ids = items.iter().map(|item| item.target_id).collect::<Vec<_>>();
+        let exact_evidence = sqlx::query_as::<_, ExactHostStageEvidenceFact>(
+            r#"SELECT evidence.evidence_asset,evidence.evidence_technique,
+                      evidence.evidence_outcome,evidence.id AS evidence_id,
+                      evidence.detail->>'organization_id' AS evidence_organization_id,
+                      evidence.tool_name,evidence.detail->>'kind' AS evidence_kind,
+                      evidence.detail->>'raw_output' AS evidence_raw_output,
+                      target.id AS target_id,target.organization_id AS target_organization_id,
+                      target.target_type::text AS target_type,target.name AS target_name,
+                      target.value AS target_value,COALESCE(target.ports,'[]'::jsonb) AS target_ports,
+                      evidence.created_at
+                 FROM audit_log evidence
+                 JOIN evidence_classifications classification
+                   ON classification.evidence_audit_id=evidence.id
+                  AND classification.valid_to IS NULL
+                  AND classification.classification='in_scope'
+                  AND classification.producing_stage_run_id=$6::uuid
+                 JOIN targets target
+                   ON target.id=evidence.target_id
+                  AND target.organization_id=$5::uuid
+                  AND target.scope::text='in'
+                  AND target.project_path=$2
+                 JOIN stage_worker_runs worker
+                   ON worker.id::text=(evidence.detail #>> '{tool_truth_producer,worker_run_id}')
+                  AND worker.operation_id=$1::uuid
+                  AND worker.stage_execution_id=$6::uuid
+                  AND worker.stage_run_unit_id=$7::uuid
+                  AND worker.organization_id=$5::uuid
+                 JOIN tool_calls tool
+                   ON tool.id::text=(evidence.detail #>> '{tool_truth_producer,source_tool_call_id}')
+                  AND tool.worker_run_id=worker.id
+                  AND tool.operation_id=worker.operation_id
+                  AND tool.stage_execution_id=worker.stage_execution_id
+                  AND tool.stage_run_unit_id=worker.stage_run_unit_id
+                  AND tool.organization_id=worker.organization_id
+                  AND tool.status='finished'
+                WHERE evidence.audit_role='evidence'
+                  AND evidence.run_id=$1::uuid
+                  AND evidence.project_path=$2
+                  AND evidence.target_id=ANY($3)
+                  AND evidence.created_at >= $4
+                  AND evidence.detail->>'organization_id'=($5::uuid)::text
+                  AND evidence.detail #>> '{tool_truth_producer,stage_execution_id}'=($6::uuid)::text
+                  AND evidence.detail #>> '{tool_truth_producer,stage_run_unit_id}'=($7::uuid)::text
+                  AND evidence.detail #>> '{tool_truth_producer,organization_id}'=($5::uuid)::text
+                  AND evidence.detail #>> '{tool_truth_producer,producer_tool_name}'=tool.name
+                  AND evidence.tool_name=tool.name
+                  AND evidence.evidence_asset IS NOT NULL
+                  AND evidence.evidence_technique IS NOT NULL
+                  AND evidence.evidence_outcome IS NOT NULL
+                ORDER BY evidence.id"#,
+        )
+        .bind(request.operation_id)
+        .bind(&project_path_at_freeze)
+        .bind(&target_ids)
+        .bind(request.stage_started_at)
+        .bind(request.organization_id)
+        .bind(request.stage_execution_id)
+        .bind(request.stage_run_unit_id)
+        .fetch_all(self.pool.as_ref())
+        .await?;
+        strengthen_host_stage_outcomes_from_exact_evidence(
+            &request.stage_kind,
+            request.organization_id,
+            &exact_evidence,
+            &mut outcomes,
+        );
+
+        if request.stage_kind == "vuln_triage" {
+            let handoffs = golish_db::repo::stage_handoffs::list_latest_final_sealed_for_sources(
+                self.pool.as_ref(),
+                request.operation_id,
+                request.organization_id,
+                &["enumeration".to_string()],
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let authority = vuln_enumeration_surface_authority(
+                request.operation_id,
+                request.organization_id,
+                &handoffs,
+            )?;
+            outcomes.extend(legacy_vuln_root_surface_outcomes(
+                &items, &outcomes, &authority,
+            )?);
+        }
 
         let resolved_outcomes = items
             .iter()
@@ -949,6 +1263,82 @@ mod tests {
     }
 
     #[test]
+    fn eas_closeout_strengthens_empty_placeholders_from_exact_blocked_producer_evidence() {
+        let organization_id = Uuid::new_v4();
+        let target_id = Uuid::new_v4();
+        let created_at = chrono::Utc::now();
+        let blocked = |technique: &str, evidence_id: i64| ExactHostStageEvidenceFact {
+            evidence_asset: "61.130.180.110".to_string(),
+            evidence_technique: technique.to_string(),
+            evidence_outcome: "blocked".to_string(),
+            evidence_id,
+            evidence_organization_id: organization_id.to_string(),
+            tool_name: Some("eas_discover_ports".to_string()),
+            evidence_kind: Some("eas.port_scan_policy_blocked".to_string()),
+            evidence_raw_output: Some(
+                serde_json::json!({
+                    "schema": "eas_port_scan_policy_blocked_v1",
+                    "reason_code": "EAS_PORT_SCAN_ATTEMPTS_EXHAUSTED",
+                    "scan_profile": "full",
+                    "host_budget": 4,
+                    "network_launched": false,
+                    "target_id": target_id,
+                })
+                .to_string(),
+            ),
+            target_id,
+            target_organization_id: Some(organization_id),
+            target_type: "ip".to_string(),
+            target_name: "61.130.180.110".to_string(),
+            target_value: "61.130.180.110".to_string(),
+            target_ports: serde_json::json!([]),
+            created_at,
+        };
+        let evidence = vec![
+            blocked(golish_db::repo::coverage_truth::TECH_EAS_LIVENESS, 402),
+            blocked(golish_db::repo::coverage_truth::TECH_EAS_PORT, 403),
+        ];
+        let mut outcomes = vec![HostStageOutcome {
+            asset: "61.130.180.110".to_string(),
+            technique: golish_db::repo::coverage_truth::TECH_EAS_PORT.to_string(),
+            outcome: "blocked".to_string(),
+            source: Some("submit_stage_deliverable".to_string()),
+            evidence_ids: Vec::new(),
+            updated_at: created_at - chrono::Duration::seconds(1),
+            seq: 1,
+        }];
+
+        strengthen_host_stage_outcomes_from_exact_evidence(
+            "external_attack_surface",
+            organization_id,
+            &evidence,
+            &mut outcomes,
+        );
+
+        for technique in [
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+        ] {
+            assert!(outcomes.iter().any(|outcome| {
+                outcome.technique == technique
+                    && outcome.outcome == "blocked"
+                    && !outcome.evidence_ids.is_empty()
+            }));
+        }
+        let mut foreign = evidence;
+        foreign[0].target_organization_id = Some(Uuid::new_v4());
+        let mut rejected = Vec::new();
+        strengthen_host_stage_outcomes_from_exact_evidence(
+            "external_attack_surface",
+            organization_id,
+            &foreign[..1],
+            &mut rejected,
+        );
+        assert!(rejected.is_empty());
+    }
+
+    #[test]
     fn vuln_host_stage_resolves_canonical_origin_and_only_one_domain_alias() {
         let denominator_id = Uuid::new_v4();
         let item = |exact_asset: &str, target_type: &str| HostStageRootItem {
@@ -998,6 +1388,69 @@ mod tests {
             &outcomes,
         )
         .is_none());
+    }
+
+    #[test]
+    fn legacy_vuln_root_uses_exact_enumeration_surface_without_rescanning_excluded_targets() {
+        let denominator_id = Uuid::new_v4();
+        let item = |exact_asset: &str, target_type: &str| HostStageRootItem {
+            denominator_id,
+            project_path_at_freeze: "/tmp/tool-truth-vuln-legacy".to_string(),
+            input_key: format!("{target_type}:{exact_asset}"),
+            target_id: Uuid::new_v4(),
+            exact_asset: exact_asset.to_string(),
+            target_type: target_type.to_string(),
+            technique: "WSTG-INFO".to_string(),
+            expected_capability: "vuln.nuclei_general".to_string(),
+        };
+        let items = vec![
+            item("moresec.cn", "domain"),
+            item("moresec.com.cn", "domain"),
+            item("61.130.180.110", "ip"),
+        ];
+        let producer = HostStageOutcome {
+            asset: "https://moresec.cn:443".to_string(),
+            technique: "WSTG-INFO".to_string(),
+            outcome: "blocked".to_string(),
+            source: Some("vuln_nuclei_general".to_string()),
+            evidence_ids: vec![42],
+            updated_at: chrono::Utc::now(),
+            seq: 1,
+        };
+        let authority = VulnEnumerationSurfaceAuthority {
+            origins: BTreeSet::from(["https://moresec.cn:443".to_string()]),
+            evidence_ids: vec![5, 6],
+            gate_passed_at: producer.updated_at - chrono::Duration::minutes(1),
+        };
+
+        let projected =
+            legacy_vuln_root_surface_outcomes(&items, std::slice::from_ref(&producer), &authority)
+                .expect("legacy root must reconcile against immutable Enumeration authority");
+
+        assert_eq!(projected.len(), 3);
+        assert!(projected.iter().any(|outcome| {
+            outcome.asset == "moresec.cn"
+                && outcome.outcome == "blocked"
+                && outcome.evidence_ids == vec![42]
+        }));
+        for excluded in ["moresec.com.cn", "61.130.180.110"] {
+            assert!(projected.iter().any(|outcome| {
+                outcome.asset == excluded
+                    && outcome.outcome == "not_applicable"
+                    && outcome.source.as_deref()
+                        == Some("enumeration_final_seal:excluded_from_vuln_surface")
+                    && outcome.evidence_ids == vec![5, 6]
+            }));
+        }
+
+        let exact_foreign = item("https://not-authorized.example:443", "url");
+        assert!(legacy_vuln_root_surface_outcomes(
+            std::slice::from_ref(&exact_foreign),
+            &[],
+            &authority,
+        )
+        .expect("exact-origin drift remains an unresolved gap")
+        .is_empty());
     }
 
     #[test]

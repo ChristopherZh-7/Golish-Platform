@@ -13,9 +13,9 @@
 //!   running. `backgrounded` is only the compatibility status label.
 //! - Runtime listeners reconcile terminal output and wake stage closeout only
 //!   after evidence, structured outcomes, UI state, and the agent note land.
-//! - Process lifetime is not tied to an elapsed-time watchdog. The agent or
-//!   operator observes activity and explicitly cancels a job when appropriate;
-//!   session shutdown remains an authoritative cancellation boundary.
+//! - Generic process lifetime is not tied to an elapsed-time watchdog. A
+//!   trusted security producer may explicitly install a server-owned policy
+//!   deadline before launch; ordinary shell/background jobs remain unaffected.
 //!
 //! Design: `docs/design/2026-07-23-codex-same-session-process-yield.md`.
 
@@ -83,8 +83,9 @@ pub enum JobStatus {
     Killed,
 }
 
-/// Server-authored reason a managed child reached terminal state. There is no
-/// elapsed-time/deadline variant by design.
+/// Server-authored reason a managed child reached terminal state. Generic jobs
+/// never receive an elapsed deadline; `ProducerDeadline` is installed only by
+/// a trusted typed producer before launch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobTerminationReason {
     Exited,
@@ -93,6 +94,7 @@ pub enum JobTerminationReason {
     SpawnFailed,
     WaitFailed,
     OutputIncomplete,
+    ProducerDeadline,
 }
 
 impl JobTerminationReason {
@@ -104,6 +106,7 @@ impl JobTerminationReason {
             Self::SpawnFailed => "spawn_failed",
             Self::WaitFailed => "wait_failed",
             Self::OutputIncomplete => "output_incomplete",
+            Self::ProducerDeadline => "producer_deadline",
         }
     }
 }
@@ -154,6 +157,14 @@ struct JobState {
     processing_claim: Arc<AtomicBool>,
     reconciler: Option<Arc<dyn BackgroundJobReconciler>>,
     reconciliation: Option<BackgroundJobReconciliation>,
+}
+
+enum ManagedSpawnPolicy {
+    Generic,
+    Reconciled {
+        reconciler: Arc<dyn BackgroundJobReconciler>,
+        producer_deadline: Option<Duration>,
+    },
 }
 
 /// Immutable view of a job's current state, safe to hand back to callers.
@@ -611,7 +622,7 @@ impl BackgroundJobManager {
             legacy_limit,
             session_id,
             tool_context,
-            None,
+            ManagedSpawnPolicy::Generic,
         )
     }
 
@@ -639,7 +650,7 @@ impl BackgroundJobManager {
             legacy_limit,
             session_id,
             tool_context,
-            None,
+            ManagedSpawnPolicy::Generic,
         ))
     }
 
@@ -660,7 +671,10 @@ impl BackgroundJobManager {
             Duration::ZERO,
             session_id,
             tool_context,
-            Some(reconciler),
+            ManagedSpawnPolicy::Reconciled {
+                reconciler,
+                producer_deadline: None,
+            },
         )
     }
 
@@ -685,7 +699,43 @@ impl BackgroundJobManager {
             Duration::ZERO,
             session_id,
             tool_context,
-            Some(reconciler),
+            ManagedSpawnPolicy::Reconciled {
+                reconciler,
+                producer_deadline: None,
+            },
+        ))
+    }
+
+    /// Trusted security-producer spawn. Unlike the generic managed-process
+    /// path, this exact producer has a server-authored maximum runtime. The
+    /// child process group is killed and reaped at the deadline, then the typed
+    /// reconciler persists a bounded residual before closeout can continue.
+    pub fn try_spawn_for_session_and_tool_with_reconciler_and_deadline(
+        &self,
+        command: &str,
+        workspace: &Path,
+        session_id: Option<String>,
+        tool_context: Option<golish_core::AgentToolContext>,
+        reconciler: Arc<dyn BackgroundJobReconciler>,
+        producer_deadline: Duration,
+    ) -> Result<String, BackgroundJobSpawnError> {
+        if tool_context
+            .as_ref()
+            .and_then(|context| context.candidate_attempt.as_ref())
+            .is_some()
+        {
+            return Err(BackgroundJobSpawnError::CandidateVerifierForegroundRequired);
+        }
+        Ok(self.spawn_for_session_and_tool_unchecked(
+            command,
+            workspace,
+            Duration::ZERO,
+            session_id,
+            tool_context,
+            ManagedSpawnPolicy::Reconciled {
+                reconciler,
+                producer_deadline: Some(producer_deadline.max(Duration::from_millis(1))),
+            },
         ))
     }
 
@@ -696,9 +746,17 @@ impl BackgroundJobManager {
         _legacy_limit: Duration,
         session_id: Option<String>,
         tool_context: Option<golish_core::AgentToolContext>,
-        reconciler: Option<Arc<dyn BackgroundJobReconciler>>,
+        policy: ManagedSpawnPolicy,
     ) -> String {
         self.prune();
+
+        let (reconciler, producer_deadline) = match policy {
+            ManagedSpawnPolicy::Generic => (None, None),
+            ManagedSpawnPolicy::Reconciled {
+                reconciler,
+                producer_deadline,
+            } => (Some(reconciler), producer_deadline),
+        };
 
         let id = format!("job_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
         let spool_dir = workspace.join(".golish").join("background-jobs");
@@ -794,10 +852,18 @@ impl BackgroundJobManager {
                     enum Outcome {
                         Exited(std::io::Result<std::process::ExitStatus>),
                         Stopped,
+                        ProducerDeadline,
                     }
+                    let deadline = async move {
+                        match producer_deadline {
+                            Some(deadline) => tokio::time::sleep(deadline).await,
+                            None => std::future::pending::<()>().await,
+                        }
+                    };
                     let outcome = tokio::select! {
                         r = child.wait() => Outcome::Exited(r),
                         _ = kill.notified() => Outcome::Stopped,
+                        _ = deadline => Outcome::ProducerDeadline,
                     };
                     let (mut status, mut exit_code, mut diagnostics, mut termination_reason) =
                         match outcome {
@@ -839,6 +905,19 @@ impl BackgroundJobManager {
                                     st.lock()
                                         .termination_reason
                                         .unwrap_or(JobTerminationReason::OperatorCancelled),
+                                )
+                            }
+                            Outcome::ProducerDeadline => {
+                                golish_platform::process::kill_process_group(&mut child).await;
+                                let wait_error = child.wait().await.err();
+                                (
+                                    JobStatus::Killed,
+                                    Some(124),
+                                    wait_error
+                                        .map(|error| format!("child reap failed: {error}"))
+                                        .into_iter()
+                                        .collect(),
+                                    JobTerminationReason::ProducerDeadline,
                                 )
                             }
                         };
@@ -1380,6 +1459,64 @@ mod tests {
                 skip_generic_persistence: true,
             })
         }
+    }
+
+    struct ProducerDeadlineReconciler;
+
+    #[async_trait::async_trait]
+    impl BackgroundJobReconciler for ProducerDeadlineReconciler {
+        async fn reconcile(
+            &self,
+            terminal: ManagedJobTerminal,
+        ) -> anyhow::Result<BackgroundJobReconciliation> {
+            assert_eq!(
+                terminal.termination_reason,
+                JobTerminationReason::ProducerDeadline
+            );
+            assert_eq!(terminal.status, JobStatus::Killed);
+            assert_eq!(terminal.exit_code, Some(124));
+            Ok(BackgroundJobReconciliation {
+                tool_result: serde_json::json!({
+                    "typed": true,
+                    "reason": terminal.termination_reason.as_str(),
+                }),
+                note: Some("producer deadline reconciled".to_string()),
+                evidence_ids: Vec::new(),
+                skip_generic_persistence: true,
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn trusted_producer_deadline_kills_reaps_and_reconciles() {
+        let mgr = BackgroundJobManager::new();
+        let mut completions = mgr.subscribe_completions();
+        let id = mgr
+            .try_spawn_for_session_and_tool_with_reconciler_and_deadline(
+                "sleep 5",
+                &ws(),
+                None,
+                None,
+                Arc::new(ProducerDeadlineReconciler),
+                Duration::from_millis(80),
+            )
+            .expect("trusted producer starts");
+
+        let completion = tokio::time::timeout(Duration::from_secs(5), completions.recv())
+            .await
+            .expect("deadline completion is broadcast")
+            .expect("completion channel remains open");
+        assert_eq!(completion.job_id, id);
+        let terminal = mgr.snapshot(&id).expect("terminal remains retained");
+        assert_eq!(terminal.status, JobStatus::Killed);
+        assert_eq!(terminal.exit_code, Some(124));
+        assert_eq!(
+            mgr.termination_reason(&id),
+            Some(JobTerminationReason::ProducerDeadline)
+        );
+        let reconciliation = mgr.reconciliation(&id).expect("typed result retained");
+        assert_eq!(reconciliation.tool_result["reason"], "producer_deadline");
     }
 
     #[cfg(unix)]

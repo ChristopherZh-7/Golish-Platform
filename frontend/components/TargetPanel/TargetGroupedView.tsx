@@ -67,6 +67,7 @@ import {
 } from "@/lib/target-panel/engagement";
 import { translateWithFallback } from "@/lib/target-panel/org-fields";
 import {
+  buildHostTree,
   buildOrgTree,
   collectSubtreeTargets,
   countOrgDeletionImpact,
@@ -379,12 +380,20 @@ export function TargetGroupedView({
     [orgById, orgs, targets]
   );
   const unassignedLabel = t("targets.unassigned");
+  const unresolvedLabel = translateWithFallback(t, "targets.unresolvedGroup", "Unresolved");
   // Organization-only tree: targets stay on each node for counts/deletion, but
   // the sidebar does not render asset rows. IP/domain grouping lives in the
   // right-hand workspace so company navigation stays clean.
   const roots = useMemo(
     () => buildOrgTree(orgs, visibleTargets, unassignedLabel),
     [orgs, visibleTargets, unassignedLabel]
+  );
+  // Keep a separate host projection for right-hand IP selection. The visible
+  // sidebar intentionally uses `roots`, but resolution-only IP groups still
+  // need a host node even when no standalone IP Target row exists.
+  const hostRoots = useMemo(
+    () => buildHostTree(orgs, visibleTargets, unassignedLabel, unresolvedLabel),
+    [orgs, visibleTargets, unassignedLabel, unresolvedLabel]
   );
   const rootIds = useMemo(() => new Set(roots.map((root) => root.id)), [roots]);
   const selectedOrg = useMemo(
@@ -465,9 +474,9 @@ export function TargetGroupedView({
         walk(node.children);
       }
     };
-    walk(roots);
+    walk(hostRoots);
     return map;
-  }, [roots]);
+  }, [hostRoots]);
   const selectedHost = selectedHostId ? (hostNodeById.get(selectedHostId) ?? null) : null;
 
   // The host panel reuses `TargetSurfaceWorkbench`. Its subject is the IP's own

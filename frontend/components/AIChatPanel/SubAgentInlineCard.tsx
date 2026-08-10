@@ -14,6 +14,7 @@ import { ChevronRight } from "lucide-react";
 import { memo, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { AnchorChip } from "@/components/ui/AnchorChip";
+import { resolveOwningStageRunRequestId } from "@/lib/stage-run-identity";
 import { getAgentColor, getAgentIcon } from "@/lib/sub-agent-theme";
 import { formatDurationShort } from "@/lib/time";
 import { cn } from "@/lib/utils";
@@ -274,8 +275,37 @@ export const SubAgentInlineCard = memo(function SubAgentInlineCard({
     if (!targetSid || !store.sessions[targetSid]) {
       targetSid = store.activeSessionId ?? sessionId;
     }
-    store.setToolDetailRequestIds(targetSid, [requestId]);
-    store.setDetailViewMode(targetSid, "sub-agent-detail");
+    const session = store.sessions[targetSid];
+    const knownStageRequestIds = [
+      ...Object.keys(session?.stageRuns ?? {}),
+      session?.stageRun?.requestId ?? "",
+    ].filter(Boolean);
+    const owningStageRequestId = resolveOwningStageRunRequestId(requestId, knownStageRequestIds);
+    const owningStageIsVisible = Boolean(
+      owningStageRequestId &&
+        (knownStageRequestIds.includes(owningStageRequestId) ||
+          (store.timelines[targetSid] ?? []).some(
+            (block) =>
+              block.type === "ai_tool_execution" &&
+              block.data.requestId === owningStageRequestId &&
+              block.data.toolName === "stage_run"
+          ))
+    );
+    if (owningStageRequestId && owningStageIsVisible) {
+      store.setToolDetailRequestIds(targetSid, [owningStageRequestId, requestId]);
+      store.setDetailViewMode(targetSid, "tool-detail");
+      return;
+    }
+    const requestIsToolExecution = (store.timelines[targetSid] ?? []).some(
+      (block) => block.type === "ai_tool_execution" && block.data.requestId === requestId
+    );
+    if (requestIsToolExecution) {
+      store.setToolDetailRequestIds(targetSid, [requestId]);
+      store.setDetailViewMode(targetSid, "tool-detail");
+      return;
+    }
+    store.setToolDetailRequestIds(targetSid, null);
+    store.setDetailViewMode(targetSid, "timeline");
   };
 
   return (

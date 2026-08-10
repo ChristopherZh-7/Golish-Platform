@@ -144,6 +144,35 @@ ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
   updated_at = NOW() \
 WHERE technique_outcomes.outcome IN ('partial', 'error')";
 
+/// A trusted producer may replace a model-authored `blocked` placeholder only
+/// when that placeholder has no evidence. This is intentionally narrower than
+/// the ordinary producer upsert: `found` / `empty`, evidence-backed terminal
+/// rows, and terminal rows owned by another producer remain immutable.
+const UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL: &str = "\
+INSERT INTO technique_outcomes \
+  (organization_id, run_id, asset, technique, outcome, source, query, \
+   result_count, confidence, evidence_ids, seq, collected_at) \
+VALUES \
+  ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
+   (SELECT COALESCE(MAX(seq), 0) + 1 FROM technique_outcomes \
+     WHERE organization_id = $1 AND run_id = $2), \
+   $11) \
+ON CONFLICT (organization_id, run_id, asset, technique) DO UPDATE SET \
+  outcome = EXCLUDED.outcome, \
+  source = EXCLUDED.source, \
+  query = EXCLUDED.query, \
+  result_count = EXCLUDED.result_count, \
+  confidence = EXCLUDED.confidence, \
+  evidence_ids = EXCLUDED.evidence_ids, \
+  collected_at = EXCLUDED.collected_at, \
+  updated_at = NOW() \
+WHERE technique_outcomes.outcome IN ('partial', 'error') \
+   OR ( \
+       technique_outcomes.outcome = 'blocked' \
+       AND COALESCE(cardinality(technique_outcomes.evidence_ids), 0) = 0 \
+       AND technique_outcomes.source = 'submit_stage_deliverable' \
+   )";
+
 /// Epoch-guarded stage attempts may replace terminal truth only when it is
 /// older than the current stage epoch. This is the append-only replacement
 /// execution case: the old evidence remains in the ledger, while the mutable
@@ -372,6 +401,85 @@ pub async fn upsert_batch_guarded_monotonic(
     lock_target_write_guard(&mut tx, guard).await?;
     for write in writes {
         let _applied = execute_attempt_marker(&mut *tx, write).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Publish an evidence-backed producer `blocked` result without allowing it to
+/// overwrite any stronger or foreign terminal truth. Replays are exact: after
+/// the conditional upsert every requested row must already equal the supplied
+/// producer authority, whether this call inserted, upgraded, or merely read it.
+pub async fn upsert_batch_guarded_producer_blocked(
+    pool: &PgPool,
+    guard: &TargetWriteGuard,
+    writes: &[TechniqueOutcomeWrite],
+) -> Result<()> {
+    if writes.is_empty() {
+        return Ok(());
+    }
+    let Some(organization_id) = guard.organization_id else {
+        return Err(anyhow::anyhow!(
+            "target-bound technique outcomes require an organization"
+        ));
+    };
+    if writes.iter().any(|write| {
+        write.organization_id != organization_id
+            || write.outcome != "blocked"
+            || write.source.as_deref().is_none_or(str::is_empty)
+            || write.evidence_ids.is_empty()
+            || write.collected_at.is_none()
+    }) {
+        return Err(anyhow::anyhow!(
+            "producer blocked outcomes require one organization, source, evidence, and collection time"
+        ));
+    }
+
+    let mut tx = pool.begin().await?;
+    lock_target_write_guard(&mut tx, guard).await?;
+    for write in writes {
+        sqlx::query(UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL)
+            .bind(write.organization_id)
+            .bind(&write.run_id)
+            .bind(&write.asset)
+            .bind(&write.technique)
+            .bind(&write.outcome)
+            .bind(write.source.as_deref())
+            .bind(write.query.as_deref())
+            .bind(write.result_count)
+            .bind(write.confidence)
+            .bind(write.evidence_ids.as_slice())
+            .bind(write.collected_at)
+            .execute(&mut *tx)
+            .await?;
+
+        let current = sqlx::query_as::<_, (String, Option<String>, Option<String>, Vec<i64>)>(
+            r#"SELECT outcome, source, query, evidence_ids
+               FROM technique_outcomes
+               WHERE organization_id = $1
+                 AND run_id = $2
+                 AND asset = $3
+                 AND technique = $4"#,
+        )
+        .bind(write.organization_id)
+        .bind(&write.run_id)
+        .bind(&write.asset)
+        .bind(&write.technique)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let expected = (
+            write.outcome.clone(),
+            write.source.clone(),
+            write.query.clone(),
+            write.evidence_ids.clone(),
+        );
+        if current.as_ref() != Some(&expected) {
+            return Err(anyhow::anyhow!(
+                "producer blocked outcome conflicts with existing terminal truth for {} × {}",
+                write.asset,
+                write.technique
+            ));
+        }
     }
     tx.commit().await?;
     Ok(())
@@ -817,6 +925,21 @@ mod tests {
     fn monotonic_guarded_batch_cannot_downgrade_terminal_truth() {
         assert!(UPSERT_ATTEMPT_MARKER_IF_UNFINISHED_SQL
             .contains("WHERE technique_outcomes.outcome IN ('partial', 'error')"));
+    }
+
+    #[test]
+    fn producer_blocked_evidence_only_upgrades_an_empty_model_placeholder() {
+        assert!(UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL
+            .contains("technique_outcomes.outcome IN ('partial', 'error')"));
+        assert!(
+            UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL.contains("technique_outcomes.outcome = 'blocked'")
+        );
+        assert!(UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL
+            .contains("COALESCE(cardinality(technique_outcomes.evidence_ids), 0) = 0"));
+        assert!(UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL
+            .contains("technique_outcomes.source = 'submit_stage_deliverable'"));
+        assert!(!UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL.contains("outcome = 'found'"));
+        assert!(!UPSERT_PRODUCER_BLOCKED_EVIDENCE_SQL.contains("outcome = 'empty'"));
     }
 
     #[test]

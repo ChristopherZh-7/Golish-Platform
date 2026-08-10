@@ -232,9 +232,12 @@ export function useTargetSurfaceData(
   relatedTargetIds: string[] = NO_RELATED_TARGET_IDS,
   options: UseTargetSurfaceDataOptions = {}
 ) {
+  const targetIdsKey = uniqueIds([targetId, ...relatedTargetIds])
+    .sort()
+    .join("\u0000");
   const targetIds = useMemo(
-    () => uniqueIds([targetId, ...relatedTargetIds]),
-    [targetId, relatedTargetIds]
+    () => (targetIdsKey ? targetIdsKey.split("\u0000") : []),
+    [targetIdsKey]
   );
   const backendLoadEnabled = Boolean(options.loadBackendHierarchy && targetId);
   const includeRelatedBackend = options.includeRelatedBackend ?? true;

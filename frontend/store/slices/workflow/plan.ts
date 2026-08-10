@@ -112,6 +112,7 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         const session = state.sessions[sessionId] as Record<string, unknown> & {
           plansByStage?: Record<string, TaskPlan>;
           stageOrder?: string[];
+          stagePlanMessageIds?: Record<string, string>;
         };
         if (!session.plansByStage) session.plansByStage = {};
         if (!session.stageOrder) session.stageOrder = [];
@@ -129,6 +130,21 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         if (prev && prev.version >= 1 && plan.version === 0) return;
         session.plansByStage[stageId] = plan;
         if (!session.stageOrder.includes(stageId)) session.stageOrder.push(stageId);
+      }),
+
+    anchorStagePlan: (sessionId: string, stageId: string, messageId: string) =>
+      set((state) => {
+        // Anchoring must never manufacture an AI-session alias while terminal
+        // restoration is still in flight. The central event handler owns plan
+        // buffering; a later chat event can retry this no-op safely.
+        const session = state.sessions[sessionId];
+        if (!session || !stageId || !messageId) return;
+        if (!session.stagePlanMessageIds) session.stagePlanMessageIds = {};
+        // The first stage-start message owns the card permanently. Later plan
+        // versions update its content in place instead of moving history.
+        if (!session.stagePlanMessageIds[stageId]) {
+          session.stagePlanMessageIds[stageId] = messageId;
+        }
       }),
 
     markStagePassed: (sessionId: string, stageId: string) =>
@@ -166,7 +182,10 @@ export function createPlanActions(set: ImmerSet<WorkflowStoreDraft>) {
         if (!session) return;
         const affected = new Set(affectedStages);
         if (!session.plansByStage) session.plansByStage = {};
-        for (const stage of affected) delete session.plansByStage[stage];
+        for (const stage of affected) {
+          delete session.plansByStage[stage];
+          if (session.stagePlanMessageIds) delete session.stagePlanMessageIds[stage];
+        }
         session.plansByStage[selectedStage] = createResetStageSeed(selectedStage);
 
         session.stageOrder = (session.stageOrder ?? []).filter((stage) => !affected.has(stage));

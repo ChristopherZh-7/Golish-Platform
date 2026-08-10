@@ -237,6 +237,13 @@ mod transient_runtime_tx_tests {
             Some(StageTeamToolRecoveryPolicy::ResumeAfterInterruptedBoundedReadOnlyTool),
             "Enumeration browser collection is exact-origin and normalizes UI actions to zero"
         );
+        for tool_name in ["check_job", "wait_for_background_jobs"] {
+            assert_eq!(
+                stage_team_tool_recovery_policy(tool_name, "running", None),
+                Some(StageTeamToolRecoveryPolicy::ResumeAfterInterruptedBoundedReadOnlyTool),
+                "read-only job observation is safe to refresh after restart: {tool_name}"
+            );
+        }
         for tool_name in [
             "eas_probe_http_liveness",
             "eas_discover_ports",
@@ -257,8 +264,8 @@ mod transient_runtime_tx_tests {
                 "failed",
                 Some("provider lookup failed"),
             ),
-            ("browser_collect_js_api", "running", None),
             ("route_probe_paths", "running", None),
+            ("kill_job", "running", None),
             ("vuln_nuclei_general", "running", None),
         ] {
             assert_eq!(
@@ -1588,13 +1595,24 @@ pub async fn transition_stage_execution(
     pool: &sqlx::PgPool,
     input: &TransitionStageExecutionRow,
 ) -> RuntimeMemoryStoreResult<TransitionedStageExecutionRow> {
-    transition_stage_execution_inner(pool, input, false).await
+    transition_stage_execution_inner(pool, input, false, false).await
+}
+
+/// Cross a deliberate projected-DAG boundary without finishing the operation.
+/// The source execution completion, successor shell, operation cursor, exact
+/// boundary marker, and Task waiting state commit together.
+pub async fn pause_after_stage_slice(
+    pool: &sqlx::PgPool,
+    input: &TransitionStageExecutionRow,
+) -> RuntimeMemoryStoreResult<TransitionedStageExecutionRow> {
+    transition_stage_execution_inner(pool, input, false, true).await
 }
 
 async fn transition_stage_execution_inner(
     pool: &sqlx::PgPool,
     input: &TransitionStageExecutionRow,
     inject_failure_after_insert: bool,
+    pause_after_slice: bool,
 ) -> RuntimeMemoryStoreResult<TransitionedStageExecutionRow> {
     if input.current_stage_execution_id == input.next_stage_execution_id {
         return Err(RuntimeMemoryStoreError::IdentityMismatch {
@@ -1746,6 +1764,55 @@ async fn transition_stage_execution_inner(
         return Err(RuntimeMemoryStoreError::Conflict {
             code: "next_stage_execution_not_unique",
         });
+    }
+
+    if pause_after_slice {
+        let task = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id=$1 FOR UPDATE")
+            .bind(input.operation_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(RuntimeMemoryStoreError::Missing { entity: "tasks" })?;
+        if task.status != crate::models::TaskStatus::Running || task.result.is_some() {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_slice_task_not_running",
+            });
+        }
+        let marker = serde_json::json!({
+            "schema_version": 1,
+            "source_stage": locked_operation.current_stage,
+            "source_stage_execution_id": input.current_stage_execution_id,
+            "successor_stage": input.next_stage,
+            "successor_stage_execution_id": input.next_stage_execution_id,
+        });
+        let mut state_blob = locked_operation.state_blob.clone();
+        if !state_blob.is_object() {
+            state_blob = serde_json::json!({});
+        }
+        state_blob
+            .as_object_mut()
+            .expect("state blob normalized to an object")
+            .insert("stage_slice_boundary_v1".to_string(), marker);
+        sqlx::query("UPDATE operation_state SET state_blob=$2 WHERE operation_id=$1")
+            .bind(input.operation_id)
+            .bind(&state_blob)
+            .execute(&mut *tx)
+            .await?;
+        operation.state_blob = state_blob;
+        let parked = sqlx::query_as::<_, Task>(
+            "UPDATE tasks SET status='waiting',updated_at=NOW() \
+             WHERE id=$1 AND status='running' AND result IS NULL RETURNING *",
+        )
+        .bind(input.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Conflict {
+            code: "stage_slice_task_park_cas_failed",
+        })?;
+        if parked.status != crate::models::TaskStatus::Waiting || parked.result.is_some() {
+            return Err(RuntimeMemoryStoreError::Conflict {
+                code: "stage_slice_task_park_mismatch",
+            });
+        }
     }
 
     tx.commit().await?;
@@ -2224,9 +2291,23 @@ async fn supersede_stage_checkpoint_inner(
                       AND submission.stage_run_unit_id=plan.stage_run_unit_id
                       AND submission.organization_id=plan.organization_id
                       AND submission.worker_run_id=worker.id
-                      AND submission.attempt_epoch=worker.attempt_epoch
+                      AND submission.attempt_epoch<=worker.attempt_epoch
                       AND submission.payload_sha256=$7
                       AND submission.lease_token IS NOT NULL
+                     JOIN tool_calls tool
+                       ON tool.id=submission.tool_call_record_id
+                      AND tool.call_id=submission.tool_request_id
+                      AND tool.name='submit_stage_deliverable'
+                      AND tool.status='finished'
+                      AND tool.operation_id=submission.operation_id
+                      AND tool.stage_execution_id=submission.stage_execution_id
+                      AND tool.stage_run_unit_id=submission.stage_run_unit_id
+                      AND tool.worker_run_id=submission.worker_run_id
+                      AND tool.organization_id=submission.organization_id
+                      AND tool.attempt_epoch=submission.attempt_epoch
+                      AND tool.lease_token=submission.lease_token
+                      AND tool.result::jsonb->>'status'='accepted'
+                      AND (tool.result::jsonb->>'deliverable_submission_id')::UUID=submission.id
                     WHERE plan.id=$3
                       AND plan.operation_id=$1
                       AND plan.stage_execution_id=$2
@@ -2260,7 +2341,7 @@ async fn supersede_stage_checkpoint_inner(
                              AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED' =
                                  ANY(output.blocker_codes)
                       )
-                    FOR UPDATE OF plan,item,worker,submission"#,
+                    FOR UPDATE OF plan,item,worker,submission,tool"#,
             )
             .bind(input.operation_id)
             .bind(source_execution_id)
@@ -7269,16 +7350,19 @@ fn stage_team_tool_recovery_policy(
     {
         return Some(StageTeamToolRecoveryPolicy::RetrySafeTerminalLocalTool);
     }
-    // This is intentionally a closed allowlist. These stage wrappers are
-    // backend-owned, exact-scope, bounded foreground reads. Their authoritative
-    // progress is persisted per coverage cell, so an interrupted worker can
-    // reconcile from the durable worklist without replaying old arguments or
-    // repeating terminal cells. The same worker chain gets a new Turn and must
-    // refresh the worklist before deciding which exact gaps remain.
+    // This is intentionally a closed allowlist. `check_job` and
+    // `wait_for_background_jobs` are local read-only observations. The stage
+    // wrappers are backend-owned, exact-scope producers whose authoritative
+    // progress is persisted per coverage cell. In both cases an interrupted
+    // worker can reconcile from durable truth without replaying old arguments
+    // or repeating terminal cells. The same worker chain gets a new Turn and
+    // must refresh the job/worklist before deciding which exact gaps remain.
     if matches!(tool_status, "received" | "running")
         && matches!(
             tool_name,
-            "enum_crawl_same_origin_urls"
+            "check_job"
+                | "wait_for_background_jobs"
+                | "enum_crawl_same_origin_urls"
                 | "browser_collect_js_api"
                 | "eas_probe_http_liveness"
                 | "eas_discover_ports"
@@ -8262,9 +8346,18 @@ async fn claim_stage_team_item(
     // the coordinator lane for either claim route; using only the final
     // aggregator flag excludes an interrupted open Controller from its own
     // exact recovery query and leaves it permanently recovery_required.
-    let recovered =
-        recover_expired_stage_team_item(&mut tx, &plan, is_aggregator_claim || is_leader_claim)
-            .await?;
+    let coordinator_lane = is_aggregator_claim || is_leader_claim;
+    let mut recovered = recover_expired_stage_team_item(&mut tx, &plan, coordinator_lane).await?;
+    // A parked Company Controller is claimed before its child scheduler is
+    // entered.  If its own coordinator lane is clean, reconcile one exact
+    // retry-safe child in the same transaction so the barrier reflects a
+    // queued child instead of returning operator_recovery_required before the
+    // child claim path can apply the closed recovery policy.  Unsafe/unknown
+    // tools remain recovery_required because the child-lane helper returns
+    // None for every tool outside the allowlist.
+    if is_leader_claim && matches!(recovered, StageTeamExpiredRecovery::None) {
+        recovered = recover_expired_stage_team_item(&mut tx, &plan, false).await?;
+    }
     if matches!(recovered, StageTeamExpiredRecovery::RecoveryRequired) {
         tx.commit().await?;
         return Err(RuntimeMemoryStoreError::Conflict {
@@ -9336,12 +9429,48 @@ pub async fn park_stage_team_finalizer_after_failure(
         worker_run_id: input.fence.worker_run_id,
         attempt_epoch: input.fence.attempt_epoch,
     })?;
+    let recovery = stage_teams::company_finalizer_recovery_witness(&worker);
+    if recovery.as_ref().is_some_and(|witness| {
+        witness.deliverable_submission_id != input.deliverable_submission_id
+            || witness.expected_dispatch_epoch != input.expected_dispatch_epoch
+            || witness.expected_manifest_hash != input.expected_manifest_hash
+    }) {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_finalizer_recovery_identity_mismatch",
+        });
+    }
+    let recovery_attempt_epoch = recovery
+        .as_ref()
+        .map(|witness| witness.source_attempt_epoch);
+    let recovery_payload_sha256 = recovery
+        .as_ref()
+        .map(|witness| witness.payload_sha256.clone());
     let submission = sqlx::query_as::<_, StageDeliverableSubmissionRow>(
-        r#"SELECT * FROM stage_deliverable_submissions
-            WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
-              AND stage_run_unit_id=$4 AND organization_id=$5
-              AND worker_run_id=$6 AND attempt_epoch=$7 AND lease_token=$8
-            FOR SHARE"#,
+        r#"SELECT submission.*
+             FROM stage_deliverable_submissions submission
+             JOIN tool_calls tool
+               ON tool.id=submission.tool_call_record_id
+              AND tool.call_id=submission.tool_request_id
+              AND tool.name='submit_stage_deliverable'
+              AND tool.status='finished'
+              AND tool.operation_id=submission.operation_id
+              AND tool.stage_execution_id=submission.stage_execution_id
+              AND tool.stage_run_unit_id=submission.stage_run_unit_id
+              AND tool.worker_run_id=submission.worker_run_id
+              AND tool.organization_id=submission.organization_id
+              AND tool.attempt_epoch=submission.attempt_epoch
+              AND tool.lease_token=submission.lease_token
+            WHERE submission.id=$1 AND submission.operation_id=$2
+              AND submission.stage_execution_id=$3 AND submission.stage_run_unit_id=$4
+              AND submission.organization_id=$5 AND submission.worker_run_id=$6
+              AND ((($9::BIGINT) IS NULL AND submission.attempt_epoch=$7
+                    AND submission.lease_token=$8)
+                   OR (($9::BIGINT) IS NOT NULL AND submission.attempt_epoch<=$9
+                       AND submission.lease_token IS NOT NULL
+                       AND submission.payload_sha256=$10))
+              AND tool.result::jsonb->>'status'='accepted'
+              AND (tool.result::jsonb->>'deliverable_submission_id')::UUID=submission.id
+            FOR SHARE OF submission,tool"#,
     )
     .bind(input.deliverable_submission_id)
     .bind(plan.operation_id)
@@ -9351,6 +9480,8 @@ pub async fn park_stage_team_finalizer_after_failure(
     .bind(worker.id)
     .bind(worker.attempt_epoch)
     .bind(worker.lease_token)
+    .bind(recovery_attempt_epoch)
+    .bind(recovery_payload_sha256)
     .fetch_optional(&mut *tx)
     .await?
     .ok_or(RuntimeMemoryStoreError::Missing {
@@ -9371,23 +9502,50 @@ pub async fn park_stage_team_finalizer_after_failure(
             code: "stage_team_finalizer_barrier_mismatch",
         });
     }
-    let checkpoint_chain = match input.checkpoint.clone() {
-        checkpoint @ (serde_json::Value::Array(_) | serde_json::Value::Object(_)) => checkpoint,
-        _ => {
-            return Err(RuntimeMemoryStoreError::IdentityMismatch {
-                code: "stage_team_finalizer_checkpoint_invalid_shape",
-            });
+    let mut checkpoint = if recovery.is_some() {
+        stage_teams::advance_company_finalizer_recovery_checkpoint(&worker).ok_or(
+            RuntimeMemoryStoreError::IdentityMismatch {
+                code: "stage_team_finalizer_recovery_checkpoint_invalid",
+            },
+        )?
+    } else {
+        match input.checkpoint.clone() {
+            checkpoint @ (serde_json::Value::Array(_) | serde_json::Value::Object(_)) => {
+                serde_json::json!({
+                    "_runtime_company_finalizer_recovery": {
+                        "deliverable_submission_id": submission.id,
+                        "expected_dispatch_epoch": barrier.dispatch_epoch,
+                        "expected_manifest_hash": barrier.manifest_hash,
+                        "payload_sha256": submission.payload_sha256,
+                        "retry_count": 0,
+                        "schema_version": 1,
+                        "source_attempt_epoch": worker.attempt_epoch,
+                        "source_checkpoint_version": worker.checkpoint_version,
+                    },
+                    "source_terminal_checkpoint": checkpoint,
+                })
+            }
+            _ => {
+                return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                    code: "stage_team_finalizer_checkpoint_invalid_shape",
+                });
+            }
         }
     };
-    let checkpoint = serde_json::json!({
-        "_runtime_stage_team_finalization_retry": {
-            "code": "company_controller_final_seal_failed",
-            "deliverable_submission_id": submission.id,
-            "detail": input.failure_detail.chars().take(4096).collect::<String>(),
-            "schema_version": 1,
-        },
-        "chain": checkpoint_chain,
-    });
+    checkpoint
+        .as_object_mut()
+        .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "stage_team_finalizer_checkpoint_invalid_shape",
+        })?
+        .insert(
+            "_runtime_stage_team_finalization_retry".to_string(),
+            serde_json::json!({
+                "code": "company_controller_final_seal_failed",
+                "deliverable_submission_id": submission.id,
+                "detail": input.failure_detail.chars().take(4096).collect::<String>(),
+                "schema_version": 1,
+            }),
+        );
     let queued_worker = sqlx::query_as::<_, StageWorkerRunRow>(
         r#"UPDATE stage_worker_runs
               SET status='queued',checkpoint=$9,
@@ -13472,8 +13630,22 @@ async fn rollover_terminalized_company_finalizer(
                AND submission.stage_run_unit_id=plan.stage_run_unit_id
                AND submission.organization_id=plan.organization_id
                AND submission.worker_run_id=worker.id
-               AND submission.attempt_epoch=worker.attempt_epoch
+               AND submission.attempt_epoch<=worker.attempt_epoch
                AND submission.lease_token IS NOT NULL
+              JOIN tool_calls tool
+                ON tool.id=submission.tool_call_record_id
+               AND tool.call_id=submission.tool_request_id
+               AND tool.name='submit_stage_deliverable'
+               AND tool.status='finished'
+               AND tool.operation_id=submission.operation_id
+               AND tool.stage_execution_id=submission.stage_execution_id
+               AND tool.stage_run_unit_id=submission.stage_run_unit_id
+               AND tool.worker_run_id=submission.worker_run_id
+               AND tool.organization_id=submission.organization_id
+               AND tool.attempt_epoch=submission.attempt_epoch
+               AND tool.lease_token=submission.lease_token
+               AND tool.result::jsonb->>'status'='accepted'
+               AND (tool.result::jsonb->>'deliverable_submission_id')::UUID=submission.id
              WHERE operation.operation_id=$1
                AND operation.superseded_by IS NULL
                AND operation.runtime_memory_contract='v2_only'
@@ -14074,15 +14246,257 @@ pub async fn recover_terminalized_application_model_finalizer(
     Ok(true)
 }
 
-/// Read-only resume authority for the one append-only Company Controller
-/// recovery shape handled by `rollover_terminalized_company_finalizer`.
+/// Recover one terminalized ordinary Company Controller finalizer in place.
 ///
-/// A failed final submitter is not generally resumable. It becomes eligible
-/// only when the exact closed TeamPlan still has a complete sibling barrier,
-/// the terminal failure is the clean lease-expiry exhaustion shape, and the
-/// same WorkerRun owns at least one earlier finished durable submission. This
-/// lets CLI preflight admit the request far enough for the mutating rollover
-/// transaction to revalidate every witness and replace the runtime shell.
+/// The producer work and an accepted StageDeliverable already survived. The
+/// only lost work is the host final-seal response. Re-leasing the exact same
+/// WorkerRun with a frozen submission pointer is both narrower and safer than
+/// replacing the whole stage execution: the next runtime turn skips the model
+/// and all producer tools, reloads the immutable submission, and retries only
+/// deterministic Gate/finalization code.
+async fn recover_terminalized_company_finalizer_in_place(
+    pool: &sqlx::PgPool,
+    input: &ClaimStageAggregatorRow,
+) -> RuntimeMemoryStoreResult<Option<ClaimedStageWorkItemRow>> {
+    if input.claim.lease_owner.trim().is_empty()
+        || input.claim.lease_seconds <= 0
+        || input.claim.parent_chain_id.is_some()
+    {
+        return Ok(None);
+    }
+    let mut tx = pool.begin().await?;
+    let operation = sqlx::query_as::<_, OperationStateRow>(LOCK_OPERATION_STATE_ROW_SQL)
+        .bind(input.claim.operation_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(RuntimeMemoryStoreError::Missing {
+            entity: "operation_state",
+        })?;
+    ensure_runtime_operation_active(&operation)?;
+    if frozen_runtime_contract(&operation)? != runtime_memory_rollout::RuntimeMemoryContract::V2Only
+        || operation.current_stage == "target_intel"
+    {
+        tx.commit().await?;
+        return Ok(None);
+    }
+    let unit = load_runtime_unit_for_update(
+        &mut tx,
+        input.claim.operation_id,
+        input.claim.stage_execution_id,
+        input.claim.stage_run_unit_id,
+    )
+    .await?;
+    let plan = sqlx::query_as::<_, stage_teams::StageTeamPlanRow>(
+        "SELECT * FROM stage_team_plans
+          WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+            AND stage_run_unit_id=$4 FOR UPDATE",
+    )
+    .bind(input.claim.stage_team_plan_id)
+    .bind(input.claim.operation_id)
+    .bind(input.claim.stage_execution_id)
+    .bind(input.claim.stage_run_unit_id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Missing {
+        entity: "stage_team_plans",
+    })?;
+    let Some(worker_id) = plan.final_submitter_worker_run_id else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        "SELECT * FROM stage_worker_runs WHERE id=$1 FOR UPDATE",
+    )
+    .bind(worker_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let Some(work_item_id) = worker.work_item_id else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        "SELECT * FROM stage_work_items WHERE id=$1 AND team_plan_id=$2 FOR UPDATE",
+    )
+    .bind(work_item_id)
+    .bind(plan.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let failure_code = worker
+        .checkpoint
+        .pointer("/stage_team_execution_failure/code")
+        .and_then(Value::as_str);
+    if unit.status != "running"
+        || unit.stage_kind != operation.current_stage
+        || plan.stage_kind != unit.stage_kind
+        || plan.dispatch_epoch != input.expected_dispatch_epoch
+        || plan.requests_closed_at.is_none()
+        || plan.final_submitter_kind != "worker"
+        || plan.aggregator_kind != "worker"
+        || plan.aggregator_role.as_deref() != Some(plan.leader_role.as_str())
+        || plan
+            .dynamic_request_policy
+            .get("coordination_mode")
+            .and_then(Value::as_str)
+            != Some("company_controller")
+        || item.stable_key != "leader:primary"
+        || item.role != plan.leader_role
+        || item.required_for_barrier
+        || item.status != "exhausted"
+        || item.terminal_at.is_none()
+        || worker.status != "failed"
+        || worker.terminal_at.is_none()
+        || worker.lease_token.is_some()
+        || worker.active_tool_call_id.is_some()
+        || worker.message_chain_id.is_none()
+        || failure_code != Some("stage_team_worker_lease_expired")
+    {
+        tx.commit().await?;
+        return Ok(None);
+    }
+    let output_exact: bool = sqlx::query_scalar(
+        r#"SELECT COUNT(*)=1 AND BOOL_AND(
+                     output.business_disposition='blocked'
+                 AND output.canonical_output->>'kind'='stage_team_attempts_exhausted'
+                 AND output.canonical_output->>'failure_code'='stage_team_worker_lease_expired'
+                 AND 'STAGE_TEAM_PRODUCER_ATTEMPTS_EXHAUSTED'=ANY(output.blocker_codes)
+               )
+             FROM stage_worker_outputs output
+            WHERE output.team_plan_id=$1 AND output.work_item_id=$2
+              AND output.worker_run_id=$3"#,
+    )
+    .bind(plan.id)
+    .bind(item.id)
+    .bind(worker.id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let barrier = stage_teams::load_barrier_with_connection_ignoring_worker(
+        &mut tx,
+        plan.id,
+        Some(worker.id),
+    )
+    .await?;
+    if !output_exact
+        || !barrier.ready_to_finalize()
+        || barrier.dispatch_epoch != input.expected_dispatch_epoch
+        || barrier.manifest_hash != input.expected_manifest_hash
+    {
+        tx.commit().await?;
+        return Ok(None);
+    }
+    let submission = sqlx::query_as::<_, (Uuid, Value, String)>(
+        r#"SELECT submission.id,submission.payload,submission.payload_sha256
+             FROM stage_deliverable_submissions submission
+             JOIN tool_calls tool
+               ON tool.id=submission.tool_call_record_id
+              AND tool.call_id=submission.tool_request_id
+              AND tool.name='submit_stage_deliverable'
+              AND tool.status='finished'
+              AND tool.operation_id=submission.operation_id
+              AND tool.stage_execution_id=submission.stage_execution_id
+              AND tool.stage_run_unit_id=submission.stage_run_unit_id
+              AND tool.worker_run_id=submission.worker_run_id
+              AND tool.organization_id=submission.organization_id
+              AND tool.attempt_epoch=submission.attempt_epoch
+              AND tool.lease_token=submission.lease_token
+            WHERE submission.operation_id=$1 AND submission.stage_execution_id=$2
+              AND submission.stage_run_unit_id=$3 AND submission.organization_id=$4
+              AND submission.worker_run_id=$5 AND submission.stage_kind=$6
+              AND submission.attempt_epoch IS NOT NULL
+              AND submission.attempt_epoch<=$7 AND submission.lease_token IS NOT NULL
+              AND tool.result::jsonb->>'status'='accepted'
+              AND (tool.result::jsonb->>'deliverable_submission_id')::UUID=submission.id
+            ORDER BY submission.submitted_at DESC,submission.id DESC
+            LIMIT 1 FOR SHARE OF submission,tool"#,
+    )
+    .bind(plan.operation_id)
+    .bind(plan.stage_execution_id)
+    .bind(plan.stage_run_unit_id)
+    .bind(plan.organization_id)
+    .bind(worker.id)
+    .bind(&plan.stage_kind)
+    .bind(worker.attempt_epoch)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((submission_id, payload, payload_sha256)) = submission else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+    if payload_sha256 != operation_scope_decisions::sha256_json(&payload) {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_payload_hash_mismatch",
+        });
+    }
+    let lease_token = Uuid::new_v4();
+    let checkpoint = serde_json::json!({
+        "_runtime_company_finalizer_recovery": {
+            "deliverable_submission_id": submission_id,
+            "expected_dispatch_epoch": barrier.dispatch_epoch,
+            "expected_manifest_hash": barrier.manifest_hash,
+            "payload_sha256": payload_sha256,
+            "retry_count": 0,
+            "schema_version": 1,
+            "source_attempt_epoch": worker.attempt_epoch,
+            "source_checkpoint_version": worker.checkpoint_version,
+        },
+        "source_terminal_checkpoint": worker.checkpoint,
+    });
+    let worker = sqlx::query_as::<_, StageWorkerRunRow>(
+        r#"UPDATE stage_worker_runs
+              SET status='running',attempt_epoch=attempt_epoch+1,checkpoint=$6,
+                  checkpoint_version=checkpoint_version+1,lease_token=$7,
+                  lease_owner=$8,lease_acquired_at=NOW(),
+                  lease_expires_at=NOW()+make_interval(secs=>$9),heartbeat_at=NOW(),
+                  terminal_at=NULL,updated_at=NOW()
+            WHERE id=$1 AND work_item_id=$2 AND status='failed'
+              AND attempt_epoch=$3 AND checkpoint_version=$4 AND checkpoint=$5
+              AND lease_token IS NULL AND active_tool_call_id IS NULL
+            RETURNING *"#,
+    )
+    .bind(worker.id)
+    .bind(item.id)
+    .bind(worker.attempt_epoch)
+    .bind(worker.checkpoint_version)
+    .bind(&worker.checkpoint)
+    .bind(&checkpoint)
+    .bind(lease_token)
+    .bind(&input.claim.lease_owner)
+    .bind(input.claim.lease_seconds)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "company_finalizer_recovery_worker_cas_failed",
+    })?;
+    let item = sqlx::query_as::<_, stage_teams::StageWorkItemRow>(
+        r#"UPDATE stage_work_items
+              SET status='running',terminal_at=NULL,row_version=row_version+1,updated_at=NOW()
+            WHERE id=$1 AND team_plan_id=$2 AND status='exhausted' AND row_version=$3
+            RETURNING *"#,
+    )
+    .bind(item.id)
+    .bind(plan.id)
+    .bind(item.row_version)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "company_finalizer_recovery_item_cas_failed",
+    })?;
+    let message_chain_id =
+        worker
+            .message_chain_id
+            .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "company_finalizer_recovery_chain_missing",
+            })?;
+    tx.commit().await?;
+    Ok(Some(ClaimedStageWorkItemRow {
+        unit,
+        plan,
+        work_item: item,
+        worker,
+        message_chain_id,
+    }))
+}
+
+/// Read-only resume authority for one append-only Company Controller recovery.
 pub async fn claim_stage_aggregator(
     pool: &sqlx::PgPool,
     input: &ClaimStageAggregatorRow,
@@ -14100,6 +14514,10 @@ pub async fn claim_stage_aggregator(
         Ok(None) => {
             if let Some(claimed) = recover_terminalized_target_intel_finalizer(pool, input).await? {
                 Ok(claimed)
+            } else if let Some(claimed) =
+                recover_terminalized_company_finalizer_in_place(pool, input).await?
+            {
+                Ok(claimed)
             } else {
                 Err(RuntimeMemoryStoreError::Conflict {
                     code: "stage_team_aggregator_not_claimable",
@@ -14110,6 +14528,10 @@ pub async fn claim_stage_aggregator(
             code: "stage_team_final_submitter_not_replaceable",
         }) => {
             if let Some(claimed) = recover_terminalized_target_intel_finalizer(pool, input).await? {
+                Ok(claimed)
+            } else if let Some(claimed) =
+                recover_terminalized_company_finalizer_in_place(pool, input).await?
+            {
                 Ok(claimed)
             } else if rollover_terminalized_company_finalizer(pool, input).await? {
                 Err(RuntimeMemoryStoreError::Conflict {
@@ -15666,6 +16088,196 @@ fn final_seal_inherited_source_stage_kinds(stage_kind: &str) -> &'static [&'stat
     }
 }
 
+fn company_finalizer_preserved_epoch_source(
+    state_blob: &serde_json::Value,
+    replacement_stage_execution_id: Uuid,
+) -> RuntimeMemoryStoreResult<Option<Uuid>> {
+    let Some(marker) = state_blob
+        .get("company_finalizer_no_purge_recovery")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let marker_replacement_id = marker
+        .get("replacement_stage_execution_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_freshness_marker_invalid",
+        })?;
+    // The marker is retained as historical operation state after the cursor
+    // advances. It affects only the exact replacement execution it names.
+    if marker_replacement_id != replacement_stage_execution_id {
+        return Ok(None);
+    }
+    let source_stage_execution_id = marker
+        .get("source_stage_execution_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .filter(|source| *source != marker_replacement_id)
+        .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_freshness_marker_invalid",
+        })?;
+    let source_dispatch_epoch = marker
+        .get("source_dispatch_epoch")
+        .and_then(serde_json::Value::as_i64);
+    let source_submission_id = marker
+        .get("source_deliverable_submission_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok());
+    let source_payload_sha256 = marker
+        .get("source_deliverable_payload_sha256")
+        .and_then(serde_json::Value::as_str);
+    let source_manifest_hash = marker
+        .get("source_manifest_hash")
+        .and_then(serde_json::Value::as_str);
+    let reset = state_blob
+        .get("runtime_v2_dev_reset")
+        .and_then(serde_json::Value::as_object)
+        .ok_or(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_freshness_marker_invalid",
+        })?;
+    let reset_source_ids = reset
+        .get("superseded_stage_execution_ids")
+        .and_then(serde_json::Value::as_array);
+    let marker_exact = marker.len() == 7
+        && marker
+            .get("freshness_epoch_preserved")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && source_dispatch_epoch.is_some_and(|epoch| epoch >= 0)
+        && source_submission_id.is_some_and(|id| !id.is_nil())
+        && source_payload_sha256.is_some_and(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        && source_manifest_hash.is_some_and(|hash| {
+            hash.len() == 71
+                && hash.starts_with("sha256:")
+                && hash[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        && reset.len() == 6
+        && reset
+            .get("selected_stage")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        && reset
+            .get("replacement_stage_execution_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value).ok())
+            == Some(marker_replacement_id)
+        && reset
+            .get("affected_stage_kinds")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|stages| {
+                stages.len() == 1
+                    && stages[0].as_str()
+                        == reset
+                            .get("selected_stage")
+                            .and_then(serde_json::Value::as_str)
+            })
+        && reset
+            .get("semantic_stage_execution_status")
+            .and_then(serde_json::Value::as_str)
+            == Some("superseded")
+        && reset
+            .get("compat_stage_run_status")
+            .and_then(serde_json::Value::as_str)
+            == Some("failed")
+        && reset_source_ids.is_some_and(|ids| {
+            ids.len() == 1
+                && ids[0]
+                    .as_str()
+                    .and_then(|value| Uuid::parse_str(value).ok())
+                    == Some(source_stage_execution_id)
+        });
+    if !marker_exact {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_freshness_marker_invalid",
+        });
+    }
+    Ok(Some(source_stage_execution_id))
+}
+
+async fn final_seal_freshness_floor(
+    connection: &mut sqlx::PgConnection,
+    operation: &OperationStateRow,
+    unit: &StageRunUnitRow,
+) -> RuntimeMemoryStoreResult<chrono::DateTime<chrono::Utc>> {
+    let unit_started_at = unit.started_at.ok_or(RuntimeMemoryStoreError::Conflict {
+        code: "final_seal_unit_not_started",
+    })?;
+    let Some(source_stage_execution_id) =
+        company_finalizer_preserved_epoch_source(&operation.state_blob, unit.stage_execution_id)?
+    else {
+        return Ok(unit_started_at);
+    };
+    let rows = sqlx::query_as::<
+        _,
+        (
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
+        r#"SELECT source_execution.started_at,
+                  replacement_execution.started_at,
+                  source_unit.started_at
+             FROM stage_runs source_execution
+             JOIN stage_runs replacement_execution
+               ON replacement_execution.id=$3
+              AND replacement_execution.operation_id=source_execution.operation_id
+              AND replacement_execution.stage_kind=source_execution.stage_kind
+              AND replacement_execution.status IN ('started','completed')
+             JOIN stage_run_units source_unit
+               ON source_unit.operation_id=source_execution.operation_id
+              AND source_unit.stage_execution_id=source_execution.id
+              AND source_unit.scope_snapshot_id=$4
+              AND source_unit.organization_id=$5
+              AND source_unit.stage_kind=$6
+              AND source_unit.generation=$7
+              AND source_unit.specialist IS NOT DISTINCT FROM $8
+              AND source_unit.status='superseded'
+              AND source_unit.started_at IS NOT NULL
+            WHERE source_execution.id=$2
+              AND source_execution.operation_id=$1
+              AND source_execution.stage_kind=$6
+              AND source_execution.status='failed'
+            ORDER BY source_unit.id
+            FOR SHARE OF source_execution,replacement_execution,source_unit"#,
+    )
+    .bind(unit.operation_id)
+    .bind(source_stage_execution_id)
+    .bind(unit.stage_execution_id)
+    .bind(unit.scope_snapshot_id)
+    .bind(unit.organization_id)
+    .bind(&unit.stage_kind)
+    .bind(unit.generation)
+    .bind(unit.specialist.as_deref())
+    .fetch_all(connection)
+    .await?;
+    let [(source_stage_started_at, replacement_stage_started_at, source_unit_started_at)] =
+        rows.as_slice()
+    else {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_freshness_epoch_mismatch",
+        });
+    };
+    if !(*source_stage_started_at <= *source_unit_started_at
+        && *source_unit_started_at < *replacement_stage_started_at
+        && *replacement_stage_started_at <= unit_started_at)
+    {
+        return Err(RuntimeMemoryStoreError::IdentityMismatch {
+            code: "company_finalizer_recovery_freshness_epoch_mismatch",
+        });
+    }
+    Ok(*source_stage_started_at)
+}
+
 async fn load_stage_inherited_evidence_ids(
     connection: &mut sqlx::PgConnection,
     unit: &StageRunUnitRow,
@@ -15938,15 +16550,18 @@ async fn replay_existing_final_seal(
 
 async fn validate_replayed_authoritative_material(
     connection: &mut sqlx::PgConnection,
+    operation: &OperationStateRow,
     unit: &StageRunUnitRow,
     input: &FinalizeUnitPassRow,
     candidate_acceptance: Option<&attack_candidates::AcceptCandidateBatch>,
     observation_ceiling: chrono::DateTime<chrono::Utc>,
     persisted_refs: &[CanonicalFactRef],
 ) -> RuntimeMemoryStoreResult<()> {
-    let freshness_floor = unit.started_at.ok_or(RuntimeMemoryStoreError::Conflict {
-        code: "final_seal_replay_mismatch",
-    })?;
+    let freshness_floor = final_seal_freshness_floor(connection, operation, unit)
+        .await
+        .map_err(|_| RuntimeMemoryStoreError::Conflict {
+            code: "final_seal_replay_mismatch",
+        })?;
     let scope = sqlx::query_as::<_, (String, String, Option<chrono::DateTime<chrono::Utc>>)>(
         r#"SELECT scope_hash,project_path_at_freeze,sealed_at
              FROM operation_org_scope_snapshots
@@ -16284,6 +16899,7 @@ async fn finalize_unit_pass_in_transaction(
         validate_stage_specific_final_material(&locked_unit, input, candidate_acceptance.as_ref())?;
         validate_replayed_authoritative_material(
             tx,
+            &operation,
             &locked_unit,
             input,
             candidate_acceptance.as_ref(),
@@ -16329,11 +16945,7 @@ async fn finalize_unit_pass_in_transaction(
             actual: locked_unit.row_version,
         });
     }
-    let freshness_floor = locked_unit
-        .started_at
-        .ok_or(RuntimeMemoryStoreError::Conflict {
-            code: "final_seal_unit_not_started",
-        })?;
+    let freshness_floor = final_seal_freshness_floor(tx, &operation, &locked_unit).await?;
     let locked_worker = sqlx::query_as::<_, StageWorkerRunRow>(
         r#"SELECT * FROM stage_worker_runs
             WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
@@ -16397,6 +17009,14 @@ async fn finalize_unit_pass_in_transaction(
         .and_then(|value| value.get("deliverable_submission_id"))
         .and_then(Value::as_str)
         .and_then(|value| Uuid::parse_str(value).ok());
+    let company_recovery_submission =
+        stage_teams::company_finalizer_recovery_witness(&locked_worker).map(|witness| {
+            (
+                witness.deliverable_submission_id,
+                witness.payload_sha256,
+                witness.source_attempt_epoch,
+            )
+        });
     let submission = if locked_unit.stage_kind == "target_intel"
         && target_intel_recovery_submission_id == Some(input.deliverable_submission_id)
     {
@@ -16414,6 +17034,36 @@ async fn finalize_unit_pass_in_transaction(
         .bind(input.fence.stage_run_unit_id)
         .bind(input.fence.worker_run_id)
         .bind(locked_unit.organization_id)
+        .fetch_optional(&mut **tx)
+        .await?
+    } else if let Some((recovery_submission_id, payload_sha256, source_attempt_epoch)) =
+        company_recovery_submission
+    {
+        if recovery_submission_id != input.deliverable_submission_id
+            || locked_unit.stage_kind == "target_intel"
+        {
+            return Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "company_finalizer_recovery_submission_mismatch",
+            });
+        }
+        sqlx::query_as::<_, StageDeliverableSubmissionRow>(
+            r#"SELECT * FROM stage_deliverable_submissions
+                WHERE id=$1 AND operation_id=$2 AND stage_execution_id=$3
+                  AND stage_run_unit_id=$4 AND worker_run_id=$5
+                  AND organization_id=$6 AND stage_kind=$7
+                  AND attempt_epoch IS NOT NULL AND attempt_epoch<=$8
+                  AND lease_token IS NOT NULL AND payload_sha256=$9
+                FOR UPDATE"#,
+        )
+        .bind(input.deliverable_submission_id)
+        .bind(input.fence.operation_id)
+        .bind(input.fence.stage_execution_id)
+        .bind(input.fence.stage_run_unit_id)
+        .bind(input.fence.worker_run_id)
+        .bind(locked_unit.organization_id)
+        .bind(&locked_unit.stage_kind)
+        .bind(source_attempt_epoch)
+        .bind(payload_sha256)
         .fetch_optional(&mut **tx)
         .await?
     } else {
@@ -18796,7 +19446,7 @@ async fn transition_stage_execution_with_injected_failure(
     pool: &sqlx::PgPool,
     input: &TransitionStageExecutionRow,
 ) -> RuntimeMemoryStoreResult<TransitionedStageExecutionRow> {
-    transition_stage_execution_inner(pool, input, true).await
+    transition_stage_execution_inner(pool, input, true, false).await
 }
 
 pub const LOCK_ORDER: &[&str] = &[
@@ -21040,5 +21690,50 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn company_finalizer_preserved_epoch_requires_the_exact_no_purge_marker() {
+        let source_execution_id = Uuid::new_v4();
+        let replacement_execution_id = Uuid::new_v4();
+        let state_blob = serde_json::json!({
+            "runtime_v2_dev_reset": {
+                "selected_stage": "external_attack_surface",
+                "affected_stage_kinds": ["external_attack_surface"],
+                "compat_stage_run_status": "failed",
+                "replacement_stage_execution_id": replacement_execution_id,
+                "superseded_stage_execution_ids": [source_execution_id],
+                "semantic_stage_execution_status": "superseded"
+            },
+            "company_finalizer_no_purge_recovery": {
+                "source_manifest_hash": format!("sha256:{}", "a".repeat(64)),
+                "source_dispatch_epoch": 1,
+                "freshness_epoch_preserved": true,
+                "source_stage_execution_id": source_execution_id,
+                "replacement_stage_execution_id": replacement_execution_id,
+                "source_deliverable_submission_id": Uuid::new_v4(),
+                "source_deliverable_payload_sha256": "b".repeat(64)
+            }
+        });
+        assert_eq!(
+            company_finalizer_preserved_epoch_source(&state_blob, replacement_execution_id)
+                .expect("exact no-purge recovery marker is valid"),
+            Some(source_execution_id)
+        );
+        assert_eq!(
+            company_finalizer_preserved_epoch_source(&state_blob, Uuid::new_v4())
+                .expect("historical marker does not affect a later Unit"),
+            None
+        );
+
+        let mut malformed = state_blob;
+        malformed["company_finalizer_no_purge_recovery"]["freshness_epoch_preserved"] =
+            serde_json::json!(false);
+        assert!(matches!(
+            company_finalizer_preserved_epoch_source(&malformed, replacement_execution_id),
+            Err(RuntimeMemoryStoreError::IdentityMismatch {
+                code: "company_finalizer_recovery_freshness_marker_invalid"
+            })
+        ));
     }
 }

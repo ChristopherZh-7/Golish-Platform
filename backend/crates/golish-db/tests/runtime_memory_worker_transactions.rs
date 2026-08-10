@@ -1607,6 +1607,21 @@ async fn create_sealed_runtime_roots_with_contract_and_children(
     target_contract: runtime_memory_rollout::RuntimeMemoryContract,
     child_count: usize,
 ) -> (RuntimeRoots, Vec<Uuid>) {
+    create_sealed_runtime_roots_with_contract_stage_and_children(
+        db,
+        target_contract,
+        "target_intel",
+        child_count,
+    )
+    .await
+}
+
+async fn create_sealed_runtime_roots_with_contract_stage_and_children(
+    db: &GolishDb,
+    target_contract: runtime_memory_rollout::RuntimeMemoryContract,
+    stage_kind: &str,
+    child_count: usize,
+) -> (RuntimeRoots, Vec<Uuid>) {
     reset_deployment_rollouts_for_fixture(db).await;
     let session_id = sessions::create(
         db.pool(),
@@ -1640,9 +1655,9 @@ async fn create_sealed_runtime_roots_with_contract_and_children(
             initial_stage_execution_id: stage_execution_id,
             session_id,
             title: Some("worker roots".to_string()),
-            input: "run target intelligence".to_string(),
+            input: format!("run {stage_kind}"),
             profile: "assessment".to_string(),
-            entry_stage: "target_intel".to_string(),
+            entry_stage: stage_kind.to_string(),
             application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
             project_scope_id: project_scope.project_scope_id,
             cli_scope: None,
@@ -1996,18 +2011,25 @@ fn stage_team_lifecycle_seed(
 }
 
 fn stage_team_controller_seed(roots: &RuntimeRoots) -> runtime_memory_tx::SeedStageTeamRuntimeRow {
+    stage_team_controller_seed_for_stage(roots, "target_intel")
+}
+
+fn stage_team_controller_seed_for_stage(
+    roots: &RuntimeRoots,
+    stage_kind: &str,
+) -> runtime_memory_tx::SeedStageTeamRuntimeRow {
     let hash = |character: char| format!("sha256:{}", character.to_string().repeat(64));
     runtime_memory_tx::SeedStageTeamRuntimeRow {
         base: runtime_memory_tx::SeedStageRuntimeRow {
             operation_id: roots.operation_id,
             stage_execution_id: roots.stage_execution_id,
-            stage_kind: "target_intel".to_string(),
+            stage_kind: stage_kind.to_string(),
             unit_generation: 0,
             specialist: "company_stage_controller".to_string(),
             worker_generation: 0,
             work_item_kind: "stage_unit".to_string(),
             work_item_key: "company-controller".to_string(),
-            agent_path_prefix: "main>stage_run:target_intel".to_string(),
+            agent_path_prefix: format!("main>stage_run:{stage_kind}"),
             organization_ids: Some(vec![roots.organization_id]),
         },
         plan: runtime_memory_tx::StageTeamPlanSeedRow {
@@ -2691,6 +2713,23 @@ async fn company_controller_continue_reclaims_interrupted_eas_child_on_same_chai
     assert!(
         controller_wait.is_none(),
         "Controller stays parked until the reconciled child actually completes"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status::text FROM stage_work_items WHERE id=$1")
+            .bind(child_item.id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load Controller-reconciled child status"),
+        "queued",
+        "Controller continuation must reconcile a safe child before inspecting the barrier"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT status::text FROM tool_calls WHERE id=$1")
+            .bind(active_tool_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load Controller-reconciled tool status"),
+        "failed"
     );
     let resumed_child = runtime_memory_tx::claim_stage_work_item(db.pool(), &claim)
         .await
@@ -3638,7 +3677,7 @@ async fn persist_stage_team_submission(
         Some(roots.operation_id),
         None,
         "submit_stage_deliverable",
-        &serde_json::json!({"stage_id": "target_intel"}),
+        &serde_json::json!({"stage_id": &seeded.unit.stage_kind}),
         Some(&tool_calls::RuntimeToolIdentity {
             operation_id: roots.operation_id,
             stage_execution_id: roots.stage_execution_id,
@@ -3655,7 +3694,7 @@ async fn persist_stage_team_submission(
         .await
         .expect("fence Controller submission tool");
     let payload = serde_json::json!({
-        "stage_id": "target_intel",
+        "stage_id": &seeded.unit.stage_kind,
         "stage_run_id": roots.stage_execution_id,
         "claims": [],
     });
@@ -3670,7 +3709,7 @@ async fn persist_stage_team_submission(
             organization_id: Some(roots.organization_id),
             tool_call_record_id: tool_call_id,
             tool_request_id: request_id.to_string(),
-            stage_kind: "target_intel".to_string(),
+            stage_kind: seeded.unit.stage_kind.clone(),
             attempt_epoch: Some(controller.worker.attempt_epoch),
             lease_token: controller.worker.lease_token,
             payload_sha256: Sha256::digest(canonical_payload_json.as_bytes())
@@ -3690,7 +3729,11 @@ async fn persist_stage_team_submission(
         tool_call_id,
         roots.session_id,
         "finished",
-        "{}",
+        &serde_json::json!({
+            "deliverable_submission_id": submission.id,
+            "status": "accepted",
+        })
+        .to_string(),
         1,
     )
     .await
@@ -4624,12 +4667,16 @@ async fn stage_team_reconciles_interrupted_eas_service_fingerprint_on_same_worke
 #[serial]
 async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
     let (mut db, _data_dir) = fixture().await;
-    let roots = create_sealed_runtime_roots_with_contract(
+    let roots = create_sealed_runtime_roots_with_contract_stage_and_children(
         &db,
         runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+        "external_attack_surface",
+        0,
     )
-    .await;
-    let mut controller_seed = stage_team_controller_seed(&roots);
+    .await
+    .0;
+    let mut controller_seed =
+        stage_team_controller_seed_for_stage(&roots, "external_attack_surface");
     controller_seed.work_items[0].attempt_policy = serde_json::json!({"max_attempts": 1});
     let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &controller_seed)
         .await
@@ -4731,7 +4778,16 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
         serde_json::json!(first_submission.id)
     );
     assert_eq!(
-        parked.worker.checkpoint["chain"],
+        parked.worker.checkpoint["_runtime_company_finalizer_recovery"]
+            ["deliverable_submission_id"],
+        serde_json::json!(first_submission.id)
+    );
+    assert_eq!(
+        parked.worker.checkpoint["_runtime_company_finalizer_recovery"]["retry_count"],
+        serde_json::json!(0)
+    );
+    assert_eq!(
+        parked.worker.checkpoint["source_terminal_checkpoint"],
         serde_json::json!([
             {"role": "system", "content": "controller"},
             {"role": "assistant", "content": "final"}
@@ -4786,6 +4842,11 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
     assert_eq!(parked_worker.status, "queued");
     assert_eq!(parked_worker.message_chain_id, Some(first.message_chain_id));
     assert_eq!(
+        parked_worker.checkpoint["_runtime_company_finalizer_recovery"]["retry_count"],
+        serde_json::json!(1),
+        "startup reaping advances the durable replay generation"
+    );
+    assert_eq!(
         tasks::get(db.pool(), roots.operation_id)
             .await
             .expect("load startup-reaped Aggregator task")
@@ -4818,6 +4879,10 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
     assert_eq!(resumed.worker.id, first.worker.id);
     assert_eq!(resumed.message_chain_id, first.message_chain_id);
     assert_eq!(
+        resumed.worker.checkpoint["_runtime_company_finalizer_recovery"]["retry_count"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
         resumed.worker.attempt_epoch,
         resumed_after_finalization_failure.worker.attempt_epoch + 1
     );
@@ -4829,7 +4894,7 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
     // Model the already-shipped bug: an older binary let startup consume the
     // exact finalizer's producer fuel and wrote an immutable exhausted output.
     // Recovery must preserve that history and replace only the runtime shell.
-    let (_third_submission, controller_after_third_submission) = persist_stage_team_submission(
+    let (third_submission, controller_after_third_submission) = persist_stage_team_submission(
         &db,
         &roots,
         &seeded,
@@ -4837,7 +4902,11 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
         "aggregator-legacy-terminalized-submit",
     )
     .await;
-    let attempts_used = controller_after_third_submission.attempt_epoch;
+    // Model the response-loss shape from the retained EAS run: a later
+    // final-submitter turn can fail without writing another deliverable, so
+    // the last accepted submission belongs to the same Worker but to the
+    // immediately preceding attempt.
+    let attempts_used = controller_after_third_submission.attempt_epoch + 1;
     let canonical_output = serde_json::json!({
         "attempts_used": attempts_used,
         "failure_code": "stage_team_worker_lease_expired",
@@ -4875,6 +4944,12 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
     refresh_stage_worker_output_hash(&mut terminal_output);
     let immutable_output_id = Uuid::new_v4();
     let mut historical_tx = db.pool().begin().await.expect("begin historical fixture");
+    sqlx::query("UPDATE stage_worker_runs SET attempt_epoch=$2 WHERE id=$1 AND status='running'")
+        .bind(resumed.worker.id)
+        .bind(attempts_used)
+        .execute(&mut *historical_tx)
+        .await
+        .expect("advance finalizer after response loss without another submission");
     sqlx::query(
         r#"UPDATE stage_worker_runs
               SET status='failed',checkpoint=$2,checkpoint_version=checkpoint_version+1,
@@ -4932,7 +5007,7 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
         .commit()
         .await
         .expect("commit historical finalizer fixture");
-    let stage_started_before_rollover = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+    let stage_started_before_recovery = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
         "SELECT stage_started_at FROM operation_state WHERE operation_id=$1",
     )
     .bind(roots.operation_id)
@@ -4940,44 +5015,44 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
     .await
     .expect("load source stage freshness epoch");
 
-    let rollover = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+    let recovered = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
         .await
-        .expect_err("historical terminal finalizer must replace its runtime before retry");
-    assert!(matches!(
-        rollover,
-        runtime_memory_tx::RuntimeMemoryStoreError::Conflict {
-            code: "stage_team_final_submitter_runtime_replaced"
-        }
-    ));
+        .expect("historical terminal finalizer must recover in place");
+    assert_eq!(recovered.worker.id, resumed.worker.id);
+    assert_eq!(recovered.work_item.id, resumed.work_item.id);
+    assert_eq!(recovered.message_chain_id, resumed.message_chain_id);
+    assert_eq!(recovered.worker.status, "running");
+    assert_eq!(recovered.work_item.status, "running");
+    assert_eq!(recovered.worker.attempt_epoch, attempts_used + 1);
+    assert_eq!(
+        recovered.worker.checkpoint["_runtime_company_finalizer_recovery"]
+            ["deliverable_submission_id"],
+        serde_json::json!(third_submission.id)
+    );
+    assert_eq!(
+        recovered.worker.checkpoint["_runtime_company_finalizer_recovery"]["payload_sha256"],
+        serde_json::json!(third_submission.payload_sha256)
+    );
+    assert_eq!(
+        recovered.plan.final_submitter_worker_run_id,
+        Some(recovered.worker.id)
+    );
     let active = stage_runs::list_active_for_operation_with_executor(db.pool(), roots.operation_id)
         .await
-        .expect("load replacement active execution");
+        .expect("load active execution after in-place recovery");
     assert_eq!(active.len(), 1);
-    assert_ne!(active[0].id, roots.stage_execution_id);
+    assert_eq!(active[0].id, roots.stage_execution_id);
     assert_eq!(active[0].stage_kind, seeded.unit.stage_kind);
-    let (recovered_stage_started_at, recovered_state_blob) =
-        sqlx::query_as::<_, (chrono::DateTime<chrono::Utc>, serde_json::Value)>(
-            "SELECT stage_started_at,state_blob FROM operation_state WHERE operation_id=$1",
-        )
-        .bind(roots.operation_id)
-        .fetch_one(db.pool())
-        .await
-        .expect("load operation after no-purge finalizer rollover");
+    let recovered_stage_started_at = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>(
+        "SELECT stage_started_at FROM operation_state WHERE operation_id=$1",
+    )
+    .bind(roots.operation_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load operation after in-place finalizer recovery");
     assert_eq!(
-        recovered_stage_started_at, stage_started_before_rollover,
-        "append-only finalizer recovery must preserve the producer freshness epoch"
-    );
-    assert_eq!(
-        recovered_state_blob["company_finalizer_no_purge_recovery"]["freshness_epoch_preserved"],
-        serde_json::json!(true)
-    );
-    assert_eq!(
-        stage_worker_runs::get(db.pool(), resumed.worker.id)
-            .await
-            .expect("load historical finalizer after rollover")
-            .expect("historical finalizer remains")
-            .status,
-        "superseded"
+        recovered_stage_started_at, stage_started_before_recovery,
+        "in-place finalizer recovery must preserve the producer freshness epoch"
     );
     assert_eq!(
         stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
@@ -4985,6 +5060,50 @@ async fn startup_reaper_requeues_expired_aggregator_on_exact_chain() {
             .expect("load immutable output after rollover")[0]
             .id,
         immutable_output_id
+    );
+
+    // A retained Controller can have several accepted submissions from prior
+    // turns. Recovery authority names exactly one immutable submission; the
+    // startup reaper must filter to that ID before applying its singleton
+    // check instead of counting unrelated historical submissions.
+    sqlx::query(
+        r#"UPDATE stage_worker_runs
+              SET lease_acquired_at=NOW()-INTERVAL '2 hours',
+                  lease_expires_at=NOW()-INTERVAL '1 hour',
+                  heartbeat_at=NOW()-INTERVAL '1 hour'
+            WHERE id=$1"#,
+    )
+    .bind(recovered.worker.id)
+    .execute(db.pool())
+    .await
+    .expect("expire recovered finalizer with submission history");
+    sqlx::query(
+        "UPDATE tasks SET status='running',updated_at=NOW()-INTERVAL '7 hours' WHERE id=$1",
+    )
+    .bind(roots.operation_id)
+    .execute(db.pool())
+    .await
+    .expect("age recovered finalizer task");
+    let reaped_again = tasks::startup_reap_abandoned(db.pool(), chrono::Duration::zero())
+        .await
+        .expect("reap exact recovered finalizer despite older submissions");
+    assert_eq!(reaped_again.workers_requeued, 1);
+    let recovered_again = runtime_memory_tx::claim_stage_aggregator(db.pool(), &aggregator_claim)
+        .await
+        .expect("claim exact recovered finalizer after historical-submission reap");
+    assert_eq!(recovered_again.worker.id, recovered.worker.id);
+    assert_eq!(recovered_again.work_item.id, recovered.work_item.id);
+    assert_eq!(
+        recovered_again.worker.checkpoint["_runtime_company_finalizer_recovery"]
+            ["deliverable_submission_id"],
+        serde_json::json!(third_submission.id)
+    );
+    assert_eq!(
+        stage_teams::list_outputs_with_executor(db.pool(), seeded.plan.id)
+            .await
+            .expect("immutable output remains singleton after exact reap")
+            .len(),
+        1
     );
 
     db.stop().await;
@@ -6595,6 +6714,75 @@ async fn startup_reaper_reconciles_committed_dual_sample_and_replay_is_idempoten
     .expect("count startup promotion receipt after replay");
     assert_eq!(receipts_after_replay, 1);
 
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn exhaustive_eas_port_producer_is_reserved_once_per_exact_epoch_manifest() {
+    let (mut db, _data_dir) = fixture().await;
+    let runtime = create_claimed_compound_runtime_with_contract(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+    )
+    .await;
+    operation_state::advance_stage(
+        db.pool(),
+        runtime.roots.operation_id,
+        "external_attack_surface",
+    )
+    .await
+    .expect("move fixture to active EAS");
+    let epoch = operation_state::get_epoch(db.pool(), runtime.roots.operation_id)
+        .await
+        .expect("read operation epoch")
+        .expect("operation remains");
+    let input = operation_state::EasPortScanAttemptInput {
+        operation_id: runtime.roots.operation_id,
+        stage_started_at: epoch.stage_started_at,
+        slot_key: "exact-port-manifest".to_string(),
+        organization_id: runtime.roots.organization_id,
+        target_ids_sha256: "sha256:target-members".to_string(),
+        profile_version: 3,
+        target_manifest_sha256: "sha256:port-manifest".to_string(),
+        producer_deadline_secs: 300,
+    };
+
+    let first = operation_state::reserve_eas_port_scan_attempt(db.pool(), &input)
+        .await
+        .expect("reserve exhaustive producer before network");
+    assert_eq!(
+        first,
+        Some(operation_state::EasPortScanAttemptReservation::Reserved { attempt: 1 })
+    );
+    let replay = operation_state::reserve_eas_port_scan_attempt(db.pool(), &input)
+        .await
+        .expect("response-loss replay reads exhausted authority");
+    assert_eq!(
+        replay,
+        Some(operation_state::EasPortScanAttemptReservation::Exhausted { attempts: 1 })
+    );
+
+    let mut foreign = input.clone();
+    foreign.target_manifest_sha256 = "sha256:foreign-manifest".to_string();
+    let error = operation_state::reserve_eas_port_scan_attempt(db.pool(), &foreign)
+        .await
+        .expect_err("same slot with foreign authority must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("EAS_PORT_SCAN_ATTEMPT_AUTHORITY_MISMATCH"),
+        "unexpected error: {error}"
+    );
+
+    let stored = operation_state::get(db.pool(), runtime.roots.operation_id)
+        .await
+        .expect("load operation state")
+        .expect("operation remains");
+    assert_eq!(
+        stored.state_blob["eas_port_scan_attempts"]["exact-port-manifest"]["attempts"],
+        1
+    );
     db.stop().await;
 }
 

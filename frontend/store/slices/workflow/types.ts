@@ -114,6 +114,8 @@ export interface WorkflowActions {
    * task-mode harness stages so each stage renders its own card.
    */
   setStagePlan: (sessionId: string, stageId: string, plan: TaskPlan) => void;
+  /** Freeze the first assistant message that owns a stage card. Missing sessions no-op. */
+  anchorStagePlan: (sessionId: string, stageId: string, messageId: string) => void;
   /**
    * Record a stage whose authoritative evidence gate PASSED. Drives the
    * per-stage card's completed state (not the model's self-reported todos), so a

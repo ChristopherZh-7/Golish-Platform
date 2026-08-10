@@ -46,6 +46,7 @@ function setup() {
     activeConversationId: CONV,
     conversationOrder: [],
     conversationTerminals: {},
+    sessions: { [CONV]: { id: CONV } as any },
   });
   useStore.getState().addConversation({
     id: CONV,
@@ -120,6 +121,76 @@ describe("useAiChatEvents — task preparing lifecycle", () => {
       );
     expect(marker?.stageEvent?.label).toBe("Review scan targets");
     expect(marker?.stageEvent?.detail).toContain("review exact targets");
+  });
+
+  it("does not anchor projected future-stage pending seeds into the transcript", async () => {
+    await mount(ref(true));
+
+    fire({
+      type: "plan_updated",
+      stage_id: "external_attack_surface",
+      version: 0,
+      steps: [{ step: "Future EAS", status: "pending" }],
+      summary: { total: 1, completed: 0, in_progress: 0, pending: 1 },
+      explanation: null,
+    });
+
+    expect(
+      useStore.getState().sessions[CONV]?.stagePlanMessageIds?.external_attack_surface
+    ).toBeUndefined();
+  });
+
+  it("anchors a stage-entry seed to the next assistant message", async () => {
+    await mount(ref(true));
+
+    fire({
+      type: "plan_updated",
+      stage_id: "external_attack_surface",
+      version: 0,
+      steps: [{ step: "Enter EAS", status: "in_progress" }],
+      summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
+      explanation: null,
+    });
+    fire({ type: "started", turn_id: "eas-turn" });
+    const assistant = [...useStore.getState().conversations[CONV].messages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+
+    expect(assistant).toBeDefined();
+    expect(
+      useStore.getState().sessions[CONV]?.stagePlanMessageIds?.external_attack_surface
+    ).toBe(assistant?.id);
+  });
+
+  it("does not move a stage card when later real-plan versions arrive", async () => {
+    await mount(ref(true));
+
+    fire({
+      type: "plan_updated",
+      stage_id: "external_attack_surface",
+      version: 0,
+      steps: [{ step: "Enter EAS", status: "in_progress" }],
+      summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
+      explanation: null,
+    });
+    fire({ type: "started", turn_id: "first" });
+    const firstAnchor = useStore.getState().sessions[CONV]?.stagePlanMessageIds
+      ?.external_attack_surface;
+    fire({ type: "completed", response: "first", reasoning: null });
+    fire({ type: "started", turn_id: "second" });
+    fire({
+      type: "plan_updated",
+      stage_id: "external_attack_surface",
+      version: 2,
+      steps: [{ step: "Refined EAS", status: "in_progress" }],
+      summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
+      explanation: null,
+    });
+
+    expect(firstAnchor).toBeDefined();
+    expect(
+      useStore.getState().sessions[CONV]?.stagePlanMessageIds?.external_attack_surface
+    ).toBe(firstAnchor);
   });
 });
 

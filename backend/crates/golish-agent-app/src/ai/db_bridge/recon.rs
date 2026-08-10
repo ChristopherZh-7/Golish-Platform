@@ -1743,6 +1743,7 @@ impl GolishDbRepoProvider {
                     scope,
                 },
             )
+            .filter(active_recon_scope_row_is_canonical)
             .collect())
     }
 
@@ -1757,16 +1758,7 @@ impl GolishDbRepoProvider {
                 .bind(organization_id)
                 .fetch_all(self.pool.as_ref())
                 .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(value, target_type, scope)| golish_agent_kit::db_traits::ScopingReviewedTarget {
-                    value,
-                    target_type,
-                    scope,
-                },
-            )
-            .collect())
+        Ok(canonical_active_recon_scope_rows(rows))
     }
 
     pub(super) async fn active_recon_scope_review_apply_impl(
@@ -1785,12 +1777,7 @@ impl GolishDbRepoProvider {
             )
         };
         let valid = |row: &golish_agent_kit::db_traits::ScopingReviewedTarget| {
-            !row.value.trim().is_empty()
-                && matches!(
-                    row.target_type.trim().to_ascii_lowercase().as_str(),
-                    "domain" | "ip" | "cidr" | "url" | "wildcard"
-                )
-                && row.scope.trim().eq_ignore_ascii_case("in")
+            active_recon_scope_row_is_canonical(row) && row.scope.trim().eq_ignore_ascii_case("in")
         };
         if approval.presented.is_empty()
             || approval.selected.is_empty()
@@ -1813,12 +1800,12 @@ impl GolishDbRepoProvider {
         }
 
         let mut tx = self.pool.begin().await?;
-        let operation: Option<(String, Option<Uuid>)> =
+        let operation: Option<(String, Option<Uuid>, serde_json::Value)> =
             sqlx::query_as(active_recon_scope_operation_lock_sql())
                 .bind(operation_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        let Some((current_stage, engagement_org_id)) = operation else {
+        let Some((current_stage, engagement_org_id, state_blob)) = operation else {
             anyhow::bail!("ACTIVE_RECON_SCOPE_OPERATION_NOT_FOUND");
         };
         if current_stage != "target_intel" || engagement_org_id != Some(organization_id) {
@@ -1831,16 +1818,7 @@ impl GolishDbRepoProvider {
                 .bind(organization_id)
                 .fetch_all(&mut *tx)
                 .await?;
-        let current = current_rows
-            .into_iter()
-            .map(
-                |(value, target_type, scope)| golish_agent_kit::db_traits::ScopingReviewedTarget {
-                    value,
-                    target_type,
-                    scope,
-                },
-            )
-            .collect::<Vec<_>>();
+        let current = canonical_active_recon_scope_rows(current_rows);
         let current_set = current.iter().map(exact).collect::<BTreeSet<_>>();
         if current_set.len() != current.len() || current_set != presented_set {
             anyhow::bail!("ACTIVE_RECON_SCOPE_CANDIDATE_SNAPSHOT_CHANGED");
@@ -1848,6 +1826,15 @@ impl GolishDbRepoProvider {
 
         for row in &approval.presented {
             let selected = selected_set.contains(&exact(row));
+            let existing_count: i64 = sqlx::query_scalar(active_recon_scope_target_count_sql())
+                .bind(organization_id)
+                .bind(row.target_type.trim().to_ascii_lowercase())
+                .bind(row.value.trim())
+                .fetch_one(&mut *tx)
+                .await?;
+            if existing_count > 1 {
+                anyhow::bail!("ACTIVE_RECON_SCOPE_TARGET_IDENTITY_DUPLICATE");
+            }
             let result = sqlx::query(active_recon_scope_target_update_sql())
                 .bind(organization_id)
                 .bind(row.target_type.trim().to_ascii_lowercase())
@@ -1855,11 +1842,62 @@ impl GolishDbRepoProvider {
                 .bind(selected)
                 .execute(&mut *tx)
                 .await?;
-            if result.rows_affected() != 1 {
+            if existing_count == 1 && result.rows_affected() != 1 {
                 anyhow::bail!("ACTIVE_RECON_SCOPE_TARGET_IDENTITY_CHANGED");
+            }
+            if existing_count == 0 {
+                if result.rows_affected() != 0 {
+                    anyhow::bail!("ACTIVE_RECON_SCOPE_TARGET_IDENTITY_CHANGED");
+                }
+                let semantic_candidate: bool =
+                    sqlx::query_scalar(active_recon_scope_semantic_candidate_exists_sql())
+                        .bind(operation_id)
+                        .bind(organization_id)
+                        .bind(row.target_type.trim().to_ascii_lowercase())
+                        .bind(row.value.trim())
+                        .fetch_one(&mut *tx)
+                        .await?;
+                if !semantic_candidate {
+                    anyhow::bail!("ACTIVE_RECON_SCOPE_SEMANTIC_CANDIDATE_CHANGED");
+                }
+                let inserted = sqlx::query(active_recon_scope_target_insert_sql())
+                    .bind(organization_id)
+                    .bind(row.target_type.trim().to_ascii_lowercase())
+                    .bind(row.value.trim())
+                    .bind(selected)
+                    .execute(&mut *tx)
+                    .await?;
+                if inserted.rows_affected() != 1 {
+                    anyhow::bail!("ACTIVE_RECON_SCOPE_TARGET_INSERT_FAILED");
+                }
             }
         }
 
+        let prior_marker = state_blob.get("active_recon_target_scope");
+        let prior_reviewed = match prior_marker {
+            Some(marker) => {
+                let value = marker.get("reviewed").or_else(|| marker.get("presented"));
+                let Some(value) = value else {
+                    anyhow::bail!("ACTIVE_RECON_SCOPE_PRIOR_REVIEW_INVALID");
+                };
+                serde_json::from_value::<Vec<golish_agent_kit::db_traits::ScopingReviewedTarget>>(
+                    value.clone(),
+                )
+                .map_err(|_| anyhow::anyhow!("ACTIVE_RECON_SCOPE_PRIOR_REVIEW_INVALID"))?
+            }
+            None => Vec::new(),
+        };
+        let mut reviewed_by_identity = std::collections::BTreeMap::new();
+        for row in prior_reviewed
+            .into_iter()
+            .chain(approval.presented.iter().cloned())
+        {
+            if !valid(&row) {
+                anyhow::bail!("ACTIVE_RECON_SCOPE_PRIOR_REVIEW_INVALID");
+            }
+            reviewed_by_identity.insert(exact(&row), row);
+        }
+        let reviewed = reviewed_by_identity.into_values().collect::<Vec<_>>();
         let marker = serde_json::json!({
             "schema_version": 1,
             "operation_id": operation_id,
@@ -1867,6 +1905,7 @@ impl GolishDbRepoProvider {
             "request_id": approval.request_id,
             "presented": approval.presented,
             "selected": approval.selected,
+            "reviewed": reviewed,
         });
         let updated = sqlx::query(active_recon_scope_state_update_sql())
             .bind(operation_id)
@@ -2170,36 +2209,141 @@ fn scoping_target_snapshot_sql() -> &'static str {
 }
 
 fn active_recon_scope_review_candidates_sql() -> &'static str {
-    r#"SELECT target.value, target.target_type::text, target.scope::text
-       FROM operation_state operation
-       JOIN targets target
-         ON target.organization_id = operation.engagement_org_id
-       WHERE operation.operation_id = $1
-         AND operation.engagement_org_id = $2
-         AND operation.current_stage = 'target_intel'
-         AND target.organization_id = $2
-         AND target.scope::text = 'in'
-         AND target.target_type::text IN ('domain', 'ip', 'cidr', 'url', 'wildcard')
-         AND lower(COALESCE(target.source, '')) IN
-             ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli',
-              'asset_intel', 'target_intel_goal')
-         AND EXISTS (
-             SELECT 1
-             FROM targets refreshed
-             WHERE refreshed.organization_id = operation.engagement_org_id
-               AND refreshed.scope::text = 'in'
-               AND lower(COALESCE(refreshed.source, '')) IN
-                   ('asset_intel', 'target_intel_goal')
-               AND refreshed.updated_at >= operation.stage_started_at
-         )
-       ORDER BY target.created_at ASC, target.id ASC"#
+    r#"WITH active_operation AS (
+           SELECT operation_id,engagement_org_id,stage_started_at,
+                  COALESCE(
+                    state_blob->'active_recon_target_scope'->'reviewed',
+                    state_blob->'active_recon_target_scope'->'presented',
+                    '[]'::jsonb
+                  ) AS reviewed
+             FROM operation_state
+            WHERE operation_id=$1 AND engagement_org_id=$2
+              AND current_stage='target_intel'
+       ), semantic_candidates AS (
+           SELECT DISTINCT observation.canonical_value AS value,
+                  CASE observation.asset_kind
+                    WHEN 'domain' THEN 'domain'
+                    WHEN 'ip' THEN 'ip'
+                    WHEN 'cidr' THEN 'cidr'
+                    WHEN 'web_origin' THEN 'url'
+                  END AS target_type,
+                  'in'::text AS scope
+             FROM active_operation operation
+             JOIN target_intel_asset_observations observation
+               ON observation.operation_id=operation.operation_id
+              AND observation.organization_id=operation.engagement_org_id
+            WHERE observation.observed_at>=operation.stage_started_at
+              AND observation.asset_kind IN ('domain','ip','cidr','web_origin')
+              AND observation.attribution_disposition IN ('unassessed','ambiguous','owned')
+              AND observation.promotion_target_id IS NULL
+       ), unreviewed_semantic_candidates AS (
+           SELECT candidate.*
+             FROM semantic_candidates candidate
+             CROSS JOIN active_operation operation
+            WHERE NOT EXISTS (
+                SELECT 1
+                  FROM jsonb_array_elements(operation.reviewed) reviewed(row)
+                 WHERE btrim(reviewed.row->>'value')=candidate.value
+                   AND lower(btrim(reviewed.row->>'type'))=candidate.target_type
+            )
+       ), refreshed_targets AS (
+           SELECT target.value,target.target_type::text AS target_type,'in'::text AS scope
+             FROM active_operation operation
+             JOIN targets target ON target.organization_id=operation.engagement_org_id
+            WHERE target.scope::text='in'
+              AND target.target_type::text IN ('domain','ip','cidr','url','wildcard')
+              AND lower(COALESCE(target.source,'')) IN ('asset_intel','target_intel_goal')
+              AND target.updated_at>=operation.stage_started_at
+       ), review_required AS (
+           SELECT EXISTS(SELECT 1 FROM refreshed_targets)
+               OR EXISTS(SELECT 1 FROM unreviewed_semantic_candidates) AS required
+       ), denominator AS (
+           SELECT target.value,target.target_type::text AS target_type,'in'::text AS scope
+             FROM active_operation operation
+             JOIN targets target ON target.organization_id=operation.engagement_org_id
+            WHERE target.scope::text='in'
+              AND target.target_type::text IN ('domain','ip','cidr','url','wildcard')
+              AND lower(COALESCE(target.source,'')) IN
+                  ('manual','imported','customer_provided','stage-run-seed','seed','cli',
+                   'asset_intel','target_intel_goal')
+           UNION
+           SELECT value,target_type,scope FROM unreviewed_semantic_candidates
+       )
+       SELECT denominator.value,denominator.target_type,denominator.scope
+         FROM denominator CROSS JOIN review_required
+        WHERE review_required.required
+        ORDER BY denominator.target_type,denominator.value"#
+}
+
+fn active_recon_scope_row_is_canonical(
+    row: &golish_agent_kit::db_traits::ScopingReviewedTarget,
+) -> bool {
+    let value = row.value.trim();
+    match row.target_type.trim().to_ascii_lowercase().as_str() {
+        "url" => golish_pentest_domain::canonical_web_origin(value).is_some(),
+        "wildcard" => value
+            .strip_prefix("*.")
+            .and_then(golish_pentest_domain::canonical_asset_key)
+            .is_some_and(|key| key.class == golish_pentest_domain::AssetClass::Domain),
+        "domain" => {
+            !value.to_ascii_lowercase().starts_with("http://")
+                && !value.to_ascii_lowercase().starts_with("https://")
+                && !value.starts_with("*.")
+                && golish_pentest_domain::canonical_asset_key(value)
+                    .is_some_and(|key| key.class == golish_pentest_domain::AssetClass::Domain)
+        }
+        "ip" => golish_pentest_domain::canonical_asset_key(value)
+            .is_some_and(|key| key.class == golish_pentest_domain::AssetClass::Ip),
+        "cidr" => {
+            let Some((address, prefix)) = value.split_once('/') else {
+                return false;
+            };
+            let Ok(address) = address.trim().parse::<std::net::IpAddr>() else {
+                return false;
+            };
+            let Ok(prefix) = prefix.trim().parse::<u8>() else {
+                return false;
+            };
+            matches!(address, std::net::IpAddr::V4(_) if prefix <= 32)
+                || matches!(address, std::net::IpAddr::V6(_) if prefix <= 128)
+        }
+        _ => false,
+    }
+}
+
+fn canonical_active_recon_scope_rows(
+    rows: Vec<(String, String, String)>,
+) -> Vec<golish_agent_kit::db_traits::ScopingReviewedTarget> {
+    rows.into_iter()
+        .map(
+            |(value, target_type, scope)| golish_agent_kit::db_traits::ScopingReviewedTarget {
+                value,
+                target_type,
+                scope,
+            },
+        )
+        // Provider observations can contain a stale semantic kind (for example,
+        // an IP literal labelled as a domain). The correctly typed sibling is
+        // still part of the denominator; reject only the malformed projection
+        // before the exact review-set validator sees it.
+        .filter(active_recon_scope_row_is_canonical)
+        .collect()
 }
 
 fn active_recon_scope_operation_lock_sql() -> &'static str {
-    r#"SELECT current_stage, engagement_org_id
+    r#"SELECT current_stage, engagement_org_id, COALESCE(state_blob,'{}'::jsonb)
        FROM operation_state
        WHERE operation_id = $1
        FOR UPDATE"#
+}
+
+fn active_recon_scope_target_count_sql() -> &'static str {
+    r#"SELECT COUNT(*)
+       FROM targets
+       WHERE organization_id=$1 AND target_type::text=$2 AND value=$3
+         AND lower(COALESCE(source,'')) IN
+             ('manual','imported','customer_provided','stage-run-seed','seed','cli',
+              'asset_intel','target_intel_goal')"#
 }
 
 fn active_recon_scope_target_update_sql() -> &'static str {
@@ -2219,6 +2363,41 @@ fn active_recon_scope_target_update_sql() -> &'static str {
          AND lower(COALESCE(source, '')) IN
              ('manual', 'imported', 'customer_provided', 'stage-run-seed', 'seed', 'cli',
               'asset_intel', 'target_intel_goal')"#
+}
+
+fn active_recon_scope_semantic_candidate_exists_sql() -> &'static str {
+    r#"SELECT EXISTS(
+           SELECT 1
+             FROM operation_state operation
+             JOIN target_intel_asset_observations observation
+               ON observation.operation_id=operation.operation_id
+              AND observation.organization_id=operation.engagement_org_id
+            WHERE operation.operation_id=$1 AND operation.engagement_org_id=$2
+              AND operation.current_stage='target_intel'
+              AND observation.observed_at>=operation.stage_started_at
+              AND CASE observation.asset_kind
+                    WHEN 'domain' THEN 'domain'
+                    WHEN 'ip' THEN 'ip'
+                    WHEN 'cidr' THEN 'cidr'
+                    WHEN 'web_origin' THEN 'url'
+                  END=$3
+              AND observation.canonical_value=$4
+              AND observation.attribution_disposition IN ('unassessed','ambiguous','owned')
+              AND observation.promotion_target_id IS NULL
+       )"#
+}
+
+fn active_recon_scope_target_insert_sql() -> &'static str {
+    r#"INSERT INTO targets(
+           name,target_type,value,tags,notes,scope,grp,owner,
+           organization_id,project_path,source,parent_id
+       )
+       SELECT $3,$2::target_type,$3,'[]'::jsonb,'',
+              CASE WHEN $4 THEN 'in'::scope_type ELSE 'out'::scope_type END,
+              'default','',organization.id,organization.project_path,
+              CASE WHEN $4 THEN 'customer_provided' ELSE 'target_intel_goal' END,NULL
+         FROM organizations organization
+        WHERE organization.id=$1"#
 }
 
 fn active_recon_scope_state_update_sql() -> &'static str {
@@ -2335,10 +2514,14 @@ mod tests {
     #[test]
     fn active_recon_scope_candidates_are_operation_org_stage_and_window_bound() {
         let sql = active_recon_scope_review_candidates_sql();
-        assert!(sql.contains("operation.operation_id = $1"));
-        assert!(sql.contains("operation.engagement_org_id = $2"));
-        assert!(sql.contains("operation.current_stage = 'target_intel'"));
-        assert!(sql.contains("refreshed.updated_at >= operation.stage_started_at"));
+        assert!(sql.contains("operation_id=$1"));
+        assert!(sql.contains("engagement_org_id=$2"));
+        assert!(sql.contains("current_stage='target_intel'"));
+        assert!(sql.contains("observation.observed_at>=operation.stage_started_at"));
+        assert!(sql.contains("target_intel_asset_observations"));
+        assert!(sql.contains("'unassessed','ambiguous','owned'"));
+        assert!(sql.contains("state_blob->'active_recon_target_scope'->'reviewed'"));
+        assert!(sql.contains("jsonb_array_elements(operation.reviewed)"));
         assert!(sql.contains("'asset_intel'"));
         assert!(sql.contains("'target_intel_goal'"));
         assert!(!sql.contains("active_discovered"));
@@ -2352,9 +2535,62 @@ mod tests {
         assert!(update.contains("value = $3"));
         assert!(update.contains("customer_provided"));
         assert!(update.contains("'target_intel_goal'"));
+        let semantic = active_recon_scope_semantic_candidate_exists_sql();
+        assert!(semantic.contains("target_intel_asset_observations"));
+        assert!(semantic.contains("observation.operation_id=operation.operation_id"));
+        assert!(semantic.contains("observation.observed_at>=operation.stage_started_at"));
+        let insert = active_recon_scope_target_insert_sql();
+        assert!(insert.contains("CASE WHEN $4 THEN 'in'::scope_type ELSE 'out'::scope_type END"));
+        assert!(
+            insert.contains("CASE WHEN $4 THEN 'customer_provided' ELSE 'target_intel_goal' END")
+        );
         let state = active_recon_scope_state_update_sql();
         assert!(state.contains("active_recon_target_scope"));
         assert!(state.contains("current_stage = 'target_intel'"));
+    }
+
+    #[test]
+    fn active_recon_scope_filters_misclassified_semantic_candidates() {
+        let row =
+            |value: &str, target_type: &str| golish_agent_kit::db_traits::ScopingReviewedTarget {
+                value: value.to_string(),
+                target_type: target_type.to_string(),
+                scope: "in".to_string(),
+            };
+        assert!(active_recon_scope_row_is_canonical(&row(
+            "moresec.cn",
+            "domain"
+        )));
+        assert!(active_recon_scope_row_is_canonical(&row(
+            "61.130.180.110",
+            "ip"
+        )));
+        assert!(!active_recon_scope_row_is_canonical(&row(
+            "61.130.180.110",
+            "domain"
+        )));
+
+        let rows = canonical_active_recon_scope_rows(vec![
+            (
+                "moresec.cn".to_string(),
+                "domain".to_string(),
+                "in".to_string(),
+            ),
+            (
+                "61.130.180.110".to_string(),
+                "domain".to_string(),
+                "in".to_string(),
+            ),
+            (
+                "61.130.180.110".to_string(),
+                "ip".to_string(),
+                "in".to_string(),
+            ),
+        ]);
+        assert_eq!(
+            rows,
+            vec![row("moresec.cn", "domain"), row("61.130.180.110", "ip")]
+        );
     }
 
     #[test]

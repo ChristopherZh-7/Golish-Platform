@@ -10,7 +10,7 @@
  * See docs/design/2026-05-17-plan-restore-on-restart.md (Task 8).
  */
 
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ai from "@/lib/ai";
@@ -157,18 +157,20 @@ describe("useTaskPlanState · P0-1 fallback fetch", () => {
     });
 
     // Simulate a plan_updated event arriving while getPlan is pending.
-    useStore.setState((s: any) => ({
-      sessions: {
-        ...s.sessions,
-        [SID]: {
-          plan: makeStubPlan({
-            version: 42,
-            steps: [{ id: "live", step: "live step", status: "in_progress" }],
-            summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
-          }),
+    act(() => {
+      useStore.setState((s: any) => ({
+        sessions: {
+          ...s.sessions,
+          [SID]: {
+            plan: makeStubPlan({
+              version: 42,
+              steps: [{ id: "live", step: "live step", status: "in_progress" }],
+              summary: { total: 1, completed: 0, in_progress: 1, pending: 0 },
+            }),
+          },
         },
-      },
-    }));
+      }));
+    });
 
     // Now resolve the slower getPlan with the OLDER snapshot.
     resolveFn!(makeStubPlan({ version: 1 }));
@@ -273,6 +275,7 @@ describe("useTaskPlanState · per-stage roadmap persistence (refresh restore)", 
         target_intel: stubStagePlan(2, "in_progress"),
       },
       passedStages: ["scoping"],
+      stagePlanMessageIds: { scoping: "a-scoping", target_intel: "a-target" },
     });
 
     renderHookEmpty();
@@ -284,6 +287,10 @@ describe("useTaskPlanState · per-stage roadmap persistence (refresh restore)", 
       expect(sess?.plansByStage?.target_intel?.version).toBe(2);
       // "阶段完成" (drives the green check + the floating bar's current-stage calc)
       expect(sess?.passedStages).toEqual(["scoping"]);
+      expect(sess?.stagePlanMessageIds).toEqual({
+        scoping: "a-scoping",
+        target_intel: "a-target",
+      });
     });
   });
 
@@ -317,6 +324,37 @@ describe("useTaskPlanState · per-stage roadmap persistence (refresh restore)", 
     expect(sess?.stageOrder).toEqual(["recon"]);
     expect(sess?.passedStages).toEqual([]);
   });
+
+  it("merges a persisted anchor into an already-live stage without replacing its plan", async () => {
+    const CONV = "conv-live-anchor";
+    const TERM = "term-live-anchor";
+    useStore.setState({
+      activeConversationId: CONV,
+      conversations: { [CONV]: { aiSessionId: "ai-live-anchor", messages: [] } as any },
+      conversationTerminals: { [CONV]: [TERM] },
+      sessions: {
+        [TERM]: {
+          id: TERM,
+          stageOrder: ["target_intel"],
+          plansByStage: { target_intel: stubStagePlan(9, "in_progress") },
+          passedStages: [],
+        } as any,
+      },
+    } as any);
+    writeStagePlans(CONV, {
+      stageOrder: ["target_intel"],
+      plansByStage: { target_intel: stubStagePlan(2, "in_progress") },
+      passedStages: [],
+      stagePlanMessageIds: { target_intel: "a-target" },
+    });
+
+    renderHookEmpty();
+    await waitFor(() => {
+      const session = useStore.getState().sessions[TERM];
+      expect(session?.plansByStage?.target_intel?.version).toBe(9);
+      expect(session?.stagePlanMessageIds?.target_intel).toBe("a-target");
+    });
+  });
 });
 
 describe("useTaskPlanState · roadmap anchor stability (per-stage)", () => {
@@ -339,6 +377,7 @@ describe("useTaskPlanState · roadmap anchor stability (per-stage)", () => {
             target_intel: stubStagePlan(1, "in_progress"),
           },
           passedStages: ["scoping"],
+          stagePlanMessageIds: { scoping: "a1", target_intel: "a2" },
         } as any,
       },
     } as any);
@@ -349,10 +388,7 @@ describe("useTaskPlanState · roadmap anchor stability (per-stage)", () => {
     vi.clearAllMocks();
   });
 
-  it("anchors the roadmap at the first assistant message, not a later update_plan message", () => {
-    // Scoping (confirm-only) never calls update_plan; stage 2 does. The roadmap
-    // must stay at the first assistant message so it doesn't appear to vanish
-    // when stage 2 plans.
+  it("projects each stage to its own immutable assistant message", () => {
     const messages = [
       { id: "u1", role: "user", content: "go", timestamp: 0 },
       { id: "a1", role: "assistant", content: "thinking", timestamp: 1 },
@@ -369,6 +405,31 @@ describe("useTaskPlanState · roadmap anchor stability (per-stage)", () => {
       return useTaskPlanState(messages, ref);
     });
     expect(result.current.stagePlans).not.toBeNull();
-    expect(result.current.planTargetIdx).toBe(1);
+    expect(result.current.planTargetIdx).toBe(-1);
+    expect(result.current.stageIdsByMessage.get("a1")).toEqual(["scoping"]);
+    expect(result.current.stageIdsByMessage.get("a2")).toEqual(["target_intel"]);
+  });
+
+  it("does not guess an inline location for unanchored future stages", () => {
+    useStore.setState((state) => ({
+      sessions: {
+        ...state.sessions,
+        [SID2]: {
+          ...state.sessions[SID2],
+          stagePlanMessageIds: {},
+        },
+      },
+    }));
+    const messages = [
+      { id: "u1", role: "user", content: "go", timestamp: 0 },
+      { id: "a1", role: "assistant", content: "thinking", timestamp: 1 },
+    ] as never[];
+    const { result } = renderHook(() => {
+      const ref = useRef<string | null>(null);
+      return useTaskPlanState(messages, ref);
+    });
+
+    expect(result.current.stageIdsByMessage.size).toBe(0);
+    expect(result.current.planTargetIdx).toBe(-1);
   });
 });

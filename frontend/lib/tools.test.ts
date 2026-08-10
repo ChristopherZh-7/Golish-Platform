@@ -1,15 +1,93 @@
 import { describe, expect, it } from "vitest";
-import { getStageRunAgentLabel, getToolActionLabel, getToolPrimaryArg } from "./tools";
+import {
+  getStageRunAgentLabel,
+  getToolActionLabel,
+  getToolPrimaryArg,
+  getToolTerminalPresentation,
+  toolResultIndicatesFailure,
+} from "./tools";
+
+describe("getToolTerminalPresentation", () => {
+  it("does not leave an immutable accepted submission claiming Gate is still awaiting", () => {
+    expect(
+      getToolTerminalPresentation("submit_stage_deliverable", { status: "accepted" }, true)
+    ).toEqual({ kind: "submitted", label: "Submitted" });
+  });
+
+  it("distinguishes stage_run BLOCK from a server-ready closeout", () => {
+    expect(getToolTerminalPresentation("stage_run", { passed: false }, true)).toEqual({
+      kind: "blocked",
+      label: "Blocked",
+    });
+    expect(getToolTerminalPresentation("stage_run", { passed: true }, true)).toEqual({
+      kind: "ready_to_close",
+      label: "Ready to close",
+    });
+  });
+
+  it("retains ordinary success and failure semantics", () => {
+    expect(getToolTerminalPresentation("read_file", { content: "ok" }, true)).toEqual({
+      kind: "completed",
+      label: "Completed",
+    });
+    expect(getToolTerminalPresentation("read_file", { status: "needs_fix" }, true)).toEqual({
+      kind: "failed",
+      label: "Needs attention",
+    });
+  });
+});
 
 describe("getStageRunAgentLabel", () => {
   it("renders the durable Controller role as one consistent product label", () => {
     expect(getStageRunAgentLabel("company_stage_controller")).toBe("Company Controller");
     expect(getStageRunAgentLabel("Company Controller")).toBe("Company Controller");
+    expect(getStageRunAgentLabel("Application Model Controller")).toBe(
+      "Application Model Controller"
+    );
   });
 
   it("humanizes downstream specialist slugs without changing ordinary labels", () => {
     expect(getStageRunAgentLabel("vuln_scanner")).toBe("Vuln Scanner Agent");
     expect(getStageRunAgentLabel("Prober")).toBe("Prober Agent");
+  });
+});
+
+describe("toolResultIndicatesFailure", () => {
+  const storageHalt = {
+    scheduler: "company_controller_v1",
+    passed: false,
+    operator_recovery_required: false,
+    retry_budget_exhausted: true,
+    runtime_control: {
+      kind: "halt_current_request",
+      reason: "company_controller_storage_failed",
+    },
+    gaps: [{ code: "COMPANY_CONTROLLER_STORAGE_FAILED" }],
+  };
+
+  it("marks an exact Company Controller storage halt as a displayed failure", () => {
+    expect(toolResultIndicatesFailure(storageHalt)).toBe(true);
+    expect(toolResultIndicatesFailure(JSON.stringify(storageHalt))).toBe(true);
+  });
+
+  it("rejects lookalike storage-halt payloads", () => {
+    expect(
+      toolResultIndicatesFailure({
+        ...storageHalt,
+        gaps: [{ code: "COMPANY_CONTROLLER_FAILED" }],
+      })
+    ).toBe(false);
+    expect(
+      toolResultIndicatesFailure({
+        ...storageHalt,
+        runtime_control: {
+          kind: "halt_current_request",
+          reason: "company_controller_blocked",
+        },
+      })
+    ).toBe(false);
+    expect(toolResultIndicatesFailure({ ...storageHalt, passed: true })).toBe(false);
+    expect(toolResultIndicatesFailure({ ...storageHalt, scheduler: "other" })).toBe(false);
   });
 });
 

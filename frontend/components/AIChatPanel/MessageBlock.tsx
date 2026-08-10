@@ -87,6 +87,7 @@ export const MessageBlock = memo(function MessageBlock({
   onApprovalModeChange,
   taskPlan,
   stagePlans,
+  stagePlanStageIds,
   planTextOffset,
   terminalId,
 }: {
@@ -99,11 +100,13 @@ export const MessageBlock = memo(function MessageBlock({
   onApprovalModeChange?: (mode: "ask" | "run-all") => void;
   taskPlan?: TaskPlanViewModel | null;
   stagePlans?: StagePlansViewModel | null;
+  stagePlanStageIds?: string[];
   planTextOffset?: number | null;
   terminalId?: string | null;
 }) {
   const isUser = message.role === "user";
-  const hasStagePlans = !!stagePlans && stagePlans.stageOrder.length > 0;
+  const hasStagePlans =
+    !!stagePlans && !!stagePlanStageIds?.length && stagePlans.stageOrder.length > 0;
   const nestedIds = usePlanNestedRequestIds(
     taskPlan || hasStagePlans ? (terminalId ?? null) : null
   );
@@ -191,11 +194,10 @@ export const MessageBlock = memo(function MessageBlock({
         // surface the plan card once it actually has steps.
         const shouldShowPlan =
           !isUser && (hasStagePlans || (!!taskPlan && taskPlan.steps.length > 0));
-        // Per-stage stack (task mode) vs single card (chat mode). The stack
-        // always anchors at the top of the plan-target block; the inline
-        // offset / plan-marker placement only applies to the single card.
+        // Per-stage cards belong to this exact assistant message; the inline
+        // offset / plan-marker placement only applies to the legacy single plan.
         const planNode = hasStagePlans ? (
-          <StagePlanStack stagePlans={stagePlans!} />
+          <StagePlanStack stagePlans={stagePlans!} stageIds={stagePlanStageIds!} />
         ) : (
           <InlinePlanCard plan={taskPlan!} />
         );

@@ -8,6 +8,7 @@
 
 import { AlertTriangle } from "lucide-react";
 import { type StageTeamReadApi, StageTeamRunView } from "@/components/Engagement/StageTeamRunView";
+import type { ActiveSubAgent } from "@/store";
 
 export type StageRunStatus = "passed" | "running" | "queued" | "blocked" | "pending" | "stopped";
 
@@ -25,12 +26,7 @@ export interface StageRunRow {
   name: string;
   ownershipPercent: number | null;
   status: StageRunStatus;
-  /**
-   * The org's specialist sub-agent `parentRequestId` (= the backend
-   * `StageRunOrgProgress` event's `agent_request_id`). When present, the row is
-   * drill-in-able into that sub-agent's own conversation / reasoning / tool calls
-   * via {@link StageRunOrgRowsProps.onDrillIn}.
-   */
+  /** The org's specialist sub-agent `parentRequestId`, when the trace exposes it. */
   agentRequestId?: string | null;
   /** Live one-liner while running (e.g. "subfinder · pingan.com.cn"). */
   activity?: string;
@@ -52,14 +48,12 @@ export interface StageRunSummary {
 
 export interface StageRunOrgRowsProps {
   rows: StageRunRow[];
-  /**
-   * Drill from an org row into that org's specialist sub-agent detail. Given the
-   * row's `agentRequestId`; only rows that carry one render as clickable. Wired
-   * by {@link ToolCallDetailView} to open the sub-agent detail pane.
-   */
-  onDrillIn?: (agentRequestId: string) => void;
   /** Exact Stage Team WorkerRun -> SubAgent parent request identities. */
   agentRequestIdsByWorker?: Readonly<Record<string, string>>;
+  /** Visible Agent transcripts for this chat session. */
+  agentActivities?: readonly ActiveSubAgent[];
+  /** Exact Agent requested by a ChatPanel sub-agent card, within this Stage. */
+  focusedAgentRequestId?: string | null;
   /** Test seam / alternate transport for the exact durable Team read model. */
   teamApi?: StageTeamReadApi;
 }
@@ -69,7 +63,42 @@ const COMPANY_CONTROLLER_STAGES = new Set([
   "external_attack_surface",
   "enumeration",
   "vuln_triage",
+  "application_understanding",
 ]);
+
+/**
+ * Produce a stable, exact-Team refresh hint from Agent lifecycle changes.
+ * Streaming text/thinking is deliberately excluded so token deltas never turn
+ * into repeated DB reads; dispatch completion and child lifecycle changes do.
+ */
+export function stageTeamAgentRefreshSignature(
+  rows: readonly StageRunRow[],
+  agentActivities: readonly ActiveSubAgent[] = []
+): string {
+  const prefixes = rows
+    .map((row) => row.agentRequestId?.trim())
+    .filter((value): value is string => Boolean(value));
+  if (prefixes.length === 0) return "";
+
+  return agentActivities
+    .filter((activity) =>
+      prefixes.some(
+        (prefix) =>
+          activity.parentRequestId === prefix || activity.parentRequestId.startsWith(`${prefix}::`)
+      )
+    )
+    .flatMap((activity) => [
+      `agent:${activity.parentRequestId}:${activity.agentId}:${activity.status}:${activity.completedAt ?? ""}`,
+      ...activity.toolCalls
+        .filter((tool) => tool.name === "stage_team_dispatch_workers")
+        .map(
+          (tool) =>
+            `dispatch:${activity.parentRequestId}:${tool.id}:${tool.status}:${tool.completedAt ?? ""}`
+        ),
+    ])
+    .sort()
+    .join("|");
+}
 
 /** Keep Candidate/Verification and post-exploit rows on their own typed views. */
 export function isCompanyControllerStageRunRows(rows: readonly StageRunRow[]): boolean {
@@ -85,8 +114,9 @@ export function isCompanyControllerStageRunRows(rows: readonly StageRunRow[]): b
  */
 export function StageRunOrgRows({
   rows,
-  onDrillIn,
   agentRequestIdsByWorker,
+  agentActivities,
+  focusedAgentRequestId,
   teamApi,
 }: StageRunOrgRowsProps) {
   if (!isCompanyControllerStageRunRows(rows)) return null;
@@ -111,16 +141,18 @@ export function StageRunOrgRows({
         `${row.stageRunUnitId ?? "legacy"}:${row.status}:${row.activity ?? ""}:${row.evidenceCount}`
     )
     .join("|");
+  const agentRefreshVersion = stageTeamAgentRefreshSignature(rows, agentActivities);
 
   if (exactTeamPointer?.operationId && exactTeamPointer.stageExecutionId) {
     return (
       <StageTeamRunView
         operationId={exactTeamPointer.operationId}
         stageExecutionId={exactTeamPointer.stageExecutionId}
-        refreshVersion={teamRefreshVersion}
+        refreshVersion={`${teamRefreshVersion}::agents:${agentRefreshVersion}`}
         api={teamApi}
+        agentActivities={agentActivities}
         agentRequestIdsByWorker={agentRequestIdsByWorker}
-        onOpenAgent={onDrillIn}
+        focusedAgentRequestId={focusedAgentRequestId}
       />
     );
   }

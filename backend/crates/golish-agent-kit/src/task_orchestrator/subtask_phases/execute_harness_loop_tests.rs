@@ -2916,7 +2916,7 @@ async fn direct_eas_entry_accepts_company_fixture_with_exact_in_scope_target() {
     orch.set_harness_org_id(Some(org_id));
     orch.set_current_invocation_target_authority(Some(true));
 
-    assert!(orch.active_recon_trusted_target_ready(op).await);
+    assert!(orch.ensure_active_recon_target_scope(op).await);
     assert_eq!(
         repo.scoping_target_snapshot_reads.load(Ordering::SeqCst),
         1,

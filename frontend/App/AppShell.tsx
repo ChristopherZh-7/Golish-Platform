@@ -22,6 +22,7 @@ import { useAppState } from "../store/selectors";
 import { createNewConversation } from "../store/slices/conversation";
 import { AppErrorFallback, AppLoadingSkeleton } from "./components/AppLoadingSkeleton";
 import { SplitColumn, SplitDropZone } from "./components/SplitColumn";
+import { isDetailFocusMode, shouldHideAiChatPanel, shouldMountAiChatPanel } from "./detailFocus";
 import type { ActivityViewControls } from "./hooks/useActivityViewControls";
 import { useSplitTabDrag } from "./hooks/useSplitTabDrag";
 import {
@@ -186,6 +187,12 @@ export function AppShell(props: AppShellProps) {
   const sidecarPanelOpen = useStore((state) => state.sidecarPanelOpen);
   const isOnHomeTab = useStore((s) => s.homeTabId !== null && s.activeSessionId === s.homeTabId);
   const chatPanelVisible = useStore((s) => s.chatPanelVisible);
+  const activeDetailViewMode = useStore((s) =>
+    activeSessionId ? s.sessions[activeSessionId]?.detailViewMode : undefined
+  );
+  const detailFocusActive = isDetailFocusMode(activeDetailViewMode);
+  const aiChatPanelMounted = shouldMountAiChatPanel(isOnHomeTab);
+  const aiChatPanelHidden = shouldHideAiChatPanel(chatPanelVisible, activeDetailViewMode);
   const uiScale = useStore((s) => s.displaySettings.uiScale);
   // Dialog / panel / bottom-terminal state — moved here from props in
   // the 2026-05 prop-drilling reform.
@@ -449,7 +456,7 @@ export function AppShell(props: AppShellProps) {
                 )}
               >
                 {/* 1:1 model: minimal session indicator instead of TabBar */}
-                {!isOnHomeTab && <CenterSessionIndicator />}
+                {!isOnHomeTab && !detailFocusActive && <CenterSessionIndicator />}
 
                 <div className="flex-1 min-h-0 min-w-0 flex overflow-hidden">
                   <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden relative">
@@ -502,7 +509,7 @@ export function AppShell(props: AppShellProps) {
             </div>
 
             {/* Resize handle between center and right panels */}
-            {!isOnHomeTab && (
+            {!isOnHomeTab && chatPanelVisible && !detailFocusActive && (
               <div className="flex-shrink-0 w-0 relative z-10">
                 <div
                   className="absolute inset-y-3 -left-1 w-2 cursor-col-resize hover:bg-accent/20 active:bg-accent/40 transition-colors rounded-full"
@@ -511,19 +518,24 @@ export function AppShell(props: AppShellProps) {
               </div>
             )}
 
-            {/* Right sidebar - AI Chat Panel (hide on home tab or when collapsed) */}
-            {!isOnHomeTab && chatPanelVisible && (
+            {/*
+              Keep the event subscriber mounted while the panel is visually hidden.
+              Stage details own the full workspace, but stage/plan events must still
+              be projected into the conversation timeline.
+            */}
+            {aiChatPanelMounted && (
               <div
                 data-right-panel
+                hidden={aiChatPanelHidden}
                 className="flex-shrink-0 h-full rounded-xl bg-card overflow-hidden panel-float"
                 style={{ width: rightPanelWidth }}
               >
-                <AIChatPanel />
+                <AIChatPanel renderUi={!aiChatPanelHidden} />
               </div>
             )}
 
             {/* Floating toggle to reopen collapsed chat panel */}
-            {!isOnHomeTab && !chatPanelVisible && (
+            {!isOnHomeTab && !chatPanelVisible && !detailFocusActive && (
               <button
                 type="button"
                 onClick={async () => {

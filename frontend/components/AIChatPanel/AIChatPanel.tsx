@@ -53,7 +53,15 @@ import { useChatAutoScroll } from "./useChatAutoScroll";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 const TASK_RESUME_PROMPT = "继续跑";
 
-export const AIChatPanel = memo(function AIChatPanel() {
+export interface AIChatPanelProps {
+  /**
+   * Keep event projection mounted while releasing the expensive conversation
+   * DOM in full-width detail views.
+   */
+  renderUi?: boolean;
+}
+
+export const AIChatPanel = memo(function AIChatPanel({ renderUi = true }: AIChatPanelProps) {
   const { t } = useTranslation();
 
   // ── Store selectors ──────────────────────────────────────────────────
@@ -198,10 +206,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
     generateTitleRef: sessionInit.generateTitleRef,
   });
 
-  const { activeAiSessionId, taskPlan, stagePlans, planTargetIdx } = useTaskPlanState(
-    messages,
-    planMessageIdRef
-  );
+  const { activeAiSessionId, taskPlan, stagePlans, planTargetIdx, stageIdsByMessage } =
+    useTaskPlanState(messages, planMessageIdRef);
   const askHumanSessionId =
     storeAskHumanRequest?.sessionId ??
     activeConv?.aiSessionId ??
@@ -287,35 +293,7 @@ export const AIChatPanel = memo(function AIChatPanel() {
     }
   }, [askHumanRequest, clearStoreAskHumanRequest, handleAskHumanSkip, visibleAskHumanRequest]);
 
-  // Sticky "you-are-here" bar visibility. Reveal it only once the inline roadmap
-  // (`[data-stage-roadmap]`) has fully scrolled out of view ABOVE the viewport —
-  // so it never duplicates the roadmap during planning and snaps in Cursor-style
-  // as the user scrolls past it. An IntersectionObserver on the roadmap element is
-  // cheaper and jitter-free vs a scroll listener.
   const hasStagePlans = !!stagePlans && stagePlans.stageOrder.length > 0;
-  const [roadmapScrolledPast, setRoadmapScrolledPast] = useState(false);
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!hasStagePlans || !container) {
-      setRoadmapScrolledPast(false);
-      return;
-    }
-    const roadmap = container.querySelector("[data-stage-roadmap]");
-    if (!roadmap) {
-      setRoadmapScrolledPast(false);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        // Out of view AND above the viewport top = scrolled past the whole roadmap.
-        const above = entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0);
-        setRoadmapScrolledPast(!entry.isIntersecting && above);
-      },
-      { root: container, threshold: 0 }
-    );
-    observer.observe(roadmap);
-    return () => observer.disconnect();
-  }, [hasStagePlans, planTargetIdx, messages.length, messagesContainerRef]);
 
   // ── Conversation switch: activate terminal + restore execution mode ──
   const terminalRestoreInProgress = useStore((s) => s.terminalRestoreInProgress);
@@ -521,6 +499,8 @@ export const AIChatPanel = memo(function AIChatPanel() {
     !askHumanRequest &&
     !stablePendingApproval;
 
+  if (!renderUi) return null;
+
   // ── Render ───────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
@@ -539,6 +519,14 @@ export const AIChatPanel = memo(function AIChatPanel() {
           if (interactionLaneRef.current === "idle") setShowHistory((v) => !v);
         }}
       />
+
+      {!showHistory && hasStagePlans && messages.length > 0 && (
+        <StageProgressBar
+          stagePlans={stagePlans!}
+          isRunning={isStreaming}
+          className="flex-shrink-0"
+        />
+      )}
 
       {/* History panel */}
       {showHistory && (
@@ -582,13 +570,6 @@ export const AIChatPanel = memo(function AIChatPanel() {
       {/* Messages */}
       {!showHistory && (
         <div className="relative flex-1 min-h-0 flex flex-col">
-          {hasStagePlans && messages.length > 0 && roadmapScrolledPast && (
-            <StageProgressBar
-              stagePlans={stagePlans!}
-              isRunning={isStreaming}
-              className="absolute top-0 left-0 right-0 z-20"
-            />
-          )}
           <div ref={messagesContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden">
             {messages.length === 0 && !reportingReadModelHint && showRestoreLoading ? (
               <div className="flex flex-col items-center justify-center h-full select-none gap-3 text-center px-6">
@@ -628,12 +609,14 @@ export const AIChatPanel = memo(function AIChatPanel() {
                     return <StageMarker key={msg.id} message={msg} />;
                   }
                   const isPlanTarget = msgIdx === planTargetIdx;
+                  const anchoredStageIds = stageIdsByMessage.get(msg.id) ?? [];
                   return (
                     <React.Fragment key={msg.id}>
                       <MessageBlock
                         message={msg}
                         taskPlan={isPlanTarget ? taskPlan : null}
-                        stagePlans={isPlanTarget ? stagePlans : null}
+                        stagePlans={anchoredStageIds.length > 0 ? stagePlans : null}
+                        stagePlanStageIds={anchoredStageIds}
                         planTextOffset={isPlanTarget ? planTextOffsetRef.current : null}
                         terminalId={activeAiSessionId}
                         pendingApproval={stablePendingApproval}

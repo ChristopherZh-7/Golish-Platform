@@ -205,15 +205,15 @@ pub struct Args {
     pub stage_run_resume_pgdata: Option<PathBuf>,
 
     /// Apply one explicit, hash/CAS-bound local-operator Campaign authority
-    /// packet before an exact Investigation resume. This is accepted only for
-    /// a retained ephemeral PostgreSQL directory and never derives authority
-    /// from `--auto-approve`.
+    /// packet before an exact Investigation resume. The packet may target the
+    /// retained ephemeral database or the local application database, but it
+    /// always requires the complete persisted identity and never derives
+    /// authority from `--auto-approve`.
     #[arg(
         long,
         value_name = "JSON",
         requires_all = [
             "stage_run_resume",
-            "stage_run_resume_pgdata",
             "expect_session",
             "expect_task",
             "expect_operation",
@@ -659,13 +659,11 @@ mod tests {
     }
 
     #[test]
-    fn test_args_campaign_authority_requires_exact_retained_resume_identity() {
+    fn test_args_campaign_authority_requires_exact_resume_identity() {
         let args = Args::try_parse_from([
             "golish",
             "--stage-run-resume",
             "stage-run-476558c3-c22a-4009-a82e-17e086a005de",
-            "--stage-run-resume-pgdata",
-            "/tmp/golish-stage-run-db-retained/pgdata",
             "--stage-run-campaign-authority",
             "/tmp/campaign-authority.json",
             "--expect-session",

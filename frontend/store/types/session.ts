@@ -131,6 +131,8 @@ export interface Session {
   plansByStage?: Record<string, TaskPlan>;
   /** Order stages first appeared, so the per-stage cards render in run order. */
   stageOrder?: string[];
+  /** First assistant message that owns each stage's inline Plan card. */
+  stagePlanMessageIds?: Record<string, string>;
   /**
    * Stages whose authoritative evidence gate PASSED (backend `stage_passed`
    * TaskProgress, emitted from `consume_gate_outcome`). Drives the per-stage

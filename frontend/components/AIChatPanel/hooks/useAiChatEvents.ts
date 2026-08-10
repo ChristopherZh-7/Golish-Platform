@@ -110,6 +110,15 @@ export function useAiChatEvents({
   // convId → last stage_id we emitted a "Stage complete" marker for, so a stage
   // re-passed (gate accepts twice) doesn't spam duplicate milestones.
   const lastStageRef = useRef<Map<string, string>>(new Map());
+  // Stage-entry seeds arrive before that stage's assistant turn starts. Hold the
+  // stage until the next `started` event creates the message that owns its card.
+  const pendingStageEntryRef = useRef<Map<string, { stageId: string; messageId?: string }>>(
+    new Map()
+  );
+  // Listener-local per-conversation live message identity. The event listener can
+  // receive inactive conversations too, so the active panel's streaming ref is
+  // not safe as a cross-conversation stage anchor.
+  const liveAssistantByConversationRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => {
     let mounted = true;
@@ -128,6 +137,29 @@ export function useAiChatEvents({
           if (!conv) return;
           const convId = conv.id;
 
+          const resolveStageStoreSessionId = () => {
+            if (store.sessions[event.session_id]) return event.session_id;
+            const termId = store.conversationTerminals[convId]?.[0];
+            return termId && store.sessions[termId] ? termId : null;
+          };
+          const flushPendingStageAnchor = () => {
+            const pending = pendingStageEntryRef.current.get(convId);
+            if (!pending?.messageId) return;
+            const stageStoreSessionId = resolveStageStoreSessionId();
+            if (!stageStoreSessionId) return;
+            store.anchorStagePlan(stageStoreSessionId, pending.stageId, pending.messageId);
+            if (
+              store.sessions[stageStoreSessionId]?.stagePlanMessageIds?.[pending.stageId] ===
+              pending.messageId
+            ) {
+              pendingStageEntryRef.current.delete(convId);
+            }
+          };
+
+          // A plan event can race terminal restoration. Retry a previously
+          // prepared anchor on every subsequent event once the real owner exists.
+          flushPendingStageAnchor();
+
           if (isGenerationSuppressedForAiSession(event.session_id)) {
             return;
           }
@@ -143,8 +175,17 @@ export function useAiChatEvents({
                 isStreaming: true,
               };
               streamingMsgRef.current = assistantMsg.id;
+              liveAssistantByConversationRef.current.set(convId, assistantMsg.id);
               store.addConversationMessage(convId, assistantMsg);
               store.setConversationStreaming(convId, true);
+              const pendingStage = pendingStageEntryRef.current.get(convId);
+              if (pendingStage) {
+                pendingStageEntryRef.current.set(convId, {
+                  ...pendingStage,
+                  messageId: assistantMsg.id,
+                });
+                flushPendingStageAnchor();
+              }
               break;
             }
             case "text_delta":
@@ -262,6 +303,7 @@ export function useAiChatEvents({
               runRealtimeBatchFlushForConversation(convId);
               store.finalizeStreamingMessage(convId, event.response, event.reasoning ?? undefined);
               streamingMsgRef.current = null;
+              liveAssistantByConversationRef.current.delete(convId);
               if (taskInProgressRef.current) store.setConversationStreaming(convId, true);
               const freshConv = store.conversations[convId];
               if (freshConv) {
@@ -334,6 +376,8 @@ export function useAiChatEvents({
               if (s === "finished") {
                 taskInProgressRef.current = false;
                 store.setConversationStreaming(convId, false);
+                pendingStageEntryRef.current.delete(convId);
+                liveAssistantByConversationRef.current.delete(convId);
               }
               // Only meaningful transitions — skip the noisy repeated "running".
               if (
@@ -382,6 +426,8 @@ export function useAiChatEvents({
               taskInProgressRef.current = false;
               store.setMessageError(convId, event.message, classifyErrorSeverity(event.message));
               streamingMsgRef.current = null;
+              pendingStageEntryRef.current.delete(convId);
+              liveAssistantByConversationRef.current.delete(convId);
               // The run is ending — any pending ask_human box is now stale, so
               // clear it instead of leaving it dangling with no way to resolve.
               setAskHumanRequest(null);
@@ -461,11 +507,36 @@ export function useAiChatEvents({
               );
               break;
             case "plan_updated": {
-              // Per-stage plan updates (stage_id present) are routed into the
-              // per-stage buckets by the ai-events service handler. Skip the
-              // legacy single-card path here so a harness run doesn't ALSO render
-              // a duplicate InlinePlanCard alongside the per-stage StageRow cards.
-              if (event.stage_id) break;
+              // Per-stage plan updates are routed into plan buckets by the
+              // central ai-events handler. This listener only freezes the first
+              // assistant message that owns the stage card; it must not create a
+              // fake raw AI-session row while terminal restore is in flight.
+              if (event.stage_id) {
+                const isStageEntrySeed =
+                  event.version === 0 && event.steps.some((step) => step.status === "in_progress");
+                if (isStageEntrySeed) {
+                  pendingStageEntryRef.current.set(convId, { stageId: event.stage_id });
+                  break;
+                }
+
+                // If the entry seed was missed (old backend/replay), a real plan
+                // may establish the card only on this listener's live assistant.
+                // Never fall back to an arbitrary historical message.
+                if (
+                  event.version >= 1 &&
+                  pendingStageEntryRef.current.get(convId)?.stageId !== event.stage_id
+                ) {
+                  const liveMessageId = liveAssistantByConversationRef.current.get(convId);
+                  if (liveMessageId) {
+                    pendingStageEntryRef.current.set(convId, {
+                      stageId: event.stage_id,
+                      messageId: liveMessageId,
+                    });
+                    flushPendingStageAnchor();
+                  }
+                }
+                break;
+              }
               const currentConv = useStore.getState().conversations[convId];
               const lastMsg = currentConv?.messages?.[currentConv.messages.length - 1];
               const termIds = useStore.getState().conversationTerminals[convId];

@@ -286,6 +286,61 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                            )
                            AND (
                                (
+                                   jsonb_typeof(os.state_blob -> 'stage_slice_boundary_v1')='object'
+                                   AND (
+                                       SELECT COUNT(*)
+                                       FROM jsonb_object_keys(
+                                           os.state_blob -> 'stage_slice_boundary_v1'
+                                       )
+                                   )=5
+                                   AND os.state_blob #> ARRAY[
+                                       'stage_slice_boundary_v1','schema_version'
+                                   ]='1'::jsonb
+                                   AND os.state_blob #>> ARRAY[
+                                       'stage_slice_boundary_v1','successor_stage'
+                                   ]=os.current_stage
+                                   AND os.state_blob #>> ARRAY[
+                                       'stage_slice_boundary_v1','successor_stage_execution_id'
+                                   ]=active_execution.id::text
+                                   AND active_execution.started_at=os.stage_started_at
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM stage_run_units boundary_unit
+                                       WHERE boundary_unit.operation_id=os.operation_id
+                                         AND boundary_unit.stage_execution_id=active_execution.id
+                                   )
+                                   AND NOT EXISTS (
+                                       SELECT 1 FROM stage_worker_runs boundary_worker
+                                       WHERE boundary_worker.operation_id=os.operation_id
+                                         AND boundary_worker.stage_execution_id=active_execution.id
+                                   )
+                                   AND EXISTS (
+                                       SELECT 1 FROM stage_runs source_execution
+                                       WHERE source_execution.id::text=os.state_blob #>> ARRAY[
+                                                 'stage_slice_boundary_v1','source_stage_execution_id'
+                                             ]
+                                         AND source_execution.operation_id=os.operation_id
+                                         AND source_execution.stage_kind=os.state_blob #>> ARRAY[
+                                                 'stage_slice_boundary_v1','source_stage'
+                                             ]
+                                         AND source_execution.status='completed'
+                                         AND source_execution.completed_at IS NOT NULL
+                                         AND source_execution.completed_at<=active_execution.started_at
+                                         AND NOT EXISTS (
+                                             SELECT 1 FROM stage_runs newer_source
+                                             WHERE newer_source.operation_id=os.operation_id
+                                               AND newer_source.id<>active_execution.id
+                                               AND (
+                                                   newer_source.started_at>source_execution.started_at
+                                                   OR (
+                                                       newer_source.started_at=source_execution.started_at
+                                                       AND newer_source.id>source_execution.id
+                                                   )
+                                               )
+                                         )
+                                   )
+                               )
+                               OR
+                               (
                                    os.current_stage='reporting'
                                    AND NOT EXISTS (
                                        SELECT 1 FROM stage_run_units reporting_preclaim_unit
@@ -964,6 +1019,34 @@ mod tests {
             V2_RELATIONAL_RECOVERABLE_SQL.contains("snapshot.sealed_at IS NOT NULL"),
             "the reporting preclaim must remain behind the frozen-scope authority"
         );
+    }
+
+    #[test]
+    fn relational_resume_accepts_only_an_exact_stage_slice_boundary_preclaim() {
+        for required in [
+            "stage_slice_boundary_v1",
+            "jsonb_object_keys",
+            "successor_stage_execution_id",
+            "active_execution.started_at=os.stage_started_at",
+            "boundary_unit.stage_execution_id=active_execution.id",
+            "boundary_worker.stage_execution_id=active_execution.id",
+            "source_execution.status='completed'",
+            "source_execution.completed_at<=active_execution.started_at",
+            "newer_source.id<>active_execution.id",
+        ] {
+            assert!(
+                V2_RELATIONAL_RECOVERABLE_SQL.contains(required),
+                "missing {required}: {V2_RELATIONAL_RECOVERABLE_SQL}"
+            );
+            assert!(
+                exact_resumable_runtime_source_sql().contains(required),
+                "source selector drifted from the shared boundary predicate"
+            );
+            assert!(
+                claim_exact_resumable_runtime_source_sql().contains(required),
+                "atomic claim drifted from the shared boundary predicate"
+            );
+        }
     }
 
     #[test]

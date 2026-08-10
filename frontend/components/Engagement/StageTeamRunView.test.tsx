@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import type { StageAssetCoverageSnapshot } from "@/lib/api/stage-coverage";
 import type { StageTeamReadModel } from "@/lib/api/stage-team";
+import { isCompanyControllerStageRunRows } from "./StageRunOrgRows";
 import { type StageTeamReadApi, StageTeamRunView } from "./StageTeamRunView";
 
 function model(): StageTeamReadModel {
@@ -176,7 +177,293 @@ function addCompanyController(
   });
 }
 
+function configureApplicationModelTeam(readModel: StageTeamReadModel) {
+  readModel.stageKind = "application_understanding";
+  readModel.units[0].stageKind = "application_understanding";
+  addCompanyController(readModel);
+
+  const plan = readModel.units[0].plan!;
+  plan.leaderRole = "application_model_synthesizer";
+  plan.aggregatorRole = "application_model_synthesizer";
+  plan.allowedRoles = ["application_model_synthesizer", "application_model_worker"];
+
+  const synthesizer = plan.workItems[0];
+  synthesizer.kind = "application_model_synthesis";
+  synthesizer.role = "application_model_synthesizer";
+  synthesizer.outputSchema = "application_model_proposal.v1";
+  synthesizer.workers[0].specialist = "application_model_synthesizer";
+  synthesizer.workers[0].agentPath =
+    "main>stage_run:application_understanding>application_model_synthesizer";
+
+  const modeler = plan.workItems[1];
+  modeler.kind = "application_model_work_item";
+  modeler.stableKey = "web-origin:primary";
+  modeler.role = "application_model_worker";
+  modeler.outputSchema = "application_model_work_item_output.v1";
+  modeler.workers[0].specialist = "application_model_worker";
+  modeler.workers[0].agentPath =
+    "main>stage_run:application_understanding>application_model_worker:web-origin:primary";
+}
+
+async function openEvidenceSurface() {
+  const evidenceButton = await screen.findByRole("button", { name: "查看 Evidence" });
+  await act(async () => {
+    fireEvent.click(evidenceButton);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 describe("StageTeamRunView", () => {
+  it("routes Application Understanding rows into the durable Team details view", () => {
+    expect(
+      isCompanyControllerStageRunRows([
+        {
+          id: "org-1",
+          operationId: "operation-1",
+          stageExecutionId: "execution-1",
+          name: "Acme Root",
+          ownershipPercent: null,
+          status: "running",
+          evidenceCount: 0,
+          coverage: {},
+          stage: "application_understanding",
+        },
+      ])
+    ).toBe(true);
+  });
+
+  it("shows AU controller preparation instead of mislabeling a not-yet-seeded plan as legacy", async () => {
+    const preparing = model();
+    preparing.stageKind = "application_understanding";
+    preparing.units[0].stageKind = "application_understanding";
+    preparing.units[0].plan = null;
+    const api: StageTeamReadApi = {
+      getReadModel: vi.fn().mockResolvedValue(preparing),
+      resolveRecovery: vi.fn(),
+    };
+
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={api}
+      />
+    );
+
+    expect(await screen.findByText("正在准备 Application Model Controller…")).toBeInTheDocument();
+    expect(screen.queryByText(/旧版固定 Team/)).not.toBeInTheDocument();
+  });
+
+  it("shows AU model workers and polls only while its durable work is live", async () => {
+    vi.useFakeTimers();
+    try {
+      const running = model();
+      running.stageKind = "application_understanding";
+      running.units[0].stageKind = "application_understanding";
+      addCompanyController(running);
+      const terminal = structuredClone(running);
+      terminal.executionStatus = "completed";
+      terminal.completedAt = "2026-07-14T00:00:08Z";
+      terminal.units[0].status = "passed";
+      terminal.units[0].gate.status = "passed";
+      terminal.units[0].gate.finalHandoffId = "handoff-1";
+      terminal.units[0].plan!.workItems[1].status = "completed";
+      terminal.units[0].plan!.workItems[1].workers[0].status = "completed";
+      terminal.units[0].plan!.workItems[1].output = {
+        outputId: "output-au",
+        workerRunId: "worker-1",
+        outputSchema: "application_model_work_item_output.v1",
+        outputVersion: 1,
+        businessDisposition: "found",
+        canonicalFactRefCount: 1,
+        evidenceIds: [91],
+        checkedEmptyCellCount: 0,
+        blockerCodes: [],
+        outputSha256: `sha256:${"f".repeat(64)}`,
+        createdAt: "2026-07-14T00:00:07Z",
+      };
+      const getReadModel = vi.fn().mockResolvedValueOnce(running).mockResolvedValue(terminal);
+      const api: StageTeamReadApi = { getReadModel, resolveRecovery: vi.fn() };
+
+      render(
+        <StageTeamRunView
+          operationId="operation-1"
+          stageExecutionId="execution-1"
+          api={api}
+        />
+      );
+      await act(async () => Promise.resolve());
+      await act(async () => Promise.resolve());
+
+      expect(screen.getByText("应用理解进度")).toBeInTheDocument();
+      expect(screen.getAllByText("Application Model Controller").length).toBeGreaterThan(0);
+      expect(screen.getByText(/分析分片/)).toBeInTheDocument();
+      expect(getReadModel).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(getReadModel).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+        await Promise.resolve();
+      });
+      expect(getReadModel).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls a live non-AU Team so a dispatched child appears without manual refresh", async () => {
+    vi.useFakeTimers();
+    try {
+      const controllerOnly = model();
+      controllerOnly.stageKind = "external_attack_surface";
+      controllerOnly.units[0].stageKind = "external_attack_surface";
+      addCompanyController(controllerOnly);
+      controllerOnly.units[0].plan!.workItems = controllerOnly.units[0].plan!.workItems.filter(
+        (item) => item.stableKey === "leader:primary"
+      );
+
+      const childDispatched = model();
+      childDispatched.stageKind = "external_attack_surface";
+      childDispatched.units[0].stageKind = "external_attack_surface";
+      addCompanyController(childDispatched);
+
+      const terminal = structuredClone(childDispatched);
+      terminal.executionStatus = "completed";
+      terminal.completedAt = "2026-07-14T00:00:08Z";
+      terminal.units[0].status = "passed";
+      terminal.units[0].gate.status = "passed";
+      terminal.units[0].gate.finalHandoffId = "handoff-1";
+      terminal.units[0].plan!.workItems[1].status = "completed";
+      terminal.units[0].plan!.workItems[1].workers[0].status = "completed";
+
+      const getReadModel = vi
+        .fn()
+        .mockResolvedValueOnce(controllerOnly)
+        .mockResolvedValueOnce(childDispatched)
+        .mockResolvedValue(terminal);
+      const api: StageTeamReadApi = { getReadModel, resolveRecovery: vi.fn() };
+
+      render(
+        <StageTeamRunView
+          operationId="operation-1"
+          stageExecutionId="execution-1"
+          api={api}
+        />
+      );
+      await act(async () => Promise.resolve());
+      await act(async () => Promise.resolve());
+
+      expect(screen.getAllByText("Company Controller").length).toBeGreaterThan(0);
+      expect(screen.queryByText("Intel Provider")).not.toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getAllByText("Intel Provider").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("button", { name: "刷新任务进度" })).not.toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(1_500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(getReadModel).toHaveBeenCalledTimes(3);
+
+      await act(async () => {
+        vi.advanceTimersByTime(3_000);
+        await Promise.resolve();
+      });
+      expect(getReadModel).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps exact AU Synthesizer and sibling Modelers inside the unified workspace", async () => {
+    const applicationModel = model();
+    configureApplicationModelTeam(applicationModel);
+    const plan = applicationModel.units[0].plan!;
+    const firstModeler = plan.workItems[1];
+    plan.workItems.push({
+      ...firstModeler,
+      workItemId: "modeler-item-2",
+      stableKey: "service-host:api",
+      workers: [
+        {
+          ...firstModeler.workers[0],
+          workerRunId: "modeler-worker-2",
+          messageChainId: "modeler-chain-2",
+        },
+      ],
+    });
+    const api: StageTeamReadApi = {
+      getReadModel: vi.fn().mockResolvedValue(applicationModel),
+      resolveRecovery: vi.fn(),
+    };
+
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={api}
+        agentRequestIdsByWorker={{
+          "leader-worker": "tool-1::team::org-1::lead:leader-worker",
+          "worker-1": "tool-1::team::org-1::worker:worker-1",
+          "modeler-worker-2": "tool-1::team::org-1::worker:modeler-worker-2",
+        }}
+      />
+    );
+
+    expect(await screen.findByText("Application Model Synthesizer")).toBeInTheDocument();
+    expect(screen.queryByText("Application Model Controller")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Application Model Synthesizer/ }));
+    expect(screen.getByRole("log", { name: "Application Model Synthesizer 对话" })).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Application Modeler · WEB ORIGIN · primary/ })
+    );
+    expect(screen.getByRole("log", { name: "Application Modeler 对话" })).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Application Modeler · SERVICE HOST · api/ })
+    );
+    expect(screen.getByRole("log", { name: "Application Modeler 对话" })).toBeInTheDocument();
+    expect(screen.queryByText(/完整运行流/)).not.toBeInTheDocument();
+  });
+
+  it("describes the server Controller as waiting for and validating Agent outputs", async () => {
+    const applicationModel = model();
+    configureApplicationModelTeam(applicationModel);
+    applicationModel.units[0].plan!.workItems[0].status = "waiting_dependency";
+    const api: StageTeamReadApi = {
+      getReadModel: vi.fn().mockResolvedValue(applicationModel),
+      resolveRecovery: vi.fn(),
+    };
+
+    render(
+      <StageTeamRunView
+        operationId="operation-1"
+        stageExecutionId="execution-1"
+        api={api}
+      />
+    );
+
+    expect(
+      (await screen.findAllByText("模型 Controller 正在等待并校验 Agent 产物")).length
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText(/Controller 正在汇总分析 Worker/)).not.toBeInTheDocument();
+  });
+
   it("shows DB-authoritative Vuln coverage and separates failed, retry, and operator lanes", async () => {
     const vuln = model();
     vuln.stageKind = "vuln_triage";
@@ -260,21 +547,20 @@ describe("StageTeamRunView", () => {
     );
 
     expect(await screen.findByText("漏洞扫描进度")).toBeInTheDocument();
-    expect(screen.getByText("漏洞扫描调度器")).toBeInTheDocument();
+    expect(screen.getAllByText("漏洞扫描调度器").length).toBeGreaterThan(0);
     expect(screen.getByText("2 个扫描分片")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "展开调度详情" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新任务进度" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Plan v1")).not.toBeInTheDocument();
+    expect(screen.queryByText(/active workers max/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/chain leader-chain/)).not.toBeInTheDocument();
+    await openEvidenceSurface();
     expect(screen.getByText("证据覆盖")).toBeInTheDocument();
     expect(screen.getByText("20 待检查")).toBeInTheDocument();
     expect(screen.queryByText("Company Controller")).not.toBeInTheDocument();
     expect(screen.queryByText(/个 SubAgent/)).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /调度详情|扫描队列/ })
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("Plan v1")).not.toBeInTheDocument();
-    expect(screen.queryByText(/active workers max/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/chain leader-chain/)).not.toBeInTheDocument();
     expect(screen.getByText("历史失败 20 cells")).toBeInTheDocument();
     expect(screen.getByText("340/360 cells 终态 · 剩余 20")).toBeInTheDocument();
-    expect(screen.getByText("340/360 cells · 剩余 20")).toBeInTheDocument();
     expect(screen.getByText("自动重试 1")).toBeInTheDocument();
     expect(screen.getByText("待人工恢复 1")).toBeInTheDocument();
     expect(
@@ -348,6 +634,7 @@ describe("StageTeamRunView", () => {
       />
     );
 
+    await openEvidenceSurface();
     fireEvent.click(await screen.findByRole("button", { name: "解除中断状态" }));
     await waitFor(() => expect(resolveRecovery).toHaveBeenCalledTimes(1));
     expect(resolveRecovery.mock.calls[0][0]).toMatchObject({
@@ -376,6 +663,7 @@ describe("StageTeamRunView", () => {
         api={{ getReadModel: vi.fn().mockResolvedValue(resolvedModel), resolveRecovery }}
       />
     );
+    await openEvidenceSurface();
     expect(
       await screen.findByText(/此前的中断项已安全记为结果未知且不会重放/)
     ).toBeInTheDocument();
@@ -398,6 +686,7 @@ describe("StageTeamRunView", () => {
         }}
       />
     );
+    await openEvidenceSurface();
     expect(await screen.findByText("正在读取扫描进度")).toBeInTheDocument();
     pending.unmount();
 
@@ -412,6 +701,7 @@ describe("StageTeamRunView", () => {
         }}
       />
     );
+    await openEvidenceSurface();
     expect(await screen.findByText("扫描进度读取失败：coverage unavailable")).toBeInTheDocument();
     failed.unmount();
 
@@ -439,10 +729,11 @@ describe("StageTeamRunView", () => {
         }}
       />
     );
+    await openEvidenceSurface();
     expect(await screen.findByText("当前没有待扫描项")).toBeInTheDocument();
   });
 
-  it("renders Unit to Plan to WorkItem to Worker and Request/Barrier from DB truth", async () => {
+  it("keeps low-level scheduler diagnostics out of the compact workspace", async () => {
     const controllerModel = model();
     addCompanyController(controllerModel);
     const api: StageTeamReadApi = {
@@ -454,25 +745,25 @@ describe("StageTeamRunView", () => {
         operationId="operation-1"
         stageExecutionId="execution-1"
         api={api}
-        onOpenAgent={vi.fn()}
       />
     );
 
     expect(await screen.findByText("Acme Root")).toBeInTheDocument();
     expect(screen.getByText("采集 0/1 已返回")).toBeInTheDocument();
-    expect(screen.getByText("1 个采集中")).toBeInTheDocument();
-    expect(screen.getByText("阶段未完成")).toBeInTheDocument();
+    expect(screen.getByText("1 个运行中")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("1 个 Agent 运行中");
     expect(screen.queryByText("Plan v1")).not.toBeInTheDocument();
     expect(screen.queryByText(/epoch 0/)).not.toBeInTheDocument();
     expect(screen.queryByText(/schema stage_worker_output.v1/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "展开调度详情" }));
-    expect(screen.getByText("Plan v1")).toBeInTheDocument();
-    expect(screen.getByText("2 active workers max")).toBeInTheDocument();
+    await openEvidenceSurface();
+    expect(screen.queryByText("Plan v1")).not.toBeInTheDocument();
+    expect(screen.queryByText("2 active workers max")).not.toBeInTheDocument();
     expect(screen.queryByText("2 active / 4 total")).not.toBeInTheDocument();
-    expect(screen.getByText("intel_provider")).toBeInTheDocument();
-    expect(screen.getByText(/Worker worker-1/)).toBeInTheDocument();
-    expect(screen.getByText(/Barrier waiting/)).toBeInTheDocument();
-    expect(screen.getByText(/provider_followup/)).toBeInTheDocument();
+    expect(screen.queryByText(/Worker worker-1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Barrier waiting/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/provider_followup/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "展开调度详情" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "刷新任务进度" })).not.toBeInTheDocument();
     expect(api.getReadModel).toHaveBeenCalledWith({
       operationId: "operation-1",
       stageExecutionId: "execution-1",
@@ -511,7 +802,7 @@ describe("StageTeamRunView", () => {
       />
     );
 
-    expect(await screen.findByText("Company Controller")).toBeInTheDocument();
+    expect((await screen.findAllByText("Company Controller")).length).toBeGreaterThan(0);
     expect(screen.getByText("1 个阻塞")).toBeInTheDocument();
     expect(screen.queryByText("采集 1/1 已返回")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /PROVIDER Agent 运行流/ })).not.toBeInTheDocument();
@@ -519,7 +810,6 @@ describe("StageTeamRunView", () => {
 
   it("rejects a fixed Team run without leader:primary and exposes no legacy Agent flow", async () => {
     const unsupportedReadModel = model();
-    const openAgent = vi.fn();
     const api: StageTeamReadApi = {
       getReadModel: vi.fn().mockResolvedValue(unsupportedReadModel),
       resolveRecovery: vi.fn(),
@@ -531,7 +821,6 @@ describe("StageTeamRunView", () => {
         stageExecutionId="execution-1"
         api={api}
         agentRequestIdsByWorker={{ "worker-1": "tool-1::team::org-1::worker:worker-1" }}
-        onOpenAgent={openAgent}
       />
     );
 
@@ -539,9 +828,8 @@ describe("StageTeamRunView", () => {
       "旧版固定 Team 运行已不再支持，请重新运行本阶段以启动 Company Controller。"
     );
     expect(screen.queryByRole("button", { name: /运行流/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "展开调度详情" }));
+    expect(screen.queryByRole("button", { name: "展开调度详情" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /运行流/ })).not.toBeInTheDocument();
-    expect(openAgent).not.toHaveBeenCalled();
   });
 
   it("renders a lead:primary Company Controller as the sole default flow entry", async () => {
@@ -565,7 +853,6 @@ describe("StageTeamRunView", () => {
         },
       ],
     });
-    const openAgent = vi.fn();
     const api: StageTeamReadApi = {
       getReadModel: vi.fn().mockResolvedValue(controllerModel),
       resolveRecovery: vi.fn(),
@@ -581,7 +868,6 @@ describe("StageTeamRunView", () => {
           "worker-1": "tool-1::team::org-1::worker:worker-1",
           "child-worker-2": "tool-1::team::org-1::worker:child-worker-2",
         }}
-        onOpenAgent={openAgent}
       />
     );
 
@@ -589,12 +875,12 @@ describe("StageTeamRunView", () => {
     expect(screen.getByText("2 个 SubAgent")).toBeInTheDocument();
     expect(screen.getByText("1 个运行中")).toBeInTheDocument();
     expect(screen.getByText("1 个已完成")).toBeInTheDocument();
+    await openEvidenceSurface();
     expect(screen.getByText("Gate 未完成")).toBeInTheDocument();
     expect(screen.queryByText("PROVIDER")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "查看 Controller 运行流" }));
-    expect(openAgent).toHaveBeenCalledWith(
-      "tool-1::team::org-1::lead:leader-worker"
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Company Controller/ }));
+    expect(screen.getByRole("log", { name: "Company Controller 对话" })).toBeInTheDocument();
+    expect(screen.queryByText(/完整运行流/)).not.toBeInTheDocument();
   });
 
   it("keeps a queued Company Controller waiting without opening a child identity", async () => {
@@ -602,7 +888,6 @@ describe("StageTeamRunView", () => {
     addCompanyController(queued, "queued");
     const child = queued.units[0].plan!.workItems[1];
     child.status = "running";
-    const openAgent = vi.fn();
     const api: StageTeamReadApi = {
       getReadModel: vi.fn().mockResolvedValue(queued),
       resolveRecovery: vi.fn(),
@@ -616,14 +901,13 @@ describe("StageTeamRunView", () => {
         agentRequestIdsByWorker={{
           "worker-1": "tool-1::team::org-1::worker:worker-1",
         }}
-        onOpenAgent={openAgent}
       />
     );
 
-    expect(await screen.findByText("Controller 排队中")).toBeInTheDocument();
-    expect(screen.getByText("Gate 未完成")).toBeInTheDocument();
+    expect((await screen.findAllByText("Controller 排队中")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "查看 Controller 运行流" })).not.toBeInTheDocument();
-    expect(openAgent).not.toHaveBeenCalled();
+    await openEvidenceSurface();
+    expect(screen.getByText("Gate 未完成")).toBeInTheDocument();
   });
 
   it("shows a dependency-waiting Controller as continuously monitoring its SubAgents", async () => {
@@ -642,7 +926,7 @@ describe("StageTeamRunView", () => {
       />
     );
 
-    expect(await screen.findByText("Controller 正在监控 SubAgent")).toBeInTheDocument();
+    expect((await screen.findAllByText("Controller 正在监控 SubAgent")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Controller 排队中")).not.toBeInTheDocument();
   });
 
@@ -685,7 +969,9 @@ describe("StageTeamRunView", () => {
       />
     );
 
-    expect(await screen.findByText("Gate 已通过")).toBeInTheDocument();
+    expect(await screen.findByText("阶段已通过")).toBeInTheDocument();
+    await openEvidenceSurface();
+    expect(screen.getByText("Gate 已通过")).toBeInTheDocument();
     expect(screen.getByText("阶段已通过")).toBeInTheDocument();
     expect(screen.queryByText("已查空")).not.toBeInTheDocument();
   });
@@ -760,6 +1046,7 @@ describe("StageTeamRunView", () => {
       />
     );
 
+    await openEvidenceSurface();
     const action = await screen.findByRole("button", {
       name: "解除中断状态",
     });
@@ -829,6 +1116,7 @@ describe("StageTeamRunView", () => {
       />
     );
 
+    await openEvidenceSurface();
     const actions = await screen.findAllByRole("button", { name: "解除中断状态" });
     expect(actions).toHaveLength(2);
     fireEvent.click(actions[0]);
@@ -840,4 +1128,5 @@ describe("StageTeamRunView", () => {
     expect(screen.getByRole("button", { name: "正在安全封存未知结果…" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "重试解除中断状态" })).toBeEnabled();
   });
+
 });

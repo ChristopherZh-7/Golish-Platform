@@ -60,10 +60,10 @@ use golish_agent_kit::db_traits::{
     EnumerationUnresolvedOccurrenceView, FinalizeStageTeamUnit, FinalizeStageToolTruthRequest,
     FinalizeTargetIntelGoalPass, FinishWorkerAttempt, FreezeTargetIntelGoalUnitContract,
     FreezeTargetIntelReview, FrozenTargetIntelGoalUnitContractView,
-    InvestigationRuntimeCursorPhase, LoadInheritedStageHandoffs, LoadInvestigationRuntimeCursor,
-    LoadInvestigationTaskPlanOutputs, LoadStageTeamBarrier, LoadWorkerCheckpoint,
-    NewStageWorkerOutput, OrgScopeUnit, ParkStageTeamFinalizerAfterFailure, ParkStageTeamLeader,
-    RecoverCandidateTerminalIntent, RecoverEnumerationLaneReceiptV2,
+    InvestigationRuntimeCursorPhase, LoadBoundWorkerChain, LoadInheritedStageHandoffs,
+    LoadInvestigationRuntimeCursor, LoadInvestigationTaskPlanOutputs, LoadStageTeamBarrier,
+    LoadWorkerCheckpoint, NewStageWorkerOutput, OrgScopeUnit, ParkStageTeamFinalizerAfterFailure,
+    ParkStageTeamLeader, RecoverCandidateTerminalIntent, RecoverEnumerationLaneReceiptV2,
     RecoverInvestigationAdvisoryPrimary, ReduceEnumerationParameterV2,
     ReopenStageTeamLeaderAfterGateBlock, ReopenedStageTeamLeaderAfterGateBlockView,
     RequestStageWorker, RetryStageWorker, ReviewEnumerationCoverageV2,
@@ -663,7 +663,8 @@ impl BoundWorkerNestedDelegationLifecycle for RuntimeInvestigationNestedLifecycl
             self.runtime.clone(),
             self.tracker.clone(),
             begun.child.clone(),
-        )?;
+        )
+        .await?;
         let nested = self.child_lifecycle(&child, begun.dispatch.dispatch_receipt_id);
         child.bound.tool_lifecycle = Some(Arc::new(RuntimeWorkerToolLifecycle::new_with_nested(
             self.tracker.clone(),
@@ -1047,6 +1048,45 @@ fn target_intel_finalizer_replay_checkpoint(
             && replay.verdict_sha256.starts_with("sha256:")
             && replay.operation_contract_sha256.starts_with("sha256:"),
         "Target Intel finalizer recovery checkpoint is invalid"
+    );
+    Ok(Some(replay))
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct CompanyFinalizerReplayCheckpoint {
+    deliverable_submission_id: Uuid,
+    expected_dispatch_epoch: i64,
+    expected_manifest_hash: String,
+    payload_sha256: String,
+    #[serde(default)]
+    retry_count: i64,
+    schema_version: u32,
+    source_attempt_epoch: i64,
+    source_checkpoint_version: i64,
+}
+
+fn company_finalizer_replay_checkpoint(
+    checkpoint: &Value,
+) -> anyhow::Result<Option<CompanyFinalizerReplayCheckpoint>> {
+    let Some(value) = checkpoint.get("_runtime_company_finalizer_recovery") else {
+        return Ok(None);
+    };
+    let replay: CompanyFinalizerReplayCheckpoint = serde_json::from_value(value.clone())?;
+    anyhow::ensure!(
+        replay.schema_version == 1
+            && !replay.deliverable_submission_id.is_nil()
+            && replay.expected_dispatch_epoch >= 0
+            && replay.expected_manifest_hash.len() == 71
+            && replay.expected_manifest_hash.starts_with("sha256:")
+            && replay.retry_count >= 0
+            && replay.source_attempt_epoch >= 0
+            && replay.source_checkpoint_version >= 0
+            && replay.payload_sha256.len() == 64
+            && replay
+                .payload_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        "Company finalizer recovery checkpoint is invalid"
     );
     Ok(Some(replay))
 }
@@ -2750,7 +2790,8 @@ async fn prepare_unified_investigation_primaries(
             .claim_stage_team_leader(ClaimStageTeamLeader { claim })
             .await?
             .ok_or_else(|| anyhow::anyhow!("Investigation Primary is not claimable"))?;
-        let primary = bind_claimed_stage_team_worker(runtime.clone(), tracker.clone(), claimed)?;
+        let primary =
+            bind_claimed_stage_team_worker(runtime.clone(), tracker.clone(), claimed).await?;
         anyhow::ensure!(
             primary
                 .bound
@@ -4046,7 +4087,7 @@ where
                 "nested exact WorkItem selector claimed a sibling"
             );
             let mut child =
-                bind_claimed_stage_team_worker(runtime.clone(), tracker.clone(), claimed)?;
+                bind_claimed_stage_team_worker(runtime.clone(), tracker.clone(), claimed).await?;
             let child_transcript_request_id = stage_team_child_parent_request_id(
                 child.claimed.worker.parent_request_id.as_deref(),
                 &team_parent_request_id,
@@ -4163,7 +4204,8 @@ where
                             runtime.clone(),
                             tracker.clone(),
                             retry_claimed,
-                        )?;
+                        )
+                        .await?;
                         continue;
                     }
                     Ok(StageTeamChildExecution::TargetIntelReviewed(_)) => {
@@ -4261,7 +4303,8 @@ where
                 .ok_or_else(|| {
                     anyhow::anyhow!("Investigation Primary did not resume for Refiner")
                 })?;
-            primary = bind_claimed_stage_team_worker(runtime.clone(), tracker.clone(), resumed)?;
+            primary =
+                bind_claimed_stage_team_worker(runtime.clone(), tracker.clone(), resumed).await?;
             team.plan = primary.claimed.plan.clone();
 
             let expected_remaining = remaining_queue
@@ -5178,7 +5221,7 @@ async fn rearm_unified_investigation_verification_primary(
             && claimed.plan.dispatch_epoch == rearmed.plan.dispatch_epoch,
         "rearmed Investigation VerificationTask Primary claim drifted"
     );
-    let primary = bind_claimed_stage_team_worker(runtime, tracker.clone(), claimed)?;
+    let primary = bind_claimed_stage_team_worker(runtime, tracker.clone(), claimed).await?;
     Ok(PreparedInvestigationTaskPrimary {
         unit_identity: UnifiedInvestigationUnitIdentity {
             stage: unified_investigation_stage_identity(
@@ -5900,27 +5943,37 @@ fn company_stage_runtime_rejection_result(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StageTeamCheckpointChain {
+    Inline(serde_json::Value),
+    ReloadBoundChain,
+}
+
 fn stage_team_checkpoint_chain(
     checkpoint: &serde_json::Value,
-) -> anyhow::Result<serde_json::Value> {
+) -> anyhow::Result<StageTeamCheckpointChain> {
     let Some(retry_marker) = checkpoint.get("_runtime_stage_team_finalization_retry") else {
-        return Ok(checkpoint.clone());
+        return Ok(StageTeamCheckpointChain::Inline(checkpoint.clone()));
     };
     anyhow::ensure!(
         retry_marker.is_object(),
         "parked Stage Team finalizer retry marker is malformed"
     );
-    let chain = checkpoint
-        .get("chain")
-        .ok_or_else(|| anyhow::anyhow!("parked Stage Team finalizer checkpoint has no chain"))?;
+    let Some(chain) = checkpoint.get("chain") else {
+        // Older finalizer failure paths replaced the Worker checkpoint with a
+        // compact recovery pointer. The append-only message chain remains the
+        // canonical conversation body and must be reloaded by its exact bound
+        // identity; an empty or foreign chain is never a valid fallback.
+        return Ok(StageTeamCheckpointChain::ReloadBoundChain);
+    };
     anyhow::ensure!(
         chain.is_array() || chain.is_object(),
         "parked Stage Team finalizer checkpoint chain has an invalid shape"
     );
-    Ok(chain.clone())
+    Ok(StageTeamCheckpointChain::Inline(chain.clone()))
 }
 
-fn bind_claimed_stage_team_worker(
+async fn bind_claimed_stage_team_worker(
     repository: Arc<dyn RuntimeMemoryRepository>,
     tracker: golish_agent_kit::db_tracking::DbTracker,
     claimed: ClaimedStageWorkItemView,
@@ -5956,7 +6009,44 @@ fn bind_claimed_stage_team_worker(
     };
     let stage_team_leader = stage_team_leader_binding_for_claim(&claimed.plan, &claimed.work_item);
     let target_intel_review = target_intel_review_binding_for_claim(&claimed.work_item)?;
-    let checkpoint_chain = stage_team_checkpoint_chain(&claimed.worker.checkpoint)?;
+    let checkpoint_chain = match stage_team_checkpoint_chain(&claimed.worker.checkpoint)? {
+        StageTeamCheckpointChain::Inline(chain) => chain,
+        StageTeamCheckpointChain::ReloadBoundChain => {
+            let agent = stage_worker_agent_type(executor_specialist).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unsupported Stage Team persistence specialist '{executor_specialist}'"
+                )
+            })?;
+            let loaded = repository
+                .load_bound_worker_chain(LoadBoundWorkerChain {
+                    operation_id: claimed.worker.operation_id,
+                    stage_execution_id: claimed.worker.stage_execution_id,
+                    stage_run_unit_id: claimed.worker.stage_run_unit_id,
+                    worker_run_id: claimed.worker.id,
+                    message_chain_id: claimed.message_chain_id,
+                    session_id: tracker.session_uuid(),
+                    agent,
+                    selected_source: Some(RuntimeMemoryRecordSource::V2),
+                })
+                .await?;
+            anyhow::ensure!(
+                loaded.source == RuntimeMemoryRecordSource::V2
+                    && loaded.worker.id == claimed.worker.id
+                    && loaded.worker.operation_id == claimed.worker.operation_id
+                    && loaded.worker.stage_execution_id == claimed.worker.stage_execution_id
+                    && loaded.worker.stage_run_unit_id == claimed.worker.stage_run_unit_id
+                    && loaded.worker.work_item_id == claimed.worker.work_item_id
+                    && loaded.worker.organization_id == claimed.worker.organization_id
+                    && loaded.worker.message_chain_id == Some(claimed.message_chain_id)
+                    && loaded.worker.status == claimed.worker.status
+                    && loaded.worker.attempt_epoch == claimed.worker.attempt_epoch
+                    && loaded.worker.checkpoint_version == claimed.worker.checkpoint_version
+                    && loaded.worker.lease_token == claimed.worker.lease_token,
+                "parked Stage Team finalizer bound-chain reload drifted from the claimed Worker"
+            );
+            loaded.chain
+        }
+    };
     let mut bound = BoundWorkerChainContext {
         operation_id: claimed.worker.operation_id,
         stage_execution_id: claimed.worker.stage_execution_id,
@@ -6056,7 +6146,9 @@ fn stage_worker_agent_type(specialist: &str) -> Option<AgentType> {
         "reporter" => Some(AgentType::Reporter),
         "recon" | "prober" | "enumerator" | "vuln_scanner" | "attack_analyst"
         | "candidate_verifier" | "pentester" | "investigation" | "researcher" | "browser"
-        | "coder" | "installer" | "enricher" | "memorist" | "adviser" => Some(AgentType::Pentester),
+        | "coder" | "installer" | "enricher" | "memorist" | "adviser" | "resolution_analyst" => {
+            Some(AgentType::Pentester)
+        }
         _ => None,
     }
 }
@@ -14079,6 +14171,11 @@ where
     } else {
         None
     };
+    let company_finalizer_replay = if spec.kind == StageKind::TargetIntel {
+        None
+    } else {
+        company_finalizer_replay_checkpoint(&worker.claimed.worker.checkpoint)?
+    };
     let mut outputs = repository
         .load_stage_team_outputs(LoadStageTeamBarrier {
             operation_id: team.unit.operation_id,
@@ -14088,13 +14185,20 @@ where
             dispatch_epoch: barrier.dispatch_epoch,
         })
         .await?;
-    if target_intel_finalizer_replay.is_some() {
+    if target_intel_finalizer_replay.is_some() || company_finalizer_replay.is_some() {
         outputs.retain(|output| output.work_item_id != worker.claimed.work_item.id);
     }
     anyhow::ensure!(
         outputs.len() == barrier.required_work_items as usize,
         "Controller child-output manifest does not match the closed sibling barrier"
     );
+    if let Some(replay) = company_finalizer_replay.as_ref() {
+        anyhow::ensure!(
+            replay.expected_dispatch_epoch == barrier.dispatch_epoch
+                && replay.expected_manifest_hash == barrier.manifest_sha256,
+            "Company finalizer recovery barrier drifted"
+        );
+    }
     let base_objective = company_controller_final_objective_with_plan(
         spec,
         &team.organization_name,
@@ -14113,6 +14217,8 @@ where
         )
     })?;
     let deliverable_submission_id = if let Some(replay) = target_intel_finalizer_replay.as_ref() {
+        replay.deliverable_submission_id
+    } else if let Some(replay) = company_finalizer_replay.as_ref() {
         replay.deliverable_submission_id
     } else {
         // The same Company Controller owns the immutable submission and the
@@ -14148,6 +14254,15 @@ where
             && submission.organization_id == Some(team.unit.organization_id),
         "Controller durable submission owner mismatch"
     );
+    if let Some(replay) = company_finalizer_replay.as_ref() {
+        anyhow::ensure!(
+            submission.payload_sha256 == replay.payload_sha256
+                && submission
+                    .attempt_epoch
+                    .is_some_and(|attempt| attempt <= replay.source_attempt_epoch),
+            "Company finalizer recovery submission drifted"
+        );
+    }
     if let Some(replay) = target_intel_finalizer_replay.as_ref() {
         anyhow::ensure!(
             replay.operation_contract_sha256
@@ -14424,7 +14539,8 @@ where
                     "Target Intel scheduler claimed a foreign WorkItem after review freeze"
                 );
                 let reviewer =
-                    bind_claimed_stage_team_worker(repository.clone(), tracker.clone(), claimed)?;
+                    bind_claimed_stage_team_worker(repository.clone(), tracker.clone(), claimed)
+                        .await?;
                 match execute_stage_team_child(
                     repository.clone(),
                     gate_repository,
@@ -14645,11 +14761,13 @@ where
                 );
                 async move {
                     let claimed = repository.claim_stage_work_item(claim).await?;
-                    claimed
-                        .map(|claimed| {
-                            bind_claimed_stage_team_worker(repository.clone(), tracker, claimed)
-                        })
-                        .transpose()
+                    let Some(claimed) = claimed else {
+                        return Ok(None);
+                    };
+                    let worker =
+                        bind_claimed_stage_team_worker(repository.clone(), tracker, claimed)
+                            .await?;
+                    Ok(Some(worker))
                 }
             }
         },
@@ -14820,7 +14938,7 @@ where
             None
         };
         let mut leader =
-            bind_claimed_stage_team_worker(repository.clone(), tracker.clone(), claimed)?;
+            bind_claimed_stage_team_worker(repository.clone(), tracker.clone(), claimed).await?;
         if claim_route == CompanyControllerClaimRoute::FinalSubmitter {
             let barrier = final_submitter_barrier.as_ref().ok_or_else(|| {
                 anyhow::anyhow!("closed Company Controller claim lost its durable barrier")
@@ -19685,6 +19803,40 @@ mod tests {
         assert!(target_intel_finalizer_replay_checkpoint(&malformed).is_err());
     }
 
+    #[test]
+    fn company_finalizer_recovery_accepts_only_the_typed_server_checkpoint() {
+        let submission_id = Uuid::new_v4();
+        let checkpoint = json!({
+            "_runtime_company_finalizer_recovery": {
+                "deliverable_submission_id": submission_id,
+                "expected_dispatch_epoch": 0,
+                "expected_manifest_hash": format!("sha256:{}", "d".repeat(64)),
+                "payload_sha256": "a".repeat(64),
+                "schema_version": 1,
+                "source_attempt_epoch": 4,
+                "source_checkpoint_version": 37,
+            }
+        });
+        let replay = company_finalizer_replay_checkpoint(&checkpoint)
+            .expect("parse trusted recovery checkpoint")
+            .expect("recovery checkpoint must be present");
+        assert_eq!(replay.deliverable_submission_id, submission_id);
+        assert_eq!(replay.source_attempt_epoch, 4);
+
+        let malformed = json!({
+            "_runtime_company_finalizer_recovery": {
+                "deliverable_submission_id": submission_id,
+                "expected_dispatch_epoch": 0,
+                "expected_manifest_hash": format!("sha256:{}", "d".repeat(64)),
+                "payload_sha256": "A".repeat(64),
+                "schema_version": 1,
+                "source_attempt_epoch": 4,
+                "source_checkpoint_version": 37,
+            }
+        });
+        assert!(company_finalizer_replay_checkpoint(&malformed).is_err());
+    }
+
     fn frozen_synthesis_checkpoint(result: Value) -> Value {
         let call = ToolCall {
             id: "submit-1".to_owned(),
@@ -20551,7 +20703,28 @@ mod tests {
 
         assert_eq!(
             stage_team_checkpoint_chain(&parked).expect("unwrap parked checkpoint"),
-            chain
+            StageTeamCheckpointChain::Inline(chain)
+        );
+    }
+
+    #[test]
+    fn compact_parked_stage_team_finalizer_requires_exact_bound_chain_reload() {
+        let parked = json!({
+            "_runtime_stage_team_finalization_retry": {
+                "code": "company_controller_final_seal_failed",
+                "schema_version": 1
+            },
+            "source_terminal_checkpoint": {
+                "stage_team_execution_failure": {
+                    "code": "company_controller_final_seal_failed"
+                }
+            }
+        });
+
+        assert_eq!(
+            stage_team_checkpoint_chain(&parked).expect("classify compact parked checkpoint"),
+            StageTeamCheckpointChain::ReloadBoundChain,
+            "a compact recovery pointer must reload its separately persisted message chain"
         );
     }
 

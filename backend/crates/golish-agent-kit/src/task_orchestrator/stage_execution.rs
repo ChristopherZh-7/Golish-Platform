@@ -71,6 +71,17 @@ pub struct TransitionStageExecution {
     pub next_stage: StageKind,
 }
 
+/// Compare-and-set command for a deliberate headless stage boundary. The
+/// repository performs the normal stage transition, records an exact
+/// source/successor marker, and parks the same Task in one transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PauseAfterStageSlice {
+    pub operation_id: Uuid,
+    pub current_stage_execution_id: Uuid,
+    pub next_stage_execution_id: Uuid,
+    pub next_stage: StageKind,
+}
+
 /// Exact old/new identities returned by an atomic stage transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransitionedStageExecution {

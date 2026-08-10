@@ -1,6 +1,11 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { StageRunOrgRows, type StageRunRow } from "./StageRunOrgRows";
+import type { ActiveSubAgent } from "@/store";
+import {
+  StageRunOrgRows,
+  type StageRunRow,
+  stageTeamAgentRefreshSignature,
+} from "./StageRunOrgRows";
 import type { StageTeamReadApi } from "./StageTeamRunView";
 
 function makeRow(): StageRunRow {
@@ -18,6 +23,61 @@ function makeRow(): StageRunRow {
 }
 
 describe("StageRunOrgRows", () => {
+  it("refreshes exact Team truth for dispatch/lifecycle changes but ignores transcript deltas", () => {
+    const row = {
+      ...makeRow(),
+      agentRequestId: "stage-call::team::org-1",
+    };
+    const controller: ActiveSubAgent = {
+      agentId: "controller-1",
+      agentName: "Company Controller",
+      parentRequestId: "stage-call::team::org-1::lead:worker-1",
+      task: "Coordinate this company",
+      depth: 1,
+      status: "running",
+      toolCalls: [
+        {
+          id: "dispatch-1",
+          name: "stage_team_dispatch_workers",
+          args: {},
+          status: "running",
+          startedAt: "2026-08-02T00:00:00Z",
+        },
+      ],
+      entries: [{ kind: "text", text: "dispatching" }],
+      startedAt: "2026-08-02T00:00:00Z",
+    };
+    const runningSignature = stageTeamAgentRefreshSignature([row], [controller]);
+    const textOnlySignature = stageTeamAgentRefreshSignature(
+      [row],
+      [{ ...controller, entries: [{ kind: "text", text: "more streamed text" }] }]
+    );
+    const completedSignature = stageTeamAgentRefreshSignature(
+      [row],
+      [
+        {
+          ...controller,
+          toolCalls: [
+            {
+              ...controller.toolCalls[0],
+              status: "completed",
+              completedAt: "2026-08-02T00:00:01Z",
+            },
+          ],
+        },
+      ]
+    );
+
+    expect(textOnlySignature).toBe(runningSignature);
+    expect(completedSignature).not.toBe(runningSignature);
+    expect(
+      stageTeamAgentRefreshSignature(
+        [row],
+        [{ ...controller, parentRequestId: "another-stage::team::org-1::lead:worker-1" }]
+      )
+    ).toBe("");
+  });
+
   it("renders only the DB-backed Team view when an exact Team pointer exists", async () => {
     const row: StageRunRow = {
       ...makeRow(),
@@ -85,7 +145,7 @@ describe("StageRunOrgRows", () => {
   });
 
   it("requires a rerun instead of restoring the legacy specialist view", () => {
-    render(<StageRunOrgRows rows={[makeRow()]} onDrillIn={vi.fn()} />);
+    render(<StageRunOrgRows rows={[makeRow()]} />);
 
     expect(screen.getByTestId("stage-team-rerun-required")).toBeInTheDocument();
     expect(screen.getByText(/Company Controller data unavailable/)).toBeInTheDocument();

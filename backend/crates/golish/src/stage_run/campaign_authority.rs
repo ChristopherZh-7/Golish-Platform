@@ -1,9 +1,10 @@
-//! Explicit local-operator authority packet for an exact retained-DB resume.
+//! Explicit local-operator authority packet for an exact Investigation resume.
 //!
-//! This surface is intentionally unavailable to fresh runs, the persistent
-//! application database, model tools and `--auto-approve`.  It reuses the
-//! canonical safety-hold and Prepared Action repositories so every transition
-//! remains CAS-bound and append-only.
+//! This surface is intentionally unavailable to fresh runs, model tools and
+//! `--auto-approve`. It requires the complete persisted resume identity and
+//! reuses the canonical safety-hold and Prepared Action repositories so every
+//! transition remains CAS-bound and append-only. The same contract applies to
+//! a retained ephemeral database and the local application database.
 
 use std::path::Path;
 
@@ -87,7 +88,7 @@ fn read_packet(path: &Path) -> Result<CampaignAuthorityPacket> {
     Ok(packet)
 }
 
-pub(super) async fn apply_retained_resume_campaign_authority(
+pub(super) async fn apply_exact_resume_campaign_authority(
     pool: &PgPool,
     packet_path: &Path,
     expected_operation_id: Uuid,

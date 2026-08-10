@@ -1,10 +1,62 @@
+import { render, screen } from "@testing-library/react";
+import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import {
+  CollapsibleToolCall,
   stageRunBlockedCopy,
   stageRunResultPassed,
+  ToolCallSummary,
   toolResultIsBackgrounded,
   toolResultIsFailure,
 } from "./ToolCallSummary";
+
+describe("CollapsibleToolCall Gate truth", () => {
+  it("renders an accepted closeout as a completed submission without claiming Gate completion", () => {
+    render(
+      createElement(CollapsibleToolCall, {
+        tc: {
+          name: "submit_stage_deliverable",
+          success: true,
+          result: '{"status":"accepted"}',
+        },
+      })
+    );
+
+    expect(screen.getByText("Submitted")).toBeInTheDocument();
+    expect(screen.getByLabelText("Submission completed")).toBeInTheDocument();
+    expect(screen.queryByText(/Awaiting Gate/)).not.toBeInTheDocument();
+  });
+
+  it("uses a green terminal card instead of an amber waiting clock after submit", () => {
+    const { container } = render(
+      createElement(ToolCallSummary, {
+        toolCalls: [
+          {
+            name: "submit_stage_deliverable",
+            success: true,
+            result: '{"status":"accepted"}',
+          },
+        ],
+      })
+    );
+
+    const card = container.querySelector('[data-terminal-state="submitted"]');
+    expect(card).toHaveClass("border-[var(--ansi-green)]/30");
+    expect(screen.getByLabelText("Submission completed")).toBeInTheDocument();
+    expect(card?.querySelector(".lucide-clock")).toBeNull();
+  });
+
+  it("renders a blocked stage_run as blocked rather than successful", () => {
+    render(
+      createElement(CollapsibleToolCall, {
+        tc: { name: "stage_run", success: true, result: '{"passed":false,"gaps":[]}' },
+      })
+    );
+
+    expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.queryByText("✓")).not.toBeInTheDocument();
+  });
+});
 
 describe("stageRunBlockedCopy", () => {
   it("directs a blocked continue card into its recovery details", () => {

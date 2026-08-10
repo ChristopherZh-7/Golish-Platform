@@ -487,6 +487,197 @@ struct FrozenEnumerationOriginRow {
     target_ports: serde_json::Value,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct FrozenVulnOriginCandidateRow {
+    target_id: Uuid,
+    exact_origin: String,
+    target_name: String,
+    target_value: String,
+    target_ports: serde_json::Value,
+}
+
+fn select_vuln_exact_origin_assets(
+    inherited_origins: &std::collections::BTreeSet<String>,
+    rows: Vec<FrozenVulnOriginCandidateRow>,
+) -> Result<Vec<LockedDenominatorAsset>> {
+    if inherited_origins.is_empty() {
+        return Err(fail(DENOMINATOR_UNSEALED));
+    }
+    let mut exact_assets = std::collections::BTreeMap::<String, LockedDenominatorAsset>::new();
+    for row in rows {
+        let canonical = golish_pentest_domain::canonical_web_origin(&row.exact_origin)
+            .filter(|origin| origin.key == row.exact_origin)
+            .ok_or_else(|| fail(MANIFEST_DRIFT))?;
+        if !inherited_origins.contains(&canonical.key)
+            || !golish_pentest_domain::confirmed_target_web_origins(
+                &row.target_name,
+                &row.target_value,
+                &row.target_ports,
+            )
+            .into_iter()
+            .any(|candidate| candidate.key == canonical.key)
+        {
+            return Err(fail(MANIFEST_DRIFT));
+        }
+        exact_assets
+            .entry(canonical.key.clone())
+            .or_insert(LockedDenominatorAsset {
+                target_id: row.target_id,
+                exact_asset: canonical.key,
+                asset_type: "url".to_string(),
+                web_capable: true,
+            });
+    }
+    if exact_assets
+        .keys()
+        .collect::<std::collections::BTreeSet<_>>()
+        != inherited_origins
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    {
+        return Err(fail(DENOMINATOR_UNSEALED));
+    }
+    Ok(exact_assets.into_values().collect())
+}
+
+/// Freeze Vuln Triage to the immutable exact-origin axis published by the
+/// final-sealed Enumeration handoff. Raw Scoping domain/IP rows remain useful
+/// target inventory, but they are not executable active-scan subjects.
+async fn freeze_vuln_exact_origin_assets(
+    tx: &mut Transaction<'_, Postgres>,
+    authority: &FrozenSourceAuthority,
+    stage_execution_id: Uuid,
+    source_assets: &[LockedDenominatorAsset],
+) -> Result<Vec<LockedDenominatorAsset>> {
+    let handoffs = super::stage_handoffs::list_latest_final_sealed_for_sources_with_connection(
+        tx,
+        authority.operation_id,
+        authority.organization_id,
+        &["enumeration".to_string()],
+    )
+    .await
+    .map_err(|error| DbError::Other(anyhow::anyhow!(error.to_string())))?;
+    let [handoff] = handoffs.as_slice() else {
+        return Err(fail(DENOMINATOR_UNSEALED));
+    };
+    let inherited_origins =
+        super::stage_handoffs::enumeration_origins_from_optional_final_sealed_watermark(
+            Some(&handoff.coverage_watermark),
+            authority.organization_id,
+        )
+        .map_err(DbError::Other)?;
+    let mut source_target_ids = source_assets
+        .iter()
+        .map(|asset| asset.target_id)
+        .collect::<Vec<_>>();
+    source_target_ids.sort_unstable();
+    source_target_ids.dedup();
+    if source_target_ids.is_empty() {
+        return Err(fail(CONTRACT_INVALID));
+    }
+    let inherited_origin_values = inherited_origins.iter().cloned().collect::<Vec<_>>();
+    let rows = sqlx::query_as::<_, FrozenVulnOriginCandidateRow>(
+        r#"SELECT observation.target_id,origin.origin AS exact_origin,
+                  target.name AS target_name,target.value AS target_value,
+                  COALESCE(target.ports,'[]'::jsonb) AS target_ports
+             FROM web_origin_observations observation
+             JOIN web_origins origin ON origin.id=observation.web_origin_id
+             JOIN targets target ON target.id=observation.target_id
+             JOIN stage_runs stage ON stage.id=$5
+            WHERE observation.target_id=ANY($1)
+              AND observation.organization_id=$2
+              AND origin.organization_id=$2
+              AND target.organization_id=$2
+              AND observation.project_path=$3
+              AND origin.project_path=$3
+              AND target.project_path=$3
+              AND origin.origin=ANY($4)
+              AND target.created_at<=stage.started_at
+              AND origin.created_at<=stage.started_at
+              AND observation.observed_at<=stage.started_at
+            ORDER BY origin.origin,target.created_at,target.id,
+                     observation.observed_at,observation.id
+            FOR SHARE OF observation,origin,target,stage"#,
+    )
+    .bind(&source_target_ids)
+    .bind(authority.organization_id)
+    .bind(&authority.project_path_at_freeze)
+    .bind(&inherited_origin_values)
+    .bind(stage_execution_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    select_vuln_exact_origin_assets(&inherited_origins, rows)
+}
+
+async fn persisted_source_denominator_assets(
+    tx: &mut Transaction<'_, Postgres>,
+    authority: &FrozenSourceAuthority,
+    stage_execution_id: Uuid,
+    stable_seal_request_id: Uuid,
+) -> Result<Option<std::collections::BTreeSet<String>>> {
+    let rows = sqlx::query_scalar::<_, String>(
+        r#"SELECT item.exact_asset
+             FROM tool_truth_execution_authorities execution
+             JOIN coverage_denominators denominator
+               ON denominator.execution_authority_id=execution.id
+              AND denominator.stable_seal_request_id=execution.stable_authority_request_id
+             JOIN coverage_denominator_items item
+               ON item.denominator_id=denominator.id
+              AND item.execution_authority_id=execution.id
+            WHERE execution.operation_id=$1
+              AND execution.organization_id=$2
+              AND execution.stage_execution_id=$3
+              AND execution.stage_kind=$4
+              AND execution.stable_authority_request_id=$5
+              AND execution.stage_run_unit_id IS NOT DISTINCT FROM $6
+              AND denominator.sealed_at IS NOT NULL
+            ORDER BY item.exact_asset
+            FOR SHARE OF execution,denominator,item"#,
+    )
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(stage_execution_id)
+    .bind(&authority.stage_kind)
+    .bind(stable_seal_request_id)
+    .bind(authority.stage_run_unit_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if rows.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rows.into_iter().collect()))
+    }
+}
+
+fn select_vuln_replay_assets(
+    source_assets: &[LockedDenominatorAsset],
+    exact_origin_assets: Vec<LockedDenominatorAsset>,
+    persisted_assets: Option<&std::collections::BTreeSet<String>>,
+) -> Result<Vec<LockedDenominatorAsset>> {
+    let Some(persisted_assets) = persisted_assets else {
+        return Ok(exact_origin_assets);
+    };
+    let exact_origins = exact_origin_assets
+        .iter()
+        .map(|asset| asset.exact_asset.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if persisted_assets.is_subset(&exact_origins) {
+        return Ok(exact_origin_assets);
+    }
+    let source_values = source_assets
+        .iter()
+        .map(|asset| asset.exact_asset.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if persisted_assets.is_subset(&source_values) {
+        // Historical roots were sealed against raw Scoping domain/IP rows.
+        // They remain immutable; the finalizer projects their excluded rows
+        // to evidence-backed not_applicable outcomes instead of rewriting the
+        // already-sealed manifest during a continuation.
+        return Ok(source_assets.to_vec());
+    }
+    Err(fail(MANIFEST_DRIFT))
+}
+
 /// Replace Enumeration's host-like source rows with the exact HTTP(S) Web
 /// Origins that EAS had already confirmed when this stage began.  The result
 /// is frozen while the source, target, observation, origin, and stage rows are
@@ -821,16 +1012,38 @@ where
         }
     };
 
-    let locked_assets = if authority.stage_kind == "enumeration" {
-        freeze_enumeration_exact_origin_assets(
-            &mut tx,
-            &authority,
-            command.stage_execution_id,
-            &locked_assets,
-        )
-        .await?
-    } else {
-        locked_assets
+    let locked_assets = match authority.stage_kind.as_str() {
+        "enumeration" => {
+            freeze_enumeration_exact_origin_assets(
+                &mut tx,
+                &authority,
+                command.stage_execution_id,
+                &locked_assets,
+            )
+            .await?
+        }
+        "vuln_triage" => {
+            let exact_origin_assets = freeze_vuln_exact_origin_assets(
+                &mut tx,
+                &authority,
+                command.stage_execution_id,
+                &locked_assets,
+            )
+            .await?;
+            let persisted_assets = persisted_source_denominator_assets(
+                &mut tx,
+                &authority,
+                command.stage_execution_id,
+                command.stable_seal_request_id,
+            )
+            .await?;
+            select_vuln_replay_assets(
+                &locked_assets,
+                exact_origin_assets,
+                persisted_assets.as_ref(),
+            )?
+        }
+        _ => locked_assets,
     };
 
     let contract = ToolTruthContract::try_from(authority.operation_contract.as_str())
@@ -3560,4 +3773,107 @@ pub async fn append_reconciliation_failure(
     }
     tx.commit().await?;
     Ok(reconciliation)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(target_id: Uuid, origin: &str) -> FrozenVulnOriginCandidateRow {
+        let canonical = golish_pentest_domain::canonical_web_origin(origin).unwrap();
+        FrozenVulnOriginCandidateRow {
+            target_id,
+            exact_origin: canonical.key,
+            target_name: canonical.host.clone(),
+            target_value: canonical.host,
+            target_ports: serde_json::json!([{
+                "port": canonical.port,
+                "state": "open",
+                "protocol": "tcp",
+                "service": if canonical.scheme == "https" { "https" } else { "http" }
+            }]),
+        }
+    }
+
+    #[test]
+    fn vuln_denominator_freezes_only_final_sealed_enumeration_origins() {
+        let retained_target = Uuid::new_v4();
+        let duplicate_target = Uuid::new_v4();
+        let inherited = std::collections::BTreeSet::from([
+            "https://app.example:443".to_string(),
+            "http://api.example:80".to_string(),
+        ]);
+        let selected = select_vuln_exact_origin_assets(
+            &inherited,
+            vec![
+                candidate(retained_target, "https://app.example:443"),
+                candidate(duplicate_target, "https://app.example:443"),
+                candidate(retained_target, "http://api.example:80"),
+            ],
+        )
+        .expect("the immutable inherited origin set is the full Vuln denominator");
+
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].exact_asset, "http://api.example:80");
+        assert_eq!(selected[1].exact_asset, "https://app.example:443");
+        assert!(selected.iter().all(|asset| {
+            asset.asset_type == "url" && asset.web_capable && asset.target_id == retained_target
+        }));
+
+        let error = select_vuln_exact_origin_assets(
+            &inherited,
+            vec![candidate(retained_target, "https://app.example:443")],
+        )
+        .expect_err("a missing inherited origin cannot silently shrink Vuln authority");
+        assert!(error.to_string().contains(DENOMINATOR_UNSEALED));
+    }
+
+    #[test]
+    fn vuln_denominator_replays_an_immutable_legacy_root_without_manifest_drift() {
+        let target_id = Uuid::new_v4();
+        let raw = vec![
+            LockedDenominatorAsset {
+                target_id,
+                exact_asset: "moresec.cn".to_string(),
+                asset_type: "domain".to_string(),
+                web_capable: true,
+            },
+            LockedDenominatorAsset {
+                target_id: Uuid::new_v4(),
+                exact_asset: "61.130.180.110".to_string(),
+                asset_type: "ip".to_string(),
+                web_capable: false,
+            },
+        ];
+        let exact = vec![LockedDenominatorAsset {
+            target_id,
+            exact_asset: "https://moresec.cn:443".to_string(),
+            asset_type: "url".to_string(),
+            web_capable: true,
+        }];
+
+        assert_eq!(
+            select_vuln_replay_assets(
+                &raw,
+                exact.clone(),
+                Some(&std::collections::BTreeSet::from([
+                    "61.130.180.110".to_string(),
+                    "moresec.cn".to_string(),
+                ])),
+            )
+            .expect("a sealed legacy root must replay against its original raw members"),
+            raw
+        );
+        assert_eq!(
+            select_vuln_replay_assets(
+                &[],
+                exact.clone(),
+                Some(&std::collections::BTreeSet::from([
+                    "https://moresec.cn:443".to_string(),
+                ])),
+            )
+            .expect("a fresh exact-origin root remains exact on replay"),
+            exact
+        );
+    }
 }

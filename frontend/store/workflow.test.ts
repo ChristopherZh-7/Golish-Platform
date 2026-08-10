@@ -562,6 +562,22 @@ describe("Store Workflow Actions", () => {
       expect(plan?.version).toBe(0);
       expect(plan?.steps[0].status).toBe("in_progress");
     });
+
+    it("freezes the first per-stage message anchor across later plan updates", () => {
+      useStore.getState().setStagePlan(testSessionId, "target_intel", seed("in_progress"));
+      useStore.getState().anchorStagePlan(testSessionId, "target_intel", "a1");
+      useStore.getState().setStagePlan(testSessionId, "target_intel", real());
+      useStore.getState().anchorStagePlan(testSessionId, "target_intel", "a2");
+
+      expect(
+        useStore.getState().sessions[testSessionId]?.stagePlanMessageIds?.target_intel
+      ).toBe("a1");
+    });
+
+    it("does not create a fake session while anchoring during restore", () => {
+      useStore.getState().anchorStagePlan("missing-ai-session", "target_intel", "a1");
+      expect(useStore.getState().sessions["missing-ai-session"]).toBeUndefined();
+    });
   });
 
   describe("rewindStagePlans (committed stage reset receipt)", () => {
@@ -575,6 +591,7 @@ describe("Store Workflow Actions", () => {
           explanation: null,
           updated_at: "old-epoch",
         });
+        useStore.getState().anchorStagePlan(testSessionId, stage, `msg-${stage}`);
         useStore.getState().markStagePassed(testSessionId, stage);
       }
     });
@@ -602,6 +619,10 @@ describe("Store Workflow Actions", () => {
       expect(session?.plansByStage?.external_attack_surface?.version).toBe(0);
       expect(session?.plansByStage?.external_attack_surface?.steps[0]?.status).toBe("in_progress");
       expect(session?.passedStages).toEqual(["scoping", "target_intel"]);
+      expect(session?.stagePlanMessageIds).toEqual({
+        scoping: "msg-scoping",
+        target_intel: "msg-target_intel",
+      });
     });
 
     it("allows the replacement v0 seed after removing the old real plan", () => {

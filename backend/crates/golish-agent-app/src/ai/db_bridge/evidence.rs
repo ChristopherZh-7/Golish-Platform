@@ -719,7 +719,9 @@ fn row_has_trusted_eas_blocked_producer(
             .is_some_and(|reason| {
                 matches!(
                     reason,
-                    "full_profile_host_budget_exceeded" | "ipv6_range_full_scan_not_supported"
+                    "EAS_PORT_SCAN_ATTEMPTS_EXHAUSTED"
+                        | "full_profile_host_budget_exceeded"
+                        | "ipv6_range_full_scan_not_supported"
                 )
             })
         && attestation
@@ -3745,6 +3747,39 @@ mod tests {
 
             row.evidence_raw_output = Some("{}".to_string());
             assert!(eas_target_bound_evidence_facts(org, vec![row]).is_empty());
+        }
+    }
+
+    #[test]
+    fn eas_exhausted_exact_ip_policy_block_remains_terminal_evidence() {
+        let org = Uuid::new_v4();
+        for technique in [
+            golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
+            golish_db::repo::coverage_truth::TECH_EAS_PORT,
+        ] {
+            let mut row =
+                target_bound_row(org, "192.0.2.10", technique, "192.0.2.10", "ip_address");
+            row.evidence_outcome = "blocked".to_string();
+            row.tool_name = Some("eas_discover_ports".to_string());
+            row.evidence_kind = Some("eas.port_scan_policy_blocked".to_string());
+            row.evidence_raw_output = Some(
+                serde_json::json!({
+                    "schema": "eas_port_scan_policy_blocked_v1",
+                    "reason_code": "EAS_PORT_SCAN_ATTEMPTS_EXHAUSTED",
+                    "scan_profile": "full",
+                    "host_budget": 4,
+                    "network_launched": false,
+                    "target_id": row.target_id,
+                    "requested": "192.0.2.10",
+                })
+                .to_string(),
+            );
+
+            assert_eq!(
+                eas_target_bound_evidence_facts(org, vec![row]).len(),
+                1,
+                "an exact exhausted producer is typed blocked truth, not permission to rescan"
+            );
         }
     }
 
