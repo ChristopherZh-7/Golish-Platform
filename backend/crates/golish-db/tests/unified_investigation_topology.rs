@@ -341,13 +341,14 @@ async fn new_operations_freeze_deployment_topology_and_old_rows_do_not_drift() {
 async fn unified_operation_rejects_legacy_stages_and_non_graph_transitions() {
     let (db, _data_dir) = migrated_db("runtime_guard").await;
     select_unified_deployment(&db).await;
+    let runtime_memory_contract = current_runtime_memory_contract(&db).await;
     let operation_id = Uuid::new_v4();
     operation_state::insert(
         db.pool(),
         operation_id,
         "red_team",
         "application_understanding",
-        "legacy_v1",
+        &runtime_memory_contract,
         golish_core::ApplicationModelContract::ApplicationModelV1,
     )
     .await
@@ -385,4 +386,35 @@ async fn unified_operation_rejects_legacy_stages_and_non_graph_transitions() {
         .execute(db.pool())
         .await
         .expect("advance through exact Investigation to Reporting edge");
+}
+
+#[tokio::test]
+#[serial]
+async fn vuln_formulaic_controller_recovery_migration_keeps_an_exact_trigger_guard() {
+    let (db, _data_dir) = migrated_db("vuln_formulaic_recovery").await;
+    let applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version=20260811000003 AND success)",
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("read applied migration");
+    assert!(applied);
+    let definition: String = sqlx::query_scalar(
+        "SELECT pg_get_functiondef('enforce_stage_work_item_contract()'::regprocedure)",
+    )
+    .fetch_one(db.pool())
+    .await
+    .expect("read Stage WorkItem trigger definition");
+    for witness in [
+        "vuln_formulaic_controller_recovery",
+        "_runtime_vuln_formulaic_controller_recovery",
+        "formulaic_worklist_executor",
+        "vuln_v1",
+        "outcome IN ('pending','partial','error')",
+    ] {
+        assert!(
+            definition.contains(witness),
+            "migration trigger lost exact witness {witness}"
+        );
+    }
 }

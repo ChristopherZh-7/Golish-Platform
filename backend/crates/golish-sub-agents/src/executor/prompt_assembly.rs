@@ -14,12 +14,13 @@ use rig::one_or_many::OneOrMany;
 use crate::definition::SubAgentDefinition;
 use crate::executor_types::{
     BoundTerminalExecutionContract, SubAgentExecutorContext, BARRIER_TOOL_NAME,
+    INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA,
+    INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA,
+    INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA,
     INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA, INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA,
     INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
 };
 use golish_core::events::AiEvent;
-
-use super::tool_setup::is_closed_candidate_analysis_role;
 
 /// Compose the final system prompt the sub-agent will run with.
 pub(super) async fn assemble_effective_system_prompt<M>(
@@ -56,12 +57,7 @@ where
         return effective;
     }
 
-    let closed_candidate_role = is_closed_candidate_analysis_role(agent_id);
-    let mut effective = if closed_candidate_role {
-        // Closed Candidate roles never invoke the prompt architect and never
-        // accept a mutable generated prompt in place of the reviewed fallback.
-        agent_def.system_prompt.clone()
-    } else if let Some(ref template) = agent_def.prompt_template {
+    let mut effective = if let Some(ref template) = agent_def.prompt_template {
         generate_optimized_prompt(
             agent_id,
             template,
@@ -77,30 +73,36 @@ where
         agent_def.system_prompt.clone()
     };
 
-    if !closed_candidate_role {
-        if let Some(ref briefing) = ctx.briefing {
-            effective.push_str("\n\n");
-            effective.push_str(briefing);
-            tracing::info!(
-                "[sub-agent:{}] Injected orchestrator briefing ({} chars)",
-                agent_id,
-                briefing.len()
-            );
-        }
+    if let Some(ref briefing) = ctx.briefing {
+        effective.push_str("\n\n");
+        effective.push_str(briefing);
+        tracing::info!(
+            "[sub-agent:{}] Injected orchestrator briefing ({} chars)",
+            agent_id,
+            briefing.len()
+        );
     }
 
-    if !closed_candidate_role {
-        inject_matched_skills(agent_id, task, ctx, &mut effective).await;
-    }
+    append_investigation_actor_contract(&mut effective, ctx);
+
+    inject_matched_skills(agent_id, task, ctx, &mut effective).await;
 
     if let Some(bound) = ctx
         .bound_worker_chain
         .as_ref()
         .filter(|bound| bound.is_stage_team_child())
     {
-        effective.push_str(&stage_team_completion_requirement(
-            bound.stage_team_output_schema.as_deref(),
-        ));
+        let output_schema = if matches!(
+            bound.investigation_actor_contract.as_ref(),
+            Some(crate::InvestigationActorContract::AssetVerificationPrimary(
+                _
+            ))
+        ) {
+            Some(INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA)
+        } else {
+            bound.stage_team_output_schema.as_deref()
+        };
+        effective.push_str(&stage_team_completion_requirement(output_schema));
     } else {
         effective.push_str(&format!(
             "\n\n## COMPLETION REQUIREMENT\n\n\
@@ -133,7 +135,10 @@ fn stage_team_completion_requirement(output_schema: Option<&str>) -> String {
     let result_contract = match output_schema {
         Some(INVESTIGATION_TASK_PLAN_RESULT_SCHEMA) => format!(
             "Its `result` argument MUST be the exact {INVESTIGATION_TASK_PLAN_RESULT_SCHEMA} object \
-             shown by the tool schema: `schema_version`, `summary`, and 2-8 ordered `subtasks`."
+             shown by the tool schema: `schema_version`, `summary`, and 0-8 ordered `subtasks`. \
+             Choose roles and ordering from the actual bounded need. Roles may repeat or be absent; \
+             there is no fixed committee or role census. An empty subtask list means the same \
+             Primary can proceed directly to its host-validated synthesis or zero-hypothesis result."
         ),
         Some(INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA) => format!(
             "Its `result` argument MUST be the exact {INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA} \
@@ -143,6 +148,29 @@ fn stage_team_completion_requirement(output_schema: Option<&str>) -> String {
             "Its `result` argument MUST be the exact \
              {INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA} object shown by the tool schema, \
              including every accepted output hash exactly once."
+        ),
+        Some(INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA) => format!(
+            "Its `result` argument MUST be the exact \
+             {INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA} object shown by the tool \
+             schema. Report only this dynamic actor call's observation for the exact session and \
+             hypothesis revision, cite only durable evidence returned by tools, and \
+             put distinct follow-up ideas in `new_hypothesis_proposals`."
+        ),
+        Some(INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA) => format!(
+            "Its `result` argument MUST be the exact tagged \
+             {INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA} object shown by the tool \
+             schema. Use `decision=delegate` with 1-8 ordered exact-subject subtasks when more \
+             work is needed; roles may repeat. Use `decision=resolve` with zero subtasks only \
+             when the current hypothesis is terminally verified, refuted, or invalid. Evidence \
+             citations are optional (0-N) but every supplied id must come from this session's \
+             completed invocation audit evidence. Never invent or submit opaque authority ids."
+        ),
+        Some(INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA) => format!(
+            "Its `result` argument MUST be the exact \
+             {INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA} object shown by the \
+             tool schema. Resolve the hypothesis only as verified/refuted/invalid from the \
+             current revision and durable observations. The host derives all authority ids and hashes; \
+             do not invent them."
         ),
         Some("investigation_cognitive_output.v1") =>
             "Its `result` argument MUST be the exact investigation_cognitive_output.v1 object \
@@ -165,6 +193,54 @@ fn stage_team_completion_requirement(output_schema: Option<&str>) -> String {
          the object itself, never a JSON string, Markdown report, code fence, or prose wrapper. \
          Also set outer `success` and one-line outer `summary`."
     )
+}
+
+fn append_investigation_actor_contract(effective: &mut String, ctx: &SubAgentExecutorContext<'_>) {
+    let Some(contract) = ctx
+        .bound_worker_chain
+        .as_ref()
+        .and_then(|bound| bound.investigation_actor_contract.as_ref())
+    else {
+        return;
+    };
+    let directive = match contract {
+        crate::InvestigationActorContract::AnalysisPrimary =>
+            "You are the Analysis Primary. You may plan and use exact-scope read-only cognition, but may not perform target I/O or establish canonical truth.".to_string(),
+        crate::InvestigationActorContract::AnalysisWorker =>
+            "You are an Analysis reasoning worker. Remain read-only and return advisory material only.".to_string(),
+        crate::InvestigationActorContract::AssetVerificationPrimary(binding) => {
+            let identity = serde_json::json!({
+                "asset_lane_id": binding.asset_lane_id,
+                "hypothesis_revision_id": binding.hypothesis_revision_id,
+                "message_chain_id": binding.message_chain_id,
+                "session_id": binding.session_id,
+                "target_id": binding.target_id,
+                "work_item_id": binding.work_item_id,
+                "worker_run_id": binding.worker_run_id,
+            });
+            format!(
+                "You are the durable Asset Verification Primary for exactly one hypothesis round. This is a distinct Verification authority contract, never an Analysis Primary contract. Decide one turn at a time: delegate an ordered 1-8 actor batch, with any of the eight allowed roles repeatable, or resolve with zero actors. Every delegated subtask must carry exactly the current target and current hypothesis revision refs. Review only the host-projected actor completions and invocation authorities for this session. Supplied cited_evidence_ids must be fresh audit evidence from those invocations; zero citations is legal. Never manufacture authority ids, worker ids, hashes, tool receipts, or a foreign subject. A delegate turn may be followed by another Primary turn on this same durable chain.\nASSET VERIFICATION PRIMARY:\n{identity}"
+            )
+        }
+        crate::InvestigationActorContract::AssetVerification(binding) => {
+            let identity = serde_json::json!({
+                "asset_lane_id": binding.asset_lane_id,
+                "hypothesis_revision_id": binding.hypothesis_revision_id,
+                "actor_call_id": binding.actor_call_id,
+                "actor_ordinal": binding.actor_ordinal,
+                "session_id": binding.session_id,
+                "specialist_role": binding.specialist_role,
+                "subtask_id": binding.subtask_id,
+                "target_id": binding.target_id,
+            });
+            format!(
+                "You are one {} call dynamically requested by the durable Asset Primary in an exact Verification session. You are not a mandatory roster member and you do not decide the final business resolution. Before the first managed skill/run/browser call in this round, call pentest_list_tools so the host freezes the current installed+enabled+ready Tool Manager inventory. You may then repeatedly inspect that inventory, read managed skills, run ready managed tools, and use the guarded Browser JS/API collector. Every target-I/O call is authorized, fenced, audited, and evidence-booked by the host. Never place session, lane, revision, worker-fence, credential, budget, or authorization fields in tool arguments; select only ordinary wrapper parameters. Stay on the exact target and hypothesis revision below, cite only fresh returned evidence, and finish this call with submit_result.\nASSET VERIFICATION ACTOR CALL:\n{identity}",
+                binding.specialist_role,
+            )
+        }
+    };
+    effective.push_str("\n\n## INVESTIGATION ACTOR CONTRACT\n\n");
+    effective.push_str(&directive);
 }
 
 fn assemble_bound_terminal_prompt(
@@ -342,6 +418,8 @@ async fn inject_matched_skills(
 mod tests {
     use super::stage_team_completion_requirement;
     use crate::executor_types::{
+        INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA,
+        INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA,
         INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA, INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA,
         INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
     };
@@ -358,5 +436,37 @@ mod tests {
             assert!(prompt.contains("submit_result"));
             assert!(!prompt.contains("stage_worker_output.v1"));
         }
+        let plan_prompt =
+            stage_team_completion_requirement(Some(INVESTIGATION_TASK_PLAN_RESULT_SCHEMA));
+        assert!(plan_prompt.contains("0-8 ordered `subtasks`"));
+        assert!(plan_prompt.contains("Roles may repeat or be absent"));
+        assert!(plan_prompt.contains("no fixed committee or role census"));
+    }
+
+    #[test]
+    fn asset_verification_observation_completion_prompt_requires_typed_contract() {
+        let prompt = stage_team_completion_requirement(Some(
+            INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA,
+        ));
+        assert!(prompt.contains(INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA));
+        assert!(prompt.contains("dynamic actor call's observation"));
+        assert!(prompt.contains("cite only durable evidence"));
+        assert!(prompt.contains("submit_result"));
+        assert!(!prompt.contains("business_disposition"));
+    }
+
+    #[test]
+    fn dynamic_verification_primary_completion_prompt_preserves_closed_turn_semantics() {
+        let prompt = stage_team_completion_requirement(Some(
+            INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA,
+        ));
+        assert!(prompt.contains(INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA));
+        assert!(prompt.contains("decision=delegate"));
+        assert!(prompt.contains("1-8 ordered exact-subject subtasks"));
+        assert!(prompt.contains("roles may repeat"));
+        assert!(prompt.contains("decision=resolve"));
+        assert!(prompt.contains("zero subtasks"));
+        assert!(prompt.contains("0-N"));
+        assert!(prompt.contains("Never invent or submit opaque authority ids"));
     }
 }

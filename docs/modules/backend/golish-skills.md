@@ -50,3 +50,7 @@
 ```bash
 cd backend && cargo nextest run -p golish-skills
 ```
+
+## CyberStrike methodology catalog（2026-08-12）
+
+`methodology_catalog` 与普通 `DefaultSkillProvider` 分离：它只发现 exact-case `SKILL.md` regular files，拒绝 symlink，重算 document/content-root hash，并按受控 tag 查询返回 bounded excerpt。结果固定声明 instruction/scope/authorization/evidence authority 全为 false；CyberStrike 正文不会成为 system instruction，也不会被直接执行。

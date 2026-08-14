@@ -4,12 +4,12 @@ import { HypothesesTab } from "./HypothesesTab";
 import { InvestigationStaleBanner } from "./InvestigationStaleBanner";
 import { InvestigationTimelineTab } from "./InvestigationTimelineTab";
 import { LegacyInvestigationAdapter } from "./LegacyInvestigationAdapter";
-import { WavesTab } from "./WavesTab";
 import {
   type InvestigationWorkspaceApi,
   type ProjectionResource,
   useInvestigationProjection,
 } from "./useInvestigationProjection";
+import { WavesTab } from "./WavesTab";
 
 /** Legacy Plan D view-local selector. It is no longer a store/Pane route. */
 type InvestigationWorkspaceTab = "hypotheses" | "campaigns" | "waves" | "timeline";
@@ -59,13 +59,17 @@ function InvestigationWorkspaceProjection({
   const summary = projection.summary.data;
 
   return (
-    <section className="flex h-full min-h-0 w-full flex-col bg-card" data-testid="investigation-workspace">
+    <section
+      className="flex h-full min-h-0 w-full flex-col bg-card"
+      data-testid="investigation-workspace"
+    >
       <header className="flex flex-wrap items-center gap-2 border-b border-border/25 px-3 py-2">
         <Database className="h-4 w-4 text-cyan-300" />
         <div className="min-w-0">
           <h2 className="text-xs font-semibold">Investigation Workspace</h2>
           <p className="truncate text-[10px] text-muted-foreground">
-            Server-authoritative projection · change {projection.summary.stamp?.changeSeq ?? "pending"}
+            Server-authoritative projection · change{" "}
+            {projection.summary.stamp?.changeSeq ?? "pending"}
           </p>
         </div>
         {summary && (
@@ -84,7 +88,11 @@ function InvestigationWorkspaceProjection({
         <button
           type="button"
           aria-label="Refresh Investigation Workspace"
-          className={summary ? "rounded p-1.5 text-muted-foreground hover:text-foreground" : "ml-auto rounded p-1.5 text-muted-foreground hover:text-foreground"}
+          className={
+            summary
+              ? "rounded p-1.5 text-muted-foreground hover:text-foreground"
+              : "ml-auto rounded p-1.5 text-muted-foreground hover:text-foreground"
+          }
           onClick={projection.refreshAll}
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -117,7 +125,11 @@ function InvestigationWorkspaceProjection({
         </div>
       )}
 
-      <div role="tablist" aria-label="Investigation views" className="flex border-b border-border/25 px-2">
+      <div
+        role="tablist"
+        aria-label="Investigation views"
+        className="flex border-b border-border/25 px-2"
+      >
         {TABS.map((tab) => (
           <button
             key={tab.id}
@@ -152,8 +164,6 @@ function InvestigationWorkspaceProjection({
         )}
         {selection.defaultTab === "campaigns" && (
           <CampaignsTab
-            operationId={selection.operationId}
-            refreshVersion={selection.refreshSeq}
             resource={projection.campaigns}
             detail={projection.campaignDetail}
             selectedCampaignId={selection.selectedCampaignId ?? null}

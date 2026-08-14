@@ -1,0 +1,24 @@
+{
+  "schema_version": "golish_third_party_source_provenance.v1",
+  "copied_at": "2026-08-12T00:00:00+08:00",
+  "copied_from": "/Users/christopherzheng/Downloads/CyberStrike-main",
+  "upstream_url": "https://github.com/CyberStrikeus/CyberStrike",
+  "upstream_revision": null,
+  "revision_note": "The supplied Downloads copy has no Git metadata. Its exact source identity is therefore the deterministic copied skill-tree hash below, not an inferred commit.",
+  "license_spdx": "AGPL-3.0-only",
+  "license_file": "LICENSE",
+  "source_layout": {
+    "skills": "skills",
+    "upstream_readme": "README.md",
+    "upstream_package_manifest": "package.json"
+  },
+  "skill_tree_file_count": 7750,
+  "skill_document_count": 7660,
+  "skill_tree_sha256": "b2aa092cf37cce491a86c765f0231f78e2a78510ef4f101ab393e422019a3331",
+  "skill_tree_hash_algorithm": "(cd skill_tree && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256 | shasum -a 256)",
+  "license_sha256": "3133972dd823488307038fdb262bec9037c4f02af3233e7af128e2f2df952bbb",
+  "readme_sha256": "2798b92dad4c8d22d98c02ac2954b157647d55c8e65a7d58dfd30b3d4763da73",
+  "package_manifest_sha256": "ca4b02c0f3a98cc6875bc1dc8f7690f9e3071c00ae81c4567640c228e89760dc",
+  "instruction_authority": false,
+  "execution_authority": false
+}

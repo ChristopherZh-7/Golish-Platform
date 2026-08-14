@@ -884,6 +884,7 @@ struct CandidateAuthorityFixture {
     operation_id: Uuid,
     organization_id: Uuid,
     scope_snapshot_id: Uuid,
+    asset_lane_id: Uuid,
     snapshot_id: Uuid,
     analysis_attempt_id: Uuid,
 }
@@ -894,6 +895,8 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     let project_scope_id = Uuid::new_v4();
     let scope_decision_id = Uuid::new_v4();
     let scope_snapshot_id = Uuid::new_v4();
+    let asset_lane_id = Uuid::new_v4();
+    let target_id = Uuid::new_v4();
     let project_path = format!("/tmp/{label}-{}", Uuid::new_v4().simple());
     let stages = [
         ("eas", "external_attack_surface"),
@@ -1044,6 +1047,54 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
         .commit()
         .await
         .expect("commit Candidate scope seal");
+
+    let mut asset_tx = pool
+        .begin()
+        .await
+        .expect("begin Candidate asset lane fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *asset_tx)
+        .await
+        .expect("disable fixture-only asset relationship triggers");
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,project_path,organization_id,scope,source)
+           VALUES($1,'authority.example','domain','authority.example',$2,$3,'in','fixture')"#,
+    )
+    .bind(target_id)
+    .bind(&project_path)
+    .bind(organization_id)
+    .execute(&mut *asset_tx)
+    .await
+    .expect("insert Candidate authority live target");
+    sqlx::query(
+        r#"INSERT INTO investigation_asset_lanes(
+               asset_lane_id,asset_queue_id,company_queue_id,company_member_id,authority_id,
+               operation_id,stage_execution_id,scope_snapshot_id,organization_id,target_id,
+               target_type_at_freeze,target_value_at_freeze,target_source_at_freeze,
+               target_created_at,target_identity_sha256,ordinal,state,evolution_epoch,
+               max_evolution_epochs)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'domain','authority.example','fixture',
+                  NOW(),$11,0,'analyzing',0,2)"#,
+    )
+    .bind(asset_lane_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(operation_id)
+    .bind(stage_runs[2])
+    .bind(scope_snapshot_id)
+    .bind(organization_id)
+    .bind(target_id)
+    .bind(digest('4'))
+    .execute(&mut *asset_tx)
+    .await
+    .expect("insert Candidate authority asset lane");
+    asset_tx
+        .commit()
+        .await
+        .expect("commit Candidate asset lane fixture");
 
     let bundle_id = Uuid::new_v4();
     let stable_consumer_request_id = Uuid::new_v4();
@@ -1210,13 +1261,14 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
                bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
                freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
                temporal_validity_policy_set_hash,target_state_epoch_set_hash,
-               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash
+               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash,
+               asset_lane_id
            ) SELECT $1,operation_id,organization_id,0,scope_snapshot_id,TRUE,$2,$3,$4,$5,
                     'sealed_ready',id,stable_consumer_request_id,relevant_root_count,
                     relevant_root_set_hash,member_count,member_set_hash,
                     semantic_authority_bundle_hash,freshness_attestation_bundle_hash,
                     temporal_validity_bundle_hash,temporal_validity_policy_set_hash,
-                    target_state_epoch_set_hash,$6,sealed_at,$7
+                    target_state_epoch_set_hash,$6,sealed_at,$7,$9
                FROM tool_truth_authority_bundle_seals WHERE id=$8"#,
     )
     .bind(snapshot_id)
@@ -1227,6 +1279,7 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     .bind(digest('1'))
     .bind(digest('2'))
     .bind(bundle_id)
+    .bind(asset_lane_id)
     .execute(&mut *candidate_tx)
     .await
     .expect("insert ready Candidate snapshot");
@@ -1258,8 +1311,8 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
                attempt_input_hash,attack_class_checklist_version,
                attack_class_checklist_digest,trust_boundary_checklist_version,
                trust_boundary_checklist_digest,coverage_sampling_contract_version,
-               coverage_sampling_contract_digest,retry_limit
-           ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1)"#,
+               coverage_sampling_contract_digest,retry_limit,asset_lane_id
+           ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1,$9)"#,
     )
     .bind(analysis_attempt_id)
     .bind(snapshot_id)
@@ -1269,6 +1322,7 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
     .bind(digest('4'))
     .bind(digest('5'))
     .bind(digest('6'))
+    .bind(asset_lane_id)
     .execute(&mut *candidate_tx)
     .await
     .expect("insert Candidate analysis attempt");
@@ -1293,9 +1347,495 @@ async fn seed_candidate_authority_fixture(pool: &PgPool, label: &str) -> Candida
         operation_id,
         organization_id,
         scope_snapshot_id,
+        asset_lane_id,
         snapshot_id,
         analysis_attempt_id,
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VerificationFactDeltaAuthorityFixture {
+    fact_delta_bundle_id: Uuid,
+    objective_outcome_receipt_id: Uuid,
+    revision_adjudication_id: Uuid,
+    revision_terminal_decision_id: Uuid,
+    capability_execution_receipt_id: Uuid,
+    oracle_assessment_id: Uuid,
+}
+
+async fn seed_verification_fact_delta_authority(
+    pool: &PgPool,
+    authority: CandidateAuthorityFixture,
+) -> VerificationFactDeltaAuthorityFixture {
+    let project_scope_id: Uuid =
+        sqlx::query_scalar("SELECT project_scope_id FROM operation_state WHERE operation_id=$1")
+            .bind(authority.operation_id)
+            .fetch_one(pool)
+            .await
+            .expect("load Candidate fixture project scope");
+    let generation_id = Uuid::new_v4();
+    let generation_seal_id = Uuid::new_v4();
+    let hypothesis_revision_id = Uuid::new_v4();
+    let verification_plan_id = Uuid::new_v4();
+    let verification_objective_id = Uuid::new_v4();
+    let campaign_id = Uuid::new_v4();
+    let campaign_terminal_decision_id = Uuid::new_v4();
+    let campaign_adjudication_id = Uuid::new_v4();
+    let campaign_coverage_receipt_id = Uuid::new_v4();
+    let oracle_census_seal_id = Uuid::new_v4();
+    let claim_component_outcome_seal_id = Uuid::new_v4();
+    let fact_delta_bundle_id = Uuid::new_v4();
+    let objective_outcome_receipt_id = Uuid::new_v4();
+    let objective_outcome_set_seal_id = Uuid::new_v4();
+    let revision_adjudication_id = Uuid::new_v4();
+    let revision_terminal_decision_id = Uuid::new_v4();
+    let terminal_successor_revision_id = Uuid::new_v4();
+    let capability_execution_receipt_id = Uuid::new_v4();
+    let oracle_assessment_id = Uuid::new_v4();
+    let campaign_coverage_member_id = Uuid::new_v4();
+
+    // These rows exercise the snapshot reader, not the already-covered Plan C
+    // writers.  Replica mode is scoped to this one fixture connection so the
+    // test can install a compact, internally consistent retained authority
+    // graph without restating every upstream Campaign constructor.
+    let mut connection = pool.acquire().await.expect("acquire fixture connection");
+    sqlx::query("SET session_replication_role='replica'")
+        .execute(&mut *connection)
+        .await
+        .expect("disable fixture relationship triggers");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_generations(
+               generation_id,operation_id,organization_id,generation_ordinal,
+               candidate_snapshot_id,candidate_gate_decision_id,
+               candidate_snapshot_authority_hash,previous_generation_id)
+           VALUES($1,$2,$3,0,$4,$5,$6,NULL)"#,
+    )
+    .bind(generation_id)
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(authority.snapshot_id)
+    .bind(Uuid::new_v4())
+    .bind(digest('7'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert retained generation");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_generation_seals(
+               seal_id,generation_id,member_count,member_set_hash,event_count,
+               event_set_hash,open_obligation_set_hash,controller_worker_run_id,generation_hash)
+           VALUES($1,$2,0,$3,0,$4,$5,$6,$7)"#,
+    )
+    .bind(generation_seal_id)
+    .bind(generation_id)
+    .bind(digest('8'))
+    .bind(digest('9'))
+    .bind(digest('a'))
+    .bind(Uuid::new_v4())
+    .bind(digest('b'))
+    .execute(&mut *connection)
+    .await
+    .expect("seal retained generation");
+    sqlx::query(
+        r#"INSERT INTO verification_fact_delta_bundles(
+               fact_delta_bundle_id,stable_request_id,campaign_id,
+               campaign_terminal_decision_id,operation_id,project_scope_id,
+               organization_id,hypothesis_revision_id,verification_objective_id,
+               delta_kind,typed_delta,evidence_ref_set_hash,source_authority_hash,
+               fact_delta_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'support',$10,$11,$12,$13)"#,
+    )
+    .bind(fact_delta_bundle_id)
+    .bind(Uuid::new_v4())
+    .bind(campaign_id)
+    .bind(campaign_terminal_decision_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(hypothesis_revision_id)
+    .bind(verification_objective_id)
+    .bind(serde_json::json!({
+        "contract_version":"verification-fact-delta.v1",
+        "objective_id":verification_objective_id,
+        "outcome":"proof",
+        "semantic_material_hash":{"secret":"must-also-not-enter-candidate-context"},
+        "credential":"must-not-enter-candidate-context"
+    }))
+    .bind(digest('c'))
+    .bind(digest('d'))
+    .bind(digest('e'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert retained Verification FactDelta");
+    sqlx::query(
+        r#"INSERT INTO fact_delta_consumptions(
+               fact_delta_consumption_id,stable_request_id,fact_delta_bundle_id,
+               operation_id,project_scope_id,organization_id,generation_id,
+               disposition,consumption_hash,residual_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,'applied',$8,NULL)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(fact_delta_bundle_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(generation_id)
+    .bind(digest('f'))
+    .execute(&mut *connection)
+    .await
+    .expect("consume retained Verification FactDelta");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_objective_outcome_receipts(
+               objective_outcome_receipt_id,stable_request_id,verification_plan_id,
+               hypothesis_revision_id,verification_objective_id,operation_id,
+               project_scope_id,organization_id,outcome_ordinal,predecessor_outcome_id,
+               outcome,campaign_terminal_decision_id,campaign_adjudication_id,
+               campaign_coverage_receipt_id,oracle_census_seal_id,
+               claim_component_outcome_seal_id,claim_component_outcome_seal_hash,
+               fact_delta_bundle_id,residual_id,source_authority_hash,outcome_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,NULL,'proof',$9,$10,$11,$12,$13,
+                  $14,$15,NULL,$16,$17)"#,
+    )
+    .bind(objective_outcome_receipt_id)
+    .bind(Uuid::new_v4())
+    .bind(verification_plan_id)
+    .bind(hypothesis_revision_id)
+    .bind(verification_objective_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(campaign_terminal_decision_id)
+    .bind(campaign_adjudication_id)
+    .bind(campaign_coverage_receipt_id)
+    .bind(oracle_census_seal_id)
+    .bind(claim_component_outcome_seal_id)
+    .bind(digest('1'))
+    .bind(fact_delta_bundle_id)
+    .bind(digest('2'))
+    .bind(digest('3'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact Objective outcome");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_objective_outcome_set_seals(
+               objective_outcome_set_seal_id,stable_request_id,verification_plan_id,
+               hypothesis_revision_id,operation_id,project_scope_id,organization_id,
+               cutoff_at,head_set_hash,member_count,member_set_hash,seal_hash,sealed_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,NOW()-INTERVAL '1 minute',$8,1,$9,$10,NOW())"#,
+    )
+    .bind(objective_outcome_set_seal_id)
+    .bind(Uuid::new_v4())
+    .bind(verification_plan_id)
+    .bind(hypothesis_revision_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(digest('4'))
+    .bind(digest('5'))
+    .bind(digest('6'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact Objective outcome-set seal");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_objective_outcome_set_members(
+               objective_outcome_set_seal_id,verification_plan_id,operation_id,
+               project_scope_id,organization_id,member_ordinal,
+               verification_objective_id,selected_current_outcome_id,
+               selected_current_ordinal,selected_current_outcome_hash,member_hash)
+           VALUES($1,$2,$3,$4,$5,0,$6,$7,1,$8,$9)"#,
+    )
+    .bind(objective_outcome_set_seal_id)
+    .bind(verification_plan_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(verification_objective_id)
+    .bind(objective_outcome_receipt_id)
+    .bind(digest('3'))
+    .bind(digest('7'))
+    .execute(&mut *connection)
+    .await
+    .expect("bind exact Objective outcome to adjudication set");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_revision_adjudications(
+               revision_adjudication_id,stable_request_id,verification_plan_id,
+               hypothesis_revision_id,objective_outcome_set_seal_id,operation_id,
+               project_scope_id,organization_id,tool_truth_authority_bundle_seal_id,
+               relevant_root_set_hash,member_set_hash,semantic_authority_bundle_hash,
+               freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
+               temporal_census_hash,temporal_policy_hash,target_epoch_set_hash,
+               observation_window_start,observation_window_end,effective_valid_until,
+               outcome,unresolved_set_hash,adjudication_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                  NOW()-INTERVAL '2 minutes',NOW()-INTERVAL '1 minute',
+                  NOW()+INTERVAL '10 minutes','verified',NULL,$18)"#,
+    )
+    .bind(revision_adjudication_id)
+    .bind(Uuid::new_v4())
+    .bind(verification_plan_id)
+    .bind(hypothesis_revision_id)
+    .bind(objective_outcome_set_seal_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(Uuid::new_v4())
+    .bind(digest('4'))
+    .bind(digest('5'))
+    .bind(digest('6'))
+    .bind(digest('7'))
+    .bind(digest('8'))
+    .bind(digest('9'))
+    .bind(digest('a'))
+    .bind(digest('b'))
+    .bind(digest('c'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact revision adjudication");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_revision_terminal_decisions(
+               revision_terminal_decision_id,stable_request_id,revision_adjudication_id,
+               hypothesis_revision_id,terminal_successor_revision_id,operation_id,
+               project_scope_id,organization_id,decision,finding_id,
+               refutation_lineage_id,state_event_id,decision_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,'verified',$9,NULL,$10,$11)"#,
+    )
+    .bind(revision_terminal_decision_id)
+    .bind(Uuid::new_v4())
+    .bind(revision_adjudication_id)
+    .bind(hypothesis_revision_id)
+    .bind(terminal_successor_revision_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(digest('d'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact terminal decision");
+    sqlx::query(
+        r#"INSERT INTO capability_execution_receipts(
+               id,denominator_id,execution_authority_id,capability,attempt_ordinal,
+               receipt_authority_hash,input_manifest_hash,destination_policy_id,
+               destination_policy_hash,temporal_validity_policy_id,
+               temporal_validity_policy_hash,attempt_state,landing_state,
+               observation_state,coverage_extent,coverage_gap_reason,
+               reconciliation_state,security_interpretation,typed_landing)
+           VALUES($1,$2,$3,'verification_http_observation',1,$4,$5,$6,$7,$8,$9,
+                  'succeeded','committed','found','sampled','none','consistent',
+                  'signal',$10)"#,
+    )
+    .bind(capability_execution_receipt_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(digest('e'))
+    .bind(digest('f'))
+    .bind(Uuid::new_v4())
+    .bind(digest('0'))
+    .bind(Uuid::new_v4())
+    .bind(digest('1'))
+    .bind(serde_json::json!({"contract_version":"capability_landing.v1"}))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact capability receipt");
+    sqlx::query(
+        r#"INSERT INTO verification_oracle_assessments(
+               oracle_assessment_id,stable_request_id,campaign_id,prepared_action_id,
+               action_execution_id,campaign_coverage_member_id,operation_id,
+               project_scope_id,organization_id,oracle_revision_ordinal,
+               oracle_contract_version,oracle_contract_hash,observation_receipt_hash,
+               precondition_validity,control_validity,verdict,assessment_body,
+               assessment_hash,residual_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,1,'verification_oracle.v1',$10,$11,
+                  'valid','valid','proof',$12,$13,NULL)"#,
+    )
+    .bind(oracle_assessment_id)
+    .bind(Uuid::new_v4())
+    .bind(campaign_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(campaign_coverage_member_id)
+    .bind(authority.operation_id)
+    .bind(project_scope_id)
+    .bind(authority.organization_id)
+    .bind(digest('2'))
+    .bind(digest('3'))
+    .bind(serde_json::json!({"verdict":"proof"}))
+    .bind(digest('4'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact Oracle assessment");
+    sqlx::query(
+        r#"INSERT INTO verification_campaign_coverage_results(
+               campaign_coverage_receipt_id,campaign_coverage_member_id,
+               coverage_disposition,epistemic_outcome,control_binding_kind,
+               control_validity,prepared_action_id,capability_execution_receipt_id,
+               oracle_assessment_id,residual_id,result_hash)
+           VALUES($1,$2,'tested_complete','proof','required','valid',$3,$4,$5,NULL,$6)"#,
+    )
+    .bind(campaign_coverage_receipt_id)
+    .bind(campaign_coverage_member_id)
+    .bind(Uuid::new_v4())
+    .bind(capability_execution_receipt_id)
+    .bind(oracle_assessment_id)
+    .bind(digest('5'))
+    .execute(&mut *connection)
+    .await
+    .expect("insert exact Campaign coverage result");
+    sqlx::query("SET session_replication_role='origin'")
+        .execute(&mut *connection)
+        .await
+        .expect("restore fixture relationship triggers");
+
+    VerificationFactDeltaAuthorityFixture {
+        fact_delta_bundle_id,
+        objective_outcome_receipt_id,
+        revision_adjudication_id,
+        revision_terminal_decision_id,
+        capability_execution_receipt_id,
+        oracle_assessment_id,
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn successor_snapshot_freezes_redacted_verification_fact_delta_authority() {
+    let (db, _data_dir) = fixture("verification-fact-delta-source").await;
+    let authority =
+        seed_candidate_authority_fixture(db.pool(), "verification-fact-delta-source").await;
+    let fact_delta = seed_verification_fact_delta_authority(db.pool(), authority).await;
+
+    let stable_consumer_request_id = Uuid::new_v4();
+    let snapshot = freeze_candidate_snapshot(
+        db.pool(),
+        FreezeCandidateSnapshotInput {
+            stable_consumer_request_id,
+            operation_id: authority.operation_id,
+            scope_snapshot_id: authority.scope_snapshot_id,
+            organization_id: authority.organization_id,
+            asset_lane_id: authority.asset_lane_id,
+        },
+    )
+    .await
+    .expect("freeze successor Candidate snapshot");
+    let (source_identity, source_hash, input_content_hash, input_kind, body): (
+        String,
+        String,
+        String,
+        String,
+        serde_json::Value,
+    ) = sqlx::query_as(
+        r#"SELECT member.source_identity,member.source_hash,input.source_content_hash,
+                  input.source_kind,
+                  convert_from(decode(string_agg(
+                      chunk.immutable_redacted_body->>'canonical_source_fragment',''
+                      ORDER BY chunk.ordinal),'hex'),'UTF8')::JSONB
+             FROM candidate_analysis_snapshot_source_sets source_set
+             JOIN candidate_analysis_snapshot_source_set_members member
+               USING(source_set_id,snapshot_id)
+             JOIN candidate_analysis_snapshot_inputs input
+               ON input.snapshot_id=source_set.snapshot_id
+              AND input.stable_input_key=
+                  'source-set:'||source_set.source_kind||':'||member.source_identity
+             JOIN candidate_analysis_input_chunk_censuses census
+               ON census.snapshot_input_id=input.snapshot_input_id
+             JOIN candidate_analysis_input_chunk_census_members chunk
+               ON chunk.chunk_census_id=census.chunk_census_id
+            WHERE source_set.snapshot_id=$1
+              AND source_set.source_kind='verification_fact_deltas'
+            GROUP BY member.source_identity,member.source_hash,
+                     input.source_content_hash,input.source_kind"#,
+    )
+    .bind(snapshot.snapshot_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read frozen Verification FactDelta source");
+
+    assert_eq!(source_identity, fact_delta.fact_delta_bundle_id.to_string());
+    assert_eq!(source_hash, input_content_hash);
+    assert_eq!(input_kind, "verification_fact_deltas");
+    assert_eq!(
+        body["schema"],
+        "candidate_verification_fact_delta_source.v1"
+    );
+    assert_eq!(body["instruction_authority"], false);
+    assert_eq!(
+        body["fact_delta"]["fact_delta_bundle_id"],
+        fact_delta.fact_delta_bundle_id.to_string()
+    );
+    assert_eq!(body["fact_delta"]["evidence_ref_set_hash"], digest('c'));
+    assert_eq!(body["fact_delta"]["source_authority_hash"], digest('d'));
+    assert_eq!(body["fact_delta"]["fact_delta_hash"], digest('e'));
+    assert_eq!(
+        body["objective_outcome"]["objective_outcome_receipt_id"],
+        fact_delta.objective_outcome_receipt_id.to_string()
+    );
+    assert_eq!(body["objective_outcome"]["outcome_hash"], digest('3'));
+    assert_eq!(
+        body["revision_adjudication"]["revision_adjudication_id"],
+        fact_delta.revision_adjudication_id.to_string()
+    );
+    assert_eq!(
+        body["revision_adjudication"]["adjudication_hash"],
+        digest('c')
+    );
+    assert_eq!(
+        body["terminal_decision"]["revision_terminal_decision_id"],
+        fact_delta.revision_terminal_decision_id.to_string()
+    );
+    assert_eq!(body["terminal_decision"]["decision_hash"], digest('d'));
+    assert_eq!(
+        body["capability_execution_receipts"][0]["id"],
+        fact_delta.capability_execution_receipt_id.to_string()
+    );
+    assert_eq!(
+        body["capability_execution_receipts"][0]["receipt_authority_hash"],
+        digest('e')
+    );
+    assert_eq!(
+        body["oracle_assessments"][0]["id"],
+        fact_delta.oracle_assessment_id.to_string()
+    );
+    assert_eq!(
+        body["oracle_assessments"][0]["assessment_hash"],
+        digest('4')
+    );
+    assert_eq!(body["typed_fact_delta"]["outcome"], "proof");
+    assert!(body["typed_fact_delta"].get("credential").is_none());
+    assert!(body["typed_fact_delta"]
+        .get("semantic_material_hash")
+        .is_none());
+    assert_eq!(
+        body["typed_fact_delta"]["redacted_field_names"],
+        serde_json::json!(["credential", "semantic_material_hash"])
+    );
+
+    let replay = freeze_candidate_snapshot(
+        db.pool(),
+        FreezeCandidateSnapshotInput {
+            stable_consumer_request_id,
+            operation_id: authority.operation_id,
+            scope_snapshot_id: authority.scope_snapshot_id,
+            organization_id: authority.organization_id,
+            asset_lane_id: authority.asset_lane_id,
+        },
+    )
+    .await
+    .expect("replay exact successor Candidate snapshot");
+    assert_eq!(replay.snapshot_id, snapshot.snapshot_id);
+    let verification_source_count: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*)
+             FROM candidate_analysis_snapshot_source_set_members member
+             JOIN candidate_analysis_snapshot_source_sets source_set
+               USING(source_set_id,snapshot_id)
+            WHERE source_set.snapshot_id=$1
+              AND source_set.source_kind='verification_fact_deltas'"#,
+    )
+    .bind(snapshot.snapshot_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count replayed Verification FactDelta sources");
+    assert_eq!(verification_source_count, 1);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1323,6 +1863,7 @@ async fn snapshot_tool_truth_authority_repo_freezes_unavailable_feed_as_residual
             operation_id: authority.operation_id,
             scope_snapshot_id: authority.scope_snapshot_id,
             organization_id: authority.organization_id,
+            asset_lane_id: authority.asset_lane_id,
         },
     )
     .await

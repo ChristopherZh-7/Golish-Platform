@@ -80,6 +80,7 @@ impl MethodologySourceKindV1 {
 #[serde(rename_all = "snake_case")]
 pub enum MethodologySignatureStateV1 {
     Verified,
+    ContentAddressed,
     Unknown,
     Revoked,
 }
@@ -229,10 +230,21 @@ impl MethodologyCorpusManifestV1 {
         if self.instruction_authority {
             return Err(MethodologyContractError::InstructionAuthorityForbidden);
         }
-        if self.signature_state != MethodologySignatureStateV1::Verified {
-            return Err(MethodologyContractError::UntrustedSignature(
-                self.signature_state,
-            ));
+        match self.signature_state {
+            MethodologySignatureStateV1::Verified => {}
+            MethodologySignatureStateV1::ContentAddressed
+                if self.source_kind == MethodologySourceKindV1::ThirdPartySkillCorpus =>
+            {
+                if !policy
+                    .allowed_content_root_sha256
+                    .contains(&self.content_root_sha256)
+                {
+                    return Err(MethodologyContractError::ContentRootNotAllowlisted(
+                        self.content_root_sha256.clone(),
+                    ));
+                }
+            }
+            state => return Err(MethodologyContractError::UntrustedSignature(state)),
         }
         if self.superseded_at.is_some() {
             return Err(MethodologyContractError::SupersededCorpus);
@@ -256,6 +268,7 @@ impl MethodologyCorpusManifestV1 {
 pub struct MethodologyTrustPolicyV1 {
     pub required_trust_store_epoch: u64,
     pub allowed_license_spdx: BTreeSet<String>,
+    pub allowed_content_root_sha256: BTreeSet<String>,
 }
 
 impl MethodologyTrustPolicyV1 {
@@ -280,7 +293,25 @@ impl MethodologyTrustPolicyV1 {
         Ok(Self {
             required_trust_store_epoch,
             allowed_license_spdx,
+            allowed_content_root_sha256: BTreeSet::new(),
         })
+    }
+
+    pub fn with_content_addressed_roots(
+        mut self,
+        roots: impl IntoIterator<Item = String>,
+    ) -> Result<Self, MethodologyContractError> {
+        let roots = roots.into_iter().collect::<BTreeSet<_>>();
+        if roots.is_empty() {
+            return Err(MethodologyContractError::InvalidField(
+                "content-addressed root allowlist must not be empty".into(),
+            ));
+        }
+        for root in &roots {
+            validate_sha256(root, "allowed_content_root_sha256")?;
+        }
+        self.allowed_content_root_sha256 = roots;
+        Ok(self)
     }
 }
 
@@ -399,6 +430,8 @@ pub enum MethodologyContractError {
     },
     #[error("methodology signature is not trusted: {0:?}")]
     UntrustedSignature(MethodologySignatureStateV1),
+    #[error("methodology content root is not allowlisted: {0}")]
+    ContentRootNotAllowlisted(String),
     #[error("methodology trust epoch is stale: expected {expected}, got {actual}")]
     StaleTrustEpoch { expected: u64, actual: u64 },
     #[error("methodology license is not allowed: {0}")]
@@ -549,5 +582,54 @@ mod tests {
                 MethodologySignatureStateV1::Unknown
             ))
         );
+    }
+
+    #[test]
+    fn third_party_content_addressed_corpus_requires_exact_host_root_allowlist() {
+        let content_root = sha256_bytes(b"third-party-root");
+        let identity = MethodologyCorpusIdentityMaterial {
+            source_kind: MethodologySourceKindV1::ThirdPartySkillCorpus,
+            upstream_url: Some("https://github.com/example/corpus"),
+            upstream_revision: "content-tree-sha256:fixture",
+            license_spdx: "AGPL-3.0-only",
+            license_text_sha256: &sha256_bytes(b"license"),
+            document_count: 1,
+            content_root_sha256: &content_root,
+            parser_contract_version: METHODOLOGY_PARSER_CONTRACT_V1,
+            index_contract_version: METHODOLOGY_INDEX_CONTRACT_V1,
+        };
+        let manifest = MethodologyCorpusManifestV1::validate(NewMethodologyCorpusManifestV1 {
+            claimed_corpus_id: DeterministicCorpusId::derive(&identity),
+            source_kind: identity.source_kind,
+            upstream_url: identity.upstream_url.map(str::to_owned),
+            upstream_revision: identity.upstream_revision.into(),
+            license_spdx: identity.license_spdx.into(),
+            license_text_sha256: identity.license_text_sha256.into(),
+            signature_state: MethodologySignatureStateV1::ContentAddressed,
+            trust_store_epoch: 1,
+            document_count: identity.document_count,
+            content_root_sha256: content_root.clone(),
+            parser_contract_version: identity.parser_contract_version.into(),
+            index_contract_version: identity.index_contract_version.into(),
+            ingested_at: Utc::now(),
+            superseded_at: None,
+        })
+        .unwrap();
+        let base = MethodologyTrustPolicyV1::new(1, ["AGPL-3.0-only".into()]).unwrap();
+        assert_eq!(
+            manifest.authorize_for_query(&base),
+            Err(MethodologyContractError::ContentRootNotAllowlisted(
+                content_root.clone()
+            ))
+        );
+        let exact = base
+            .clone()
+            .with_content_addressed_roots([content_root.clone()])
+            .unwrap();
+        assert_eq!(manifest.authorize_for_query(&exact), Ok(()));
+        let wrong = base
+            .with_content_addressed_roots([sha256_bytes(b"other")])
+            .unwrap();
+        assert!(manifest.authorize_for_query(&wrong).is_err());
     }
 }

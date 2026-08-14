@@ -220,31 +220,6 @@ fn checkpoint_submit_result_parser_preserves_migration_history_and_binds_all_run
 }
 
 #[test]
-fn verification_advisory_header_uses_the_durable_worker_output_manifest() {
-    let migration = include_str!(
-        "../migrations/20260809000005_investigation_advisory_durable_output_manifest.sql"
-    );
-    for exact_guard in [
-        "unified_investigation_verification_accepted_output_hashes",
-        "output.output_hash",
-        "output.work_item_id=dispatch.stage_work_item_id",
-        "output_worker.id=output.worker_run_id",
-        "receipt_count<>expected_dispatch_count",
-        "work_item_count<>expected_dispatch_count",
-        "INVESTIGATION_VERIFICATION_DURABLE_OUTPUT_MANIFEST_MISMATCH",
-        "INVESTIGATION_VERIFICATION_ADVISORY_TRIGGER_SOURCE_DRIFT",
-    ] {
-        assert!(migration.contains(exact_guard), "missing {exact_guard}");
-    }
-    let application = include_str!(
-        "../../golish-agent-app/src/ai/db_bridge/investigation_verification_advisory.rs"
-    );
-    assert!(application.contains("output.output_hash AS output_sha256"));
-    assert!(application.contains("output_worker.id=output.worker_run_id"));
-    assert!(application.matches("\"advisory_request_id\"").count() >= 2);
-}
-
-#[test]
 fn campaign_closeout_forward_fixes_are_row_shape_safe() {
     let claim_outcome = include_str!(
         "../migrations/20260809000006_verification_claim_component_outcome_authority_fix.sql"

@@ -10,12 +10,15 @@ use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashSet};
 
 use golish_agent_kit::db_traits::{
-    CommitEnumerationBrowserProducerV2, CommitEnumerationJsApiProducerV2,
+    BeginInvestigationAssetVerificationInvocation, CommitEnumerationBrowserProducerV2,
+    CommitEnumerationJsApiProducerV2, CompleteInvestigationAssetVerificationInvocation,
     EnumerationBrowserProducerArtifactV2, EnumerationJsApiProducerArtifactV2,
-    EnumerationLaneClosureReceiptV2, EnumerationLaneKindV2, ReadTargetIntelReviewSection,
-    RecordTargetIntelReviewVerdict, RecoverEnumerationLaneReceiptV2, ReduceEnumerationParameterV2,
-    RequestStageWorker, ReviewEnumerationCoverageV2, RuntimeMemoryRepository, RuntimeWorkerFence,
-    StageWorkerRequestDecision,
+    EnumerationLaneClosureReceiptV2, EnumerationLaneKindV2,
+    FreezeInvestigationDynamicToolInventory, InvestigationAssetVerificationInvocationState,
+    InvestigationAssetVerificationWorkerFence, LoadInvestigationAssetVerificationInvocationGuard,
+    ReadTargetIntelReviewSection, RecordTargetIntelReviewVerdict, RecoverEnumerationLaneReceiptV2,
+    ReduceEnumerationParameterV2, RequestStageWorker, ReviewEnumerationCoverageV2,
+    RuntimeMemoryRepository, RuntimeWorkerFence, StageWorkerRequestDecision,
 };
 use golish_agent_kit::harness::{CanonicalFactKey, IntelReviewSectionKind, IntelReviewVerdict};
 use golish_agent_kit::planner::{PlanManager, StepStatus, UpdatePlanArgs};
@@ -1436,6 +1439,754 @@ fn unified_investigation_cognitive_tool_allowed(tool_name: &str) -> bool {
     ) || tool_name.starts_with("sub_agent_")
 }
 
+fn unified_investigation_cognition_only(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    bound: Option<&golish_sub_agents::BoundWorkerChainContext>,
+) -> bool {
+    stage == Some(golish_agent_kit::harness::StageKind::Investigation)
+        && !bound
+            .and_then(|bound| bound.investigation_actor_contract.as_ref())
+            .is_some_and(|contract| {
+                matches!(
+                    contract,
+                    golish_sub_agents::InvestigationActorContract::AssetVerification(binding)
+                        if binding.validate().is_ok()
+                )
+            })
+}
+
+fn unified_investigation_actor_tool_allowed(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    bound: Option<&golish_sub_agents::BoundWorkerChainContext>,
+    tool_name: &str,
+) -> bool {
+    if stage != Some(golish_agent_kit::harness::StageKind::Investigation) {
+        return true;
+    }
+    let asset_verification = bound
+        .and_then(|bound| bound.investigation_actor_contract.as_ref())
+        .and_then(|contract| match contract {
+            golish_sub_agents::InvestigationActorContract::AssetVerification(binding)
+                if binding.validate().is_ok() =>
+            {
+                Some(binding)
+            }
+            _ => None,
+        });
+    if asset_verification.is_some() {
+        return golish_sub_agents::is_investigation_asset_verification_tool(tool_name)
+            || golish_sub_agents::is_investigation_asset_verification_cognition_tool(tool_name);
+    }
+    match bound.and_then(|bound| bound.investigation_actor_contract.as_ref()) {
+        None
+        | Some(golish_sub_agents::InvestigationActorContract::AnalysisPrimary)
+        | Some(golish_sub_agents::InvestigationActorContract::AnalysisWorker)
+        | Some(golish_sub_agents::InvestigationActorContract::AssetVerificationPrimary(_)) => {
+            unified_investigation_cognitive_tool_allowed(tool_name)
+        }
+        Some(golish_sub_agents::InvestigationActorContract::AssetVerification(_)) => false,
+    }
+}
+
+fn unified_investigation_asset_verification_external_tool(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    bound: Option<&golish_sub_agents::BoundWorkerChainContext>,
+    tool_name: &str,
+) -> bool {
+    stage == Some(golish_agent_kit::harness::StageKind::Investigation)
+        && golish_sub_agents::is_investigation_asset_verification_tool(tool_name)
+        && bound
+            .and_then(|bound| bound.investigation_actor_contract.as_ref())
+            .is_some_and(|contract| {
+                matches!(
+                    contract,
+                    golish_sub_agents::InvestigationActorContract::AssetVerification(binding)
+                        if binding.validate().is_ok()
+                )
+            })
+}
+
+fn asset_verification_args_contain_host_authority(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => object.iter().any(|(key, value)| {
+            matches!(
+                key.as_str(),
+                "api_key"
+                    | "asset_lane_id"
+                    | "authorization"
+                    | "authorization_id"
+                    | "budget"
+                    | "budget_envelope_id"
+                    | "checkpoint_version"
+                    | "cookie"
+                    | "cookies"
+                    | "credential"
+                    | "credentials"
+                    | "credential_binding_sha256"
+                    | "hypothesis_revision_id"
+                    | "inventory_snapshot_id"
+                    | "invocation_id"
+                    | "lease_token"
+                    | "organization_id"
+                    | "password"
+                    | "scope_snapshot_id"
+                    | "secret"
+                    | "session_id"
+                    | "stage_execution_id"
+                    | "stage_run_unit_id"
+                    | "token"
+                    | "worker_run_id"
+            ) || asset_verification_args_contain_host_authority(value)
+        }),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(asset_verification_args_contain_host_authority),
+        _ => false,
+    }
+}
+
+fn asset_verification_args_match_target(
+    value: &serde_json::Value,
+    exact_target_id: uuid::Uuid,
+) -> bool {
+    match value {
+        serde_json::Value::Object(object) => object.iter().all(|(key, value)| {
+            if key == "target_id" {
+                return value
+                    .as_str()
+                    .and_then(|value| value.parse::<uuid::Uuid>().ok())
+                    == Some(exact_target_id);
+            }
+            key != "target_ids" && asset_verification_args_match_target(value, exact_target_id)
+        }),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .all(|value| asset_verification_args_match_target(value, exact_target_id)),
+        _ => true,
+    }
+}
+
+fn asset_verification_tool_context_matches(
+    tool_name: &str,
+    bound: &golish_sub_agents::BoundWorkerChainContext,
+    context: &golish_core::AgentToolContext,
+) -> bool {
+    !context.request_id.trim().is_empty()
+        && context.tool_call_record_id.is_some()
+        && context.tool_name == tool_name
+        && context.operation_id == Some(bound.operation_id)
+        && context.stage_execution_id == Some(bound.stage_execution_id)
+        && context.stage_run_unit_id == Some(bound.worker_lease.stage_run_unit_id)
+        && context.organization_id == Some(bound.organization_id)
+        && context.worker_lease.as_ref() == Some(&bound.worker_lease)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssetVerificationInvocationIdentity {
+    invocation_id: uuid::Uuid,
+    begin_stable_request_id: uuid::Uuid,
+    selected_tool_name: Option<String>,
+    model_args_redacted: serde_json::Value,
+    model_args_sha256: String,
+}
+
+fn asset_verification_invocation_identity(
+    tool_call_record_id: uuid::Uuid,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<AssetVerificationInvocationIdentity, &'static str> {
+    if tool_call_record_id.is_nil()
+        || !golish_sub_agents::is_investigation_asset_verification_tool(tool_name)
+        || !args.is_object()
+    {
+        return Err("INVESTIGATION_ASSET_VERIFICATION_INVOCATION_IDENTITY_INVALID");
+    }
+    let selected_tool_name = match tool_name {
+        "pentest_run" | "pentest_read_skill" => Some(
+            args.get("tool_name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.trim().is_empty() && name.trim() == *name)
+                .ok_or("INVESTIGATION_ASSET_VERIFICATION_TOOL_NAME_REQUIRED")?
+                .to_string(),
+        ),
+        "pentest_list_tools" | "browser_collect_js_api" => None,
+        _ => return Err("INVESTIGATION_ASSET_VERIFICATION_WRAPPER_FORBIDDEN"),
+    };
+    let invocation_id = uuid::Uuid::new_v5(
+        &tool_call_record_id,
+        b"investigation-asset-verification-invocation.v1",
+    );
+    Ok(AssetVerificationInvocationIdentity {
+        invocation_id,
+        begin_stable_request_id: uuid::Uuid::new_v5(
+            &invocation_id,
+            b"investigation-asset-verification-invocation-begin.v1",
+        ),
+        selected_tool_name,
+        model_args_redacted: redact_asset_verification_json(args),
+        model_args_sha256: sha256_json(args),
+    })
+}
+
+fn redact_asset_verification_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => serde_json::Value::Object(
+            object
+                .iter()
+                .map(|(key, value)| {
+                    let redacted = matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "api_key"
+                            | "authorization"
+                            | "cookie"
+                            | "cookies"
+                            | "credential"
+                            | "password"
+                            | "secret"
+                            | "token"
+                    )
+                    .then(|| serde_json::Value::String("[REDACTED]".to_string()))
+                    .unwrap_or_else(|| redact_asset_verification_json(value));
+                    (key.clone(), redacted)
+                })
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(redact_asset_verification_json).collect())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn asset_verification_router_error(code: &'static str, error: impl Into<String>) -> (Value, bool) {
+    (json!({"code":code,"error":error.into()}), false)
+}
+
+fn asset_verification_worker_fence(
+    bound: &golish_sub_agents::BoundWorkerChainContext,
+) -> InvestigationAssetVerificationWorkerFence {
+    InvestigationAssetVerificationWorkerFence {
+        worker_run_id: bound.worker_lease.worker_run_id,
+        lease_token: bound.worker_lease.lease_token,
+        attempt_epoch: bound.worker_lease.attempt_epoch,
+        checkpoint_version: bound
+            .checkpoint_version
+            .load(std::sync::atomic::Ordering::SeqCst),
+    }
+}
+
+fn asset_verification_host_worker_fence(
+    fence: &InvestigationAssetVerificationWorkerFence,
+) -> golish_app_core::ports::pentest::InvestigationVerificationWorkerFence {
+    golish_app_core::ports::pentest::InvestigationVerificationWorkerFence {
+        worker_run_id: fence.worker_run_id,
+        lease_token: fence.lease_token,
+        attempt_epoch: fence.attempt_epoch,
+        checkpoint_version: fence.checkpoint_version,
+    }
+}
+
+async fn execute_asset_verification_host_tool(
+    tool_name: &str,
+    invocation_id: uuid::Uuid,
+    worker_fence: &InvestigationAssetVerificationWorkerFence,
+    model_args_sha256: &str,
+    args: &serde_json::Value,
+    workspace: &std::path::Path,
+    host: &dyn golish_app_core::ports::pentest::InvestigationAssetVerificationToolHost,
+    ready_inventory: Option<&golish_agent_kit::db_traits::InvestigationReadyToolInventory>,
+) -> anyhow::Result<serde_json::Value> {
+    let fence = asset_verification_host_worker_fence(worker_fence);
+    match tool_name {
+        "pentest_list_tools" => ready_inventory
+            .map(|inventory| inventory.model_projection.clone())
+            .ok_or_else(|| anyhow::anyhow!("typed Tool Manager inventory is unavailable")),
+        "pentest_read_skill" => {
+            host.read_skill(
+                invocation_id,
+                fence,
+                model_args_sha256.to_string(),
+                args.clone(),
+                workspace,
+            )
+            .await
+        }
+        "pentest_run" => {
+            host.execute_pentest_run(
+                invocation_id,
+                fence,
+                model_args_sha256.to_string(),
+                args.clone(),
+                workspace,
+            )
+            .await
+        }
+        "browser_collect_js_api" => {
+            host.execute_browser(
+                invocation_id,
+                fence,
+                model_args_sha256.to_string(),
+                args.clone(),
+                workspace,
+            )
+            .await
+        }
+        _ => anyhow::bail!("INVESTIGATION_ASSET_VERIFICATION_WRAPPER_FORBIDDEN"),
+    }
+}
+
+fn asset_verification_host_result_success(result: &serde_json::Value) -> bool {
+    result.get("error").is_none_or(serde_json::Value::is_null)
+        && result
+            .get("success")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true)
+        && result
+            .get("exit_code")
+            .and_then(serde_json::Value::as_i64)
+            .is_none_or(|code| code == 0)
+}
+
+/// Intercept every asset Verification wrapper before the generic registry and
+/// settle it through the durable session/invocation authority. A failure never
+/// falls through to an ordinary registry executor.
+#[allow(clippy::too_many_arguments)]
+async fn route_asset_verification_dynamic_tool(
+    tool_name: &str,
+    args: &serde_json::Value,
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    gate_repository: Option<&std::sync::Arc<dyn golish_agent_kit::db_traits::DbRepoProvider>>,
+    tool_host: Option<
+        &std::sync::Arc<
+            dyn golish_app_core::ports::pentest::InvestigationAssetVerificationToolHost,
+        >,
+    >,
+    workspace: Option<&str>,
+    runtime_session_id: Option<&str>,
+    bound: Option<&golish_sub_agents::BoundWorkerChainContext>,
+    context: Option<&golish_core::AgentToolContext>,
+) -> Option<(serde_json::Value, bool)> {
+    if stage != Some(golish_agent_kit::harness::StageKind::Investigation)
+        || !golish_sub_agents::is_investigation_asset_verification_tool(tool_name)
+    {
+        return None;
+    }
+    let Some(bound) = bound else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_ACTOR_REQUIRED",
+            "dynamic Verification tools require one host-bound asset Verification actor",
+        ));
+    };
+    let Some(binding) = bound
+        .investigation_actor_contract
+        .as_ref()
+        .and_then(|contract| match contract {
+            golish_sub_agents::InvestigationActorContract::AssetVerification(binding)
+                if binding.validate().is_ok() =>
+            {
+                Some(binding)
+            }
+            _ => None,
+        })
+    else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_ACTOR_REQUIRED",
+            "dynamic Verification tools require a valid exact asset actor contract",
+        ));
+    };
+    let Some(context) = context
+        .filter(|context| asset_verification_tool_context_matches(tool_name, bound, context))
+    else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_FENCE_MISMATCH",
+            "dynamic Verification tool call is not bound to the exact live actor WorkerRun fence",
+        ));
+    };
+    let Some(tool_call_record_id) = context.tool_call_record_id else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_TOOL_CALL_REQUIRED",
+            "dynamic Verification invocation requires a durable ToolCall id",
+        ));
+    };
+    let identity =
+        match asset_verification_invocation_identity(tool_call_record_id, tool_name, args) {
+            Ok(identity) => identity,
+            Err(code) => {
+                return Some(asset_verification_router_error(
+                    code,
+                    "invalid dynamic Verification invocation identity",
+                ))
+            }
+        };
+    let Some(gate_repository) = gate_repository else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_REPOSITORY_REQUIRED",
+            "dynamic Verification invocation repository is unavailable",
+        ));
+    };
+    let verification_repository =
+        match gate_repository.investigation_asset_verification_repository() {
+            Ok(repository) => repository,
+            Err(error) => {
+                return Some(asset_verification_router_error(
+                    error.code(),
+                    error.to_string(),
+                ))
+            }
+        };
+    let session = match verification_repository
+        .load_dynamic_round(binding.session_id)
+        .await
+    {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return Some(asset_verification_router_error(
+                "INVESTIGATION_ASSET_VERIFICATION_SESSION_NOT_FOUND",
+                "asset Verification session is not durable",
+            ))
+        }
+        Err(error) => {
+            return Some(asset_verification_router_error(
+                error.code(),
+                error.to_string(),
+            ))
+        }
+    };
+    let actor = session.actor_calls.iter().find(|actor| {
+        actor.actor_call_id == binding.actor_call_id
+            && actor.actor_ordinal == binding.actor_ordinal
+            && actor.subtask_id == binding.subtask_id
+            && actor.specialist_role == binding.specialist_role
+    });
+    if session.session_id != binding.session_id
+        || session.operation_id != bound.operation_id
+        || session.stage_execution_id != bound.stage_execution_id
+        || session.stage_run_unit_id != bound.worker_lease.stage_run_unit_id
+        || session.organization_id != bound.organization_id
+        || session.asset_lane_id != binding.asset_lane_id
+        || session.target_live_id != binding.target_id
+        || session.hypothesis_revision_id != binding.hypothesis_revision_id
+        || binding.worker_run_id != bound.worker_lease.worker_run_id
+        || binding.message_chain_id != bound.chain_id
+        || actor.is_none_or(|actor| {
+            actor.work_item_id != binding.work_item_id
+                || actor.worker_run_id != binding.worker_run_id
+                || actor.message_chain_id != binding.message_chain_id
+        })
+    {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_SESSION_ACTOR_MISMATCH",
+            "actor contract does not match the exact durable session actor and subject",
+        ));
+    }
+    let worker_fence = asset_verification_worker_fence(bound);
+    let Some(tool_host) = tool_host else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_TOOL_HOST_REQUIRED",
+            "dynamic Verification Tool Manager host is unavailable",
+        ));
+    };
+    let Some(workspace) = workspace.map(std::path::Path::new) else {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_WORKSPACE_REQUIRED",
+            "dynamic Verification host requires the exact workspace path",
+        ));
+    };
+    let ready_inventory = if tool_name == "pentest_list_tools" {
+        let ready = match tool_host.list_ready_inventory(workspace).await {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                return Some(asset_verification_router_error(
+                    "INVESTIGATION_ASSET_VERIFICATION_INVENTORY_UNAVAILABLE",
+                    error.to_string(),
+                ))
+            }
+        };
+        let frozen = match verification_repository
+            .freeze_dynamic_inventory(FreezeInvestigationDynamicToolInventory {
+                stable_request_id: uuid::Uuid::new_v5(
+                    &binding.session_id,
+                    format!(
+                        "investigation-asset-verification-inventory-freeze.v1:{}",
+                        ready.inventory_source_sha256
+                    )
+                    .as_bytes(),
+                ),
+                session_id: binding.session_id,
+                inventory_source_sha256: ready.inventory_source_sha256.clone(),
+                members: ready.members.clone(),
+            })
+            .await
+        {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                return Some(asset_verification_router_error(
+                    error.code(),
+                    error.to_string(),
+                ))
+            }
+        };
+        if frozen.session_id != binding.session_id
+            || frozen.inventory_source_sha256 != ready.inventory_source_sha256
+        {
+            return Some(asset_verification_router_error(
+                "INVESTIGATION_ASSET_VERIFICATION_INVENTORY_MISMATCH",
+                "frozen Tool Manager inventory drifted from the exact actor session",
+            ));
+        }
+        Some(ready)
+    } else {
+        None
+    };
+    let begun = match verification_repository
+        .begin_invocation(BeginInvestigationAssetVerificationInvocation {
+            stable_request_id: identity.begin_stable_request_id,
+            invocation_id: identity.invocation_id,
+            session_id: binding.session_id,
+            actor_call_id: binding.actor_call_id,
+            worker_fence: worker_fence.clone(),
+            wrapper_name: tool_name.to_string(),
+            selected_tool_name: identity.selected_tool_name.clone(),
+            credential_binding_sha256: None,
+            model_args_redacted: identity.model_args_redacted.clone(),
+            model_args_sha256: identity.model_args_sha256.clone(),
+        })
+        .await
+    {
+        Ok(begun) => begun,
+        Err(error) => {
+            return Some(asset_verification_router_error(
+                error.code(),
+                error.to_string(),
+            ))
+        }
+    };
+    if begun.replayed {
+        return Some(match begun.state {
+            InvestigationAssetVerificationInvocationState::Running => {
+                asset_verification_router_error(
+                    "INVESTIGATION_ASSET_VERIFICATION_INVOCATION_IN_FLIGHT",
+                    "the exact invocation is already running; external I/O will not be replayed",
+                )
+            }
+            InvestigationAssetVerificationInvocationState::Succeeded => (
+                json!({
+                    "audit_evidence_ids":begun.audit_evidence_ids,
+                    "invocation_id":begun.invocation_id,
+                    "replayed":true,
+                    "result":begun.redacted_result,
+                }),
+                true,
+            ),
+            InvestigationAssetVerificationInvocationState::Failed
+            | InvestigationAssetVerificationInvocationState::OutcomeUnknown => (
+                json!({
+                    "audit_evidence_ids":begun.audit_evidence_ids,
+                    "code":"INVESTIGATION_ASSET_VERIFICATION_INVOCATION_TERMINAL_FAILURE",
+                    "invocation_id":begun.invocation_id,
+                    "replayed":true,
+                    "result":begun.redacted_result,
+                    "state":begun.state,
+                }),
+                false,
+            ),
+        });
+    }
+    let guard = match verification_repository
+        .load_invocation_guard(LoadInvestigationAssetVerificationInvocationGuard {
+            invocation_id: begun.invocation_id,
+            worker_fence: worker_fence.clone(),
+            wrapper_name: tool_name.to_string(),
+            selected_tool_name: begun.selected_tool_name.clone(),
+            selected_tool_config_sha256: begun.selected_tool_config_sha256.clone(),
+            model_args_sha256: identity.model_args_sha256.clone(),
+        })
+        .await
+    {
+        Ok(guard) => guard,
+        Err(error) => {
+            return Some(asset_verification_router_error(
+                error.code(),
+                error.to_string(),
+            ))
+        }
+    };
+    if guard.session_id != binding.session_id
+        || guard.operation_id != bound.operation_id
+        || guard.stage_execution_id != bound.stage_execution_id
+        || guard.stage_run_unit_id != bound.worker_lease.stage_run_unit_id
+        || guard.organization_id != bound.organization_id
+        || guard.asset_lane_id != binding.asset_lane_id
+        || guard.target_live_id != binding.target_id
+        || guard.actor_call_id != Some(binding.actor_call_id)
+        || guard.actor_ordinal != Some(binding.actor_ordinal)
+        || guard.actor_subtask_id != Some(binding.subtask_id)
+        || guard.actor_role != binding.specialist_role
+        || guard.actor_worker_run_id != bound.worker_lease.worker_run_id
+        || guard.actor_message_chain_id != bound.chain_id
+    {
+        return Some(asset_verification_router_error(
+            "INVESTIGATION_ASSET_VERIFICATION_GUARD_MISMATCH",
+            "loaded invocation guard drifted from the bound actor contract",
+        ));
+    }
+    let host_result = execute_asset_verification_host_tool(
+        tool_name,
+        begun.invocation_id,
+        &worker_fence,
+        &identity.model_args_sha256,
+        args,
+        workspace,
+        tool_host.as_ref(),
+        ready_inventory.as_ref(),
+    )
+    .await;
+    let (disposition, success, redacted_result) = match host_result {
+        Ok(result) if asset_verification_host_result_success(&result) => (
+            InvestigationAssetVerificationInvocationState::Succeeded,
+            true,
+            redact_asset_verification_json(&result),
+        ),
+        Ok(result) => (
+            InvestigationAssetVerificationInvocationState::Failed,
+            false,
+            redact_asset_verification_json(&result),
+        ),
+        Err(error) => (
+            InvestigationAssetVerificationInvocationState::Failed,
+            false,
+            json!({"error":truncate_str(&error.to_string(), 4096)}),
+        ),
+    };
+    let raw_output = serde_json::to_string(&redacted_result)
+        .unwrap_or_else(|_| "{\"error\":\"redacted result serialization failed\"}".to_string());
+    let evidence_id = match gate_repository
+        .evidence_append_for_organization(
+            bound.operation_id,
+            bound.organization_id,
+            Some(bound.stage_execution_id),
+            runtime_session_id,
+            workspace.to_str(),
+            tool_name,
+            "investigation_asset_verification_invocation",
+            &format!("target:{}", binding.target_id),
+            &raw_output,
+            None,
+        )
+        .await
+    {
+        Ok(evidence_id) if evidence_id > 0 => evidence_id,
+        Ok(_) => {
+            return Some(asset_verification_router_error(
+                "INVESTIGATION_ASSET_VERIFICATION_EVIDENCE_REQUIRED",
+                "verification host result did not land a durable audit evidence id",
+            ))
+        }
+        Err(error) => {
+            return Some(asset_verification_router_error(
+                "INVESTIGATION_ASSET_VERIFICATION_EVIDENCE_FAILED",
+                error.to_string(),
+            ))
+        }
+    };
+    let capability_execution_receipt_id = redacted_result
+        .get("capability_execution_receipt_id")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse::<uuid::Uuid>().ok());
+    let oracle_receipt_id = ["oracle_receipt_id", "oracle_assessment_id"]
+        .into_iter()
+        .find_map(|key| {
+            redacted_result
+                .get(key)
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| value.parse::<uuid::Uuid>().ok())
+        });
+    let audit_evidence_ids = vec![evidence_id];
+    let evidence_set_sha256 = sha256_json(&json!({
+        "audit_evidence_ids":audit_evidence_ids,
+        "capability_execution_receipt_id":capability_execution_receipt_id,
+        "oracle_receipt_id":oracle_receipt_id,
+    }));
+    let result_sha256 = sha256_json(&redacted_result);
+    let completed = match verification_repository
+        .complete_invocation(CompleteInvestigationAssetVerificationInvocation {
+            // Completion advances the invocation created by `begin_invocation`.
+            // The persisted row has one idempotency key, so replay must use the
+            // exact server-returned key instead of inventing a second request id
+            // that can never satisfy the row CAS.
+            stable_request_id: begun.stable_request_id,
+            invocation_id: begun.invocation_id,
+            expected_row_version: begun.row_version,
+            worker_fence,
+            disposition,
+            capability_execution_receipt_id,
+            oracle_receipt_id,
+            audit_evidence_ids: audit_evidence_ids.clone(),
+            evidence_set_sha256,
+            redacted_result: redacted_result.clone(),
+            result_sha256,
+        })
+        .await
+    {
+        Ok(completed) => completed,
+        Err(error) => {
+            return Some(asset_verification_router_error(
+                error.code(),
+                error.to_string(),
+            ))
+        }
+    };
+    Some((
+        json!({
+            "audit_evidence_ids":completed.audit_evidence_ids,
+            "capability_execution_receipt_id":completed.capability_execution_receipt_id,
+            "invocation_id":completed.invocation_id,
+            "oracle_receipt_id":completed.oracle_receipt_id,
+            "replayed":completed.replayed,
+            "result":completed.redacted_result,
+            "state":completed.state,
+        }),
+        success,
+    ))
+}
+
+fn unified_investigation_actor_tool_call_allowed(
+    stage: Option<golish_agent_kit::harness::StageKind>,
+    bound: Option<&golish_sub_agents::BoundWorkerChainContext>,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> bool {
+    if !unified_investigation_actor_tool_allowed(stage, bound, tool_name) {
+        return false;
+    }
+    let Some(binding) = bound
+        .and_then(|bound| bound.investigation_actor_contract.as_ref())
+        .and_then(|contract| match contract {
+            golish_sub_agents::InvestigationActorContract::AssetVerification(binding)
+                if binding.validate().is_ok() =>
+            {
+                Some(binding)
+            }
+            _ => None,
+        })
+    else {
+        return true;
+    };
+    if !args.is_object() {
+        return false;
+    }
+    if golish_sub_agents::is_investigation_asset_verification_tool(tool_name) {
+        return !asset_verification_args_contain_host_authority(args)
+            && asset_verification_args_match_target(args, binding.target_id);
+    }
+    tool_name != "query_target_data"
+        || args
+            .get("target_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|id| id.parse::<uuid::Uuid>().ok())
+            == Some(binding.target_id)
+}
+
 fn unified_investigation_reducer_request(
     stage: Option<golish_agent_kit::harness::StageKind>,
     tool_id: &str,
@@ -2217,7 +2968,10 @@ where
         agent_def.readonly = true;
         agent_def.delegatable_agents.clear();
         if let Some(bound) = bound_worker_chain.as_mut() {
-            bound.reset_provider_history = true;
+            // Final synthesis is another turn on the same persistent Primary
+            // chain. Keep its provider history; the narrowed tool surface is
+            // an output cadence fence, not a fresh pseudo-agent identity.
+            bound.reset_provider_history = false;
         }
     } else if target_intel_reviewer {
         agent_def.id = "target_intel_reviewer".to_string();
@@ -2336,6 +3090,7 @@ where
         let harness_operation_id = ctx.harness_operation_id;
         let runtime_memory = ctx.runtime_memory.clone();
         let stage_team_bound = bound_worker_chain.clone();
+        let asset_verification_tool_host = ctx.investigation_asset_verification_tools.clone();
         let router: golish_sub_agents::SubAgentToolRouter =
             std::sync::Arc::new(move |name: String, args: serde_json::Value| {
                 let graph = graph.clone();
@@ -2347,8 +3102,24 @@ where
                 let harness_operation_id = harness_operation_id;
                 let runtime_memory = runtime_memory.clone();
                 let stage_team_bound = stage_team_bound.clone();
+                let asset_verification_tool_host = asset_verification_tool_host.clone();
                 Box::pin(async move {
                     let tool_context = golish_core::current_agent_tool_context();
+                    if let Some(result) = route_asset_verification_dynamic_tool(
+                        &name,
+                        &args,
+                        harness_stage,
+                        receipt_repo.as_ref(),
+                        asset_verification_tool_host.as_ref(),
+                        project_path.as_deref(),
+                        session_id.as_deref(),
+                        stage_team_bound.as_ref(),
+                        tool_context.as_ref(),
+                    )
+                    .await
+                    {
+                        return Some(result);
+                    }
                     if let Some(result) = route_enumeration_producer_preflight(
                         &name,
                         &args,
@@ -2395,7 +3166,6 @@ where
                     {
                         return Some(result);
                     }
-
                     if let Some(result) =
                         golish_agent_kit::tool_executors::execute_security_analysis_tool(
                             &name,
@@ -2480,7 +3250,9 @@ where
     };
     let deny_vuln_finding = deny_vuln_finding_writes(ctx);
     let investigation_cognition_only =
-        ctx.harness_stage == Some(golish_agent_kit::harness::StageKind::Investigation);
+        unified_investigation_cognition_only(ctx.harness_stage, bound_worker_chain.as_ref());
+    let investigation_stage_kind = ctx.harness_stage;
+    let investigation_guard_bound = bound_worker_chain.clone();
     // Per-stage tool boundary for the delegated sub-agent: inside a harness
     // stage, enforce the category whitelist (deny-by-default) — a scan invocation
     // must resolve to a tool type in this stage's `allowed_tool_types`. Agent/meta
@@ -2507,11 +3279,15 @@ where
                             "TARGET_INTEL_GOAL_TOOL_FORBIDDEN: tool '{tn}' is outside this bound Intel Goal actor's closed contract"
                         ));
                     }
-                    if investigation_cognition_only
-                        && !unified_investigation_cognitive_tool_allowed(tn)
+                    if !unified_investigation_actor_tool_call_allowed(
+                        investigation_stage_kind,
+                        investigation_guard_bound.as_ref(),
+                        tn,
+                        args,
+                    )
                     {
                         return Err(format!(
-                            "Tool '{tn}' is not available to an Investigation cognitive actor. Submit typed strategy/action intent or delegate another cognition-only worker; external I/O is owned by the host-compiled Operator."
+                            "Tool '{tn}' is outside this Investigation actor's host-authored contract. Cognitive actors remain read-only; an execution worker may use only the exact tools frozen on its execution assignment."
                         ));
                     }
                     if deny_vuln_finding && tn == "record_finding" {
@@ -2521,6 +3297,11 @@ where
                         );
                     }
                     if golish_agent_kit::harness::is_scan_invocation(tn, args)
+                        && !unified_investigation_asset_verification_external_tool(
+                            investigation_stage_kind,
+                            investigation_guard_bound.as_ref(),
+                            tn,
+                        )
                         && !golish_agent_kit::harness::stage_allows(tn, args, &allowed)
                     {
                         // D2 · precise, self-correcting feedback: name the resolved
@@ -2553,10 +3334,16 @@ where
     let hide_scan_tools = ctx
         .harness_stage
         .and_then(|kind| golish_agent_kit::harness::load_embedded_stage_spec(kind).ok())
-        .is_some_and(|spec| spec.allowed_tool_types.is_empty());
+        .is_some_and(|spec| spec.allowed_tool_types.is_empty())
+        && (ctx.harness_stage != Some(golish_agent_kit::harness::StageKind::Investigation)
+            || investigation_cognition_only);
+    let investigation_hider_bound = bound_worker_chain.clone();
+    let investigation_stage =
+        ctx.harness_stage == Some(golish_agent_kit::harness::StageKind::Investigation);
     let hide_tool_in_stage: Option<golish_sub_agents::StageToolHider> = (hide_scan_tools
         || deny_vuln_finding
         || investigation_cognition_only
+        || investigation_stage
         || production_target_intel_goal)
         .then(|| {
             let hider: golish_sub_agents::StageToolHider =
@@ -2566,13 +3353,19 @@ where
                         hide_scan_tools,
                         deny_vuln_finding,
                         investigation_cognition_only,
-                    ) || (production_target_intel_goal
-                        && !production_target_intel_sub_agent_tool_allowed(
+                    ) || (investigation_stage
+                        && !unified_investigation_actor_tool_allowed(
+                            Some(golish_agent_kit::harness::StageKind::Investigation),
+                            investigation_hider_bound.as_ref(),
                             name,
-                            target_intel_company_controller,
-                            target_intel_final_submitter,
-                            target_intel_reviewer,
                         ))
+                        || (production_target_intel_goal
+                            && !production_target_intel_sub_agent_tool_allowed(
+                                name,
+                                target_intel_company_controller,
+                                target_intel_final_submitter,
+                                target_intel_reviewer,
+                            ))
                 });
             hider
         });
@@ -2977,15 +3770,19 @@ fn stage_run_org_id_from_request_id(request_id: &str) -> Option<uuid::Uuid> {
 #[cfg(test)]
 mod tests {
     use super::{
-        agent_run_from_state_blob, canonical_enumeration_dependency_receipt_ids,
+        agent_run_from_state_blob, asset_verification_host_result_success,
+        asset_verification_invocation_identity, canonical_enumeration_dependency_receipt_ids,
         dispatch_status_for_sub_agent_success, enumeration_producer_args_target_and_origin,
         enumeration_reducer_subject, enumeration_result_target_and_origin,
-        production_target_intel_sub_agent_tool_allowed, route_stage_team_leader_host_tool,
-        settle_enumeration_producer_result, stage_run_org_id_from_request_id,
-        state_blob_with_refined_eas_web_repair_checkpoint, sub_agent_checkpoint_agent_path,
-        sub_agent_execution_error_result, sub_agent_stage_tool_hidden,
-        sub_agent_tool_execution_result, sub_agent_tool_observer_needed,
-        submit_repair_mode_from_agent_run, unified_investigation_cognitive_tool_allowed,
+        production_target_intel_sub_agent_tool_allowed, route_asset_verification_dynamic_tool,
+        route_stage_team_leader_host_tool, settle_enumeration_producer_result,
+        stage_run_org_id_from_request_id, state_blob_with_refined_eas_web_repair_checkpoint,
+        sub_agent_checkpoint_agent_path, sub_agent_execution_error_result,
+        sub_agent_stage_tool_hidden, sub_agent_tool_execution_result,
+        sub_agent_tool_observer_needed, submit_repair_mode_from_agent_run,
+        unified_investigation_actor_tool_allowed, unified_investigation_actor_tool_call_allowed,
+        unified_investigation_asset_verification_external_tool,
+        unified_investigation_cognition_only, unified_investigation_cognitive_tool_allowed,
         unified_investigation_reducer_request, vuln_triage_hides_record_finding,
     };
     use golish_agent_kit::harness::StageKind;
@@ -3002,8 +3799,9 @@ mod tests {
         StageWorkerRequestDecision, StageWorkerRequestView,
     };
     use golish_sub_agents::{
-        BoundWorkerChainContext, StageTeamCompiledActionBinding, StageTeamLeaderBinding,
-        STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME, STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
+        BoundWorkerChainContext, InvestigationActorContract, StageTeamCompiledActionBinding,
+        StageTeamLeaderBinding, STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME,
+        STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
     };
     use std::sync::atomic::{AtomicBool, AtomicI64};
     use std::sync::{Arc, Mutex};
@@ -3124,6 +3922,7 @@ mod tests {
             target_intel_review: None,
             stage_team_output_schema: None,
             terminal_execution: None,
+            investigation_actor_contract: None,
             chain_id: uuid::Uuid::new_v4(),
             session_id: uuid::Uuid::new_v4(),
             agent_type: "recon".to_string(),
@@ -3856,6 +4655,292 @@ mod tests {
             assert!(!unified_investigation_cognitive_tool_allowed(forbidden));
             assert!(sub_agent_stage_tool_hidden(forbidden, false, false, true));
         }
+    }
+
+    #[test]
+    fn investigation_actor_contract_missing_or_role_only_is_cognition_only() {
+        let mut bound = stage_team_leader_bound();
+        bound.agent_type = "pentester".to_string();
+
+        assert!(unified_investigation_cognition_only(
+            Some(StageKind::Investigation),
+            Some(&bound),
+        ));
+        assert!(!unified_investigation_actor_tool_allowed(
+            Some(StageKind::Investigation),
+            Some(&bound),
+            "pentest_run",
+        ));
+    }
+
+    #[test]
+    fn investigation_actor_contract_keeps_analysis_read_only() {
+        for contract in [
+            InvestigationActorContract::AnalysisPrimary,
+            InvestigationActorContract::AnalysisWorker,
+        ] {
+            let mut bound = stage_team_leader_bound();
+            bound.investigation_actor_contract = Some(contract);
+
+            assert!(unified_investigation_cognition_only(
+                Some(StageKind::Investigation),
+                Some(&bound),
+            ));
+            assert!(unified_investigation_actor_tool_allowed(
+                Some(StageKind::Investigation),
+                Some(&bound),
+                "query_target_data",
+            ));
+            assert!(!unified_investigation_actor_tool_allowed(
+                Some(StageKind::Investigation),
+                Some(&bound),
+                "browser_navigate",
+            ));
+        }
+    }
+
+    #[test]
+    fn investigation_asset_verification_dynamic_roles_share_exact_tool_surface() {
+        for specialist_role in golish_sub_agents::INVESTIGATION_ANALYSIS_ROLE_IDS {
+            let target_id = uuid::Uuid::new_v4();
+            let mut verification = stage_team_leader_bound();
+            verification.stage_team_leader = None;
+            verification.investigation_actor_contract =
+                Some(InvestigationActorContract::AssetVerification(
+                    golish_sub_agents::InvestigationAssetVerificationActorBinding {
+                        session_id: uuid::Uuid::new_v4(),
+                        actor_call_id: uuid::Uuid::new_v4(),
+                        actor_ordinal: 1,
+                        subtask_id: uuid::Uuid::new_v4(),
+                        specialist_role: specialist_role.to_string(),
+                        asset_lane_id: uuid::Uuid::new_v4(),
+                        target_id,
+                        hypothesis_revision_id: uuid::Uuid::new_v4(),
+                        work_item_id: uuid::Uuid::new_v4(),
+                        worker_run_id: verification.worker_lease.worker_run_id,
+                        message_chain_id: verification.chain_id,
+                        primary_parent_request_id: uuid::Uuid::new_v4(),
+                    },
+                ));
+
+            assert!(!unified_investigation_cognition_only(
+                Some(StageKind::Investigation),
+                Some(&verification),
+            ));
+            assert!(unified_investigation_asset_verification_external_tool(
+                Some(StageKind::Investigation),
+                Some(&verification),
+                "pentest_run",
+            ));
+            for allowed in [
+                "pentest_list_tools",
+                "pentest_read_skill",
+                "pentest_run",
+                "browser_collect_js_api",
+                "query_target_data",
+                "search_memories",
+                "submit_result",
+            ] {
+                assert!(unified_investigation_actor_tool_allowed(
+                    Some(StageKind::Investigation),
+                    Some(&verification),
+                    allowed,
+                ));
+            }
+            for forbidden in [
+                "browser_navigate",
+                "run_pty_cmd",
+                "write_file",
+                "submit_stage_deliverable",
+                "sub_agent_coder",
+            ] {
+                assert!(!unified_investigation_actor_tool_allowed(
+                    Some(StageKind::Investigation),
+                    Some(&verification),
+                    forbidden,
+                ));
+            }
+            assert!(unified_investigation_actor_tool_call_allowed(
+                Some(StageKind::Investigation),
+                Some(&verification),
+                "pentest_run",
+                &serde_json::json!({"tool_name":"nuclei","args":{"target_id":target_id}}),
+            ));
+            assert!(!unified_investigation_actor_tool_call_allowed(
+                Some(StageKind::Investigation),
+                Some(&verification),
+                "pentest_run",
+                &serde_json::json!({"tool_name":"nuclei","args":{"target_id":uuid::Uuid::new_v4()}}),
+            ));
+            assert!(!unified_investigation_actor_tool_call_allowed(
+                Some(StageKind::Investigation),
+                Some(&verification),
+                "pentest_run",
+                &serde_json::json!({"session_id":uuid::Uuid::new_v4()}),
+            ));
+            assert!(!unified_investigation_actor_tool_call_allowed(
+                Some(StageKind::Investigation),
+                Some(&verification),
+                "pentest_run",
+                &serde_json::json!({"tool_name":"nuclei","token":"model-secret"}),
+            ));
+        }
+    }
+
+    #[test]
+    fn invalid_asset_verification_actor_fails_back_to_analysis_read_only() {
+        let mut bound = stage_team_leader_bound();
+        bound.investigation_actor_contract = Some(InvestigationActorContract::AssetVerification(
+            golish_sub_agents::InvestigationAssetVerificationActorBinding {
+                session_id: uuid::Uuid::nil(),
+                actor_call_id: uuid::Uuid::new_v4(),
+                actor_ordinal: 1,
+                subtask_id: uuid::Uuid::new_v4(),
+                specialist_role: "pentester".to_string(),
+                asset_lane_id: uuid::Uuid::new_v4(),
+                target_id: uuid::Uuid::new_v4(),
+                hypothesis_revision_id: uuid::Uuid::new_v4(),
+                work_item_id: uuid::Uuid::new_v4(),
+                worker_run_id: bound.worker_lease.worker_run_id,
+                message_chain_id: bound.chain_id,
+                primary_parent_request_id: uuid::Uuid::new_v4(),
+            },
+        ));
+        assert!(unified_investigation_cognition_only(
+            Some(StageKind::Investigation),
+            Some(&bound),
+        ));
+        assert!(!unified_investigation_actor_tool_allowed(
+            Some(StageKind::Investigation),
+            Some(&bound),
+            "pentest_run",
+        ));
+    }
+
+    #[tokio::test]
+    async fn asset_verification_wrappers_cannot_fall_through_without_repository_or_exact_fence() {
+        let mut bound = stage_team_leader_bound();
+        bound.investigation_actor_contract = Some(InvestigationActorContract::AssetVerification(
+            golish_sub_agents::InvestigationAssetVerificationActorBinding {
+                session_id: uuid::Uuid::new_v4(),
+                actor_call_id: uuid::Uuid::new_v4(),
+                actor_ordinal: 1,
+                subtask_id: uuid::Uuid::new_v4(),
+                specialist_role: "adviser".to_string(),
+                asset_lane_id: uuid::Uuid::new_v4(),
+                target_id: uuid::Uuid::new_v4(),
+                hypothesis_revision_id: uuid::Uuid::new_v4(),
+                work_item_id: uuid::Uuid::new_v4(),
+                worker_run_id: bound.worker_lease.worker_run_id,
+                message_chain_id: bound.chain_id,
+                primary_parent_request_id: uuid::Uuid::new_v4(),
+            },
+        ));
+        let context = leader_tool_context(&bound, "verification::tool::1", "pentest_run");
+        let result = route_asset_verification_dynamic_tool(
+            "pentest_run",
+            &serde_json::json!({"tool_name":"nuclei"}),
+            Some(StageKind::Investigation),
+            None,
+            None,
+            Some("/tmp/workspace"),
+            Some("runtime-session"),
+            Some(&bound),
+            Some(&context),
+        )
+        .await
+        .expect("asset verification wrapper must be intercepted");
+        assert!(!result.1);
+        assert_eq!(
+            result.0["code"],
+            "INVESTIGATION_ASSET_VERIFICATION_REPOSITORY_REQUIRED"
+        );
+
+        let mut foreign_context = context;
+        foreign_context.worker_lease = None;
+        let result = route_asset_verification_dynamic_tool(
+            "pentest_run",
+            &serde_json::json!({"tool_name":"nuclei"}),
+            Some(StageKind::Investigation),
+            None,
+            None,
+            Some("/tmp/workspace"),
+            Some("runtime-session"),
+            Some(&bound),
+            Some(&foreign_context),
+        )
+        .await
+        .expect("foreign fence must be rejected, not fall through");
+        assert_eq!(
+            result.0["code"],
+            "INVESTIGATION_ASSET_VERIFICATION_FENCE_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn asset_verification_invocation_identity_is_stable_redacted_and_drift_detectable() {
+        let tool_call_record_id = uuid::Uuid::new_v4();
+        let args = serde_json::json!({
+            "tool_name":"nuclei",
+            "args":{"target_url":"https://example.test","token":"never-persist"}
+        });
+        let first =
+            asset_verification_invocation_identity(tool_call_record_id, "pentest_run", &args)
+                .expect("valid identity");
+        let replay =
+            asset_verification_invocation_identity(tool_call_record_id, "pentest_run", &args)
+                .expect("valid replay identity");
+        assert_eq!(first, replay);
+        assert_eq!(first.selected_tool_name.as_deref(), Some("nuclei"));
+        assert_eq!(first.model_args_redacted["args"]["token"], "[REDACTED]");
+        assert!(!first.model_args_sha256.contains("never-persist"));
+
+        let drift = asset_verification_invocation_identity(
+            tool_call_record_id,
+            "pentest_run",
+            &serde_json::json!({"tool_name":"nuclei","args":{"target_url":"https://foreign.test"}}),
+        )
+        .expect("structurally valid drift");
+        assert_eq!(first.invocation_id, drift.invocation_id);
+        assert_eq!(first.begin_stable_request_id, drift.begin_stable_request_id);
+        assert_ne!(first.model_args_sha256, drift.model_args_sha256);
+        assert_ne!(
+            first.model_args_redacted, drift.model_args_redacted,
+            "same stable request with drifted args lets the repository reject replay"
+        );
+    }
+
+    #[test]
+    fn asset_verification_invocation_identity_requires_managed_tool_selector() {
+        let call_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            asset_verification_invocation_identity(
+                call_id,
+                "pentest_read_skill",
+                &serde_json::json!({}),
+            ),
+            Err("INVESTIGATION_ASSET_VERIFICATION_TOOL_NAME_REQUIRED")
+        );
+        assert_eq!(
+            asset_verification_invocation_identity(call_id, "run_pty_cmd", &serde_json::json!({}),),
+            Err("INVESTIGATION_ASSET_VERIFICATION_INVOCATION_IDENTITY_INVALID")
+        );
+    }
+
+    #[test]
+    fn asset_verification_host_result_never_treats_error_or_nonzero_exit_as_success() {
+        assert!(asset_verification_host_result_success(
+            &serde_json::json!({"tools":[]})
+        ));
+        assert!(!asset_verification_host_result_success(
+            &serde_json::json!({"error":"blocked"})
+        ));
+        assert!(!asset_verification_host_result_success(
+            &serde_json::json!({"success":false})
+        ));
+        assert!(!asset_verification_host_result_success(
+            &serde_json::json!({"exit_code":2})
+        ));
     }
 
     #[test]

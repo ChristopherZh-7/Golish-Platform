@@ -131,7 +131,10 @@ export const AIChatPanel = memo(function AIChatPanel({ renderUi = true }: AIChat
   // ── Composed hooks ───────────────────────────────────────────────────
   const { createTerminalTab } = useCreateTerminalTab();
   const { pentestTools, configuredProviders } = useAiChatInit(createTerminalTab);
-  const { messagesContainerRef, userScrolledUpRef } = useChatAutoScroll(messages);
+  const { messagesContainerRef, userScrolledUpRef } = useChatAutoScroll(messages, {
+    active: renderUi,
+    scrollKey: activeConvId ?? "no-conversation",
+  });
 
   const modes = useChatModes();
 
@@ -195,6 +198,7 @@ export const AIChatPanel = memo(function AIChatPanel({ renderUi = true }: AIChat
     planMessageIdRef,
     handleAskHumanSubmit,
     handleAskHumanSkip,
+    dismissAskHumanRequest,
   } = useAiChatEvents({
     activeConvId,
     streamingMsgRef,
@@ -292,6 +296,13 @@ export const AIChatPanel = memo(function AIChatPanel({ renderUi = true }: AIChat
       clearStoreAskHumanRequest(visibleAskHumanRequest);
     }
   }, [askHumanRequest, clearStoreAskHumanRequest, handleAskHumanSkip, visibleAskHumanRequest]);
+  const handleStopAndDismissAskHuman = useCallback(() => {
+    dismissAskHumanRequest();
+    if (visibleAskHumanRequest) {
+      clearStoreAskHumanRequest(visibleAskHumanRequest);
+    }
+    handleStop();
+  }, [clearStoreAskHumanRequest, dismissAskHumanRequest, handleStop, visibleAskHumanRequest]);
 
   const hasStagePlans = !!stagePlans && stagePlans.stageOrder.length > 0;
 
@@ -769,7 +780,7 @@ export const AIChatPanel = memo(function AIChatPanel({ renderUi = true }: AIChat
                 <button
                   type="button"
                   title="Stop"
-                  onClick={handleStop}
+                  onClick={handleStopAndDismissAskHuman}
                   className="h-6 w-6 flex items-center justify-center rounded bg-destructive/20 text-destructive hover:bg-destructive/30 transition-colors"
                 >
                   <Square className="w-3 h-3" />

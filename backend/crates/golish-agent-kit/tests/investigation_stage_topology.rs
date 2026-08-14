@@ -76,7 +76,7 @@ fn unified_investigation_tail_is_vuln_au_investigation_reporting_only() {
 }
 
 #[test]
-fn investigation_stage_spec_is_tool_free_non_finding_and_ai_owned_task_orchestrator() {
+fn investigation_stage_spec_uses_phase_bound_dynamic_tool_manager_and_ai_owned_task_orchestrator() {
     let spec = load_embedded_stage_spec(StageKind::Investigation).expect("Investigation spec");
     assert_eq!(spec.id, "investigation");
     assert_eq!(spec.kind, StageKind::Investigation);
@@ -97,7 +97,7 @@ fn investigation_stage_spec_is_tool_free_non_finding_and_ai_owned_task_orchestra
         scheduler.allowed_dynamic_request_kinds,
         vec!["analysis_task", "verification_task", "cognitive_support"]
     );
-    assert_eq!(scheduler.risk_lane, "cognitive_only");
+    assert_eq!(scheduler.risk_lane, "asset_phase_bound");
     assert!(spec.candidate_analysis_team.is_none());
 }
 

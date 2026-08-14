@@ -111,6 +111,22 @@ function optionLabel(index: number): string {
   return index < 26 ? String.fromCharCode(65 + index) : String(index + 1);
 }
 
+const SUBSIDIARY_SCOPE_OPTION_LABELS: Record<string, string> = {
+  root_only: "仅测试母公司，不纳入任何子公司",
+  include_51: "纳入持股 51% 及以上的子公司",
+  include_100: "纳入全资子公司",
+};
+
+/** Keep the backend protocol value as the button action while presenting the
+ * structured subsidiary-scope choices as readable Chinese labels. */
+function subsidiaryScopeOptionLabel(option: string): string {
+  const protocolValue = option
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  return SUBSIDIARY_SCOPE_OPTION_LABELS[protocolValue] ?? option;
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A real organization UUID — guards the unit_review DB fetch so a placeholder
  * (`"<id>"`) or a Python-ish `"None"` the model emits never gets queried. */
@@ -144,7 +160,7 @@ export function isSubsidiaryScopeDecision(request: AskHumanState): boolean {
   const namesSubsidiaries =
     prompt.includes("subsidiar") || prompt.includes("子公司") || prompt.includes("分支机构");
   const hasScopeOption = request.options.some((option) => {
-    const normalized = option.toLowerCase();
+    const normalized = option.toLowerCase().replace(/[_-]+/g, " ");
     return (
       normalized.includes("不纳入子公司") ||
       normalized.includes("纳入子公司") ||
@@ -478,7 +494,7 @@ export function AskHumanInline({
               <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border border-border/60 text-[10px] font-semibold text-muted-foreground group-hover:border-accent/50 group-hover:text-accent">
                 {optionLabel(i)}
               </span>
-              <span className="flex-1">{opt}</span>
+              <span className="flex-1">{subsidiaryScopeOptionLabel(opt)}</span>
             </button>
           ))}
 

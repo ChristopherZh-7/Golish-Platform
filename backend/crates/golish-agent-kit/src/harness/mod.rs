@@ -49,7 +49,6 @@ pub mod intel_goal_contract;
 pub mod intel_goal_finalizer;
 pub mod intel_goal_review;
 pub mod intent_classifier;
-pub mod investigation_tool_catalog;
 pub mod knowledge_context;
 pub mod nl_slice;
 pub mod operation_continuity;
@@ -118,16 +117,6 @@ pub use intel_goal_review::{
     IntelReviewSectionKind, IntelReviewVerdict,
 };
 pub use intent_classifier::{IntentClassifier, IntentClassifierConfig};
-pub use investigation_tool_catalog::{
-    admit_investigation_operator_tool, AdmittedInvestigationOperatorToolV1,
-    InvestigationOperatorToolCatalogV1, InvestigationOperatorToolProfileV1,
-    InvestigationToolAdmissionRejectionV1, InvestigationToolAdmissionRequestV1,
-    InvestigationToolAvailabilityV1, InvestigationToolCatalogError,
-    InvestigationToolContractStatusV1, InvestigationToolExecutionClassV1,
-    InvestigationToolTerminalTruthV1, InvestigationTypedAdapterRefV1,
-    INVESTIGATION_OPERATOR_TOOL_CATALOG_RESOURCE_V1, INVESTIGATION_OPERATOR_TOOL_CONTRACT_V1,
-    INVESTIGATION_TOOL_CONFIG_IDS,
-};
 pub use knowledge_context::{render_context_pack, ContextRenderError, RenderedContextData};
 pub use nl_slice::NlSlice;
 pub use operation_continuity::{
@@ -150,7 +139,6 @@ pub use profile::{
 };
 pub use reporting_gate::{validate_reporting_gate_truth, ReportingGateBlock, ReportingGateTruth};
 pub use resources::{
-    investigation_tool_catalog_json, load_embedded_investigation_tool_catalog,
     load_embedded_phase_map, load_embedded_profile, load_embedded_sprint_skeleton,
     load_embedded_stage_spec, profile_json, sprint_skeleton_json, stage_methodology_md,
     stage_spec_json, EMBEDDED_PROFILE_IDS,
@@ -169,8 +157,8 @@ pub use stage_capability::{
 pub use stage_harness::StageHarness;
 pub use stage_runtime_contract::{RuntimeScopeSource, RuntimeUnitIdentity, StageRuntimeContract};
 pub use stage_spec::{
-    load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom,
-    InvestigationOperatorToolCatalogRefV1, StageSpec, StageSpecLoadError, StageTeamSchedulerPolicy,
+    load_stage_spec_from_json, HumanApprovalPolicy, InheritsEvidenceFrom, StageSpec,
+    StageSpecLoadError, StageTeamSchedulerPolicy,
 };
 pub use stage_topology_contract::{
     FrozenStageTopologyContractMaterial, StageTopologyContract, StageTopologyContractError,

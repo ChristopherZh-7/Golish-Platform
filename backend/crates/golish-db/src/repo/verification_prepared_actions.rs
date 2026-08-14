@@ -604,10 +604,10 @@ pub async fn load_current_prepared_action_send_authority(
     let action = sqlx::query_as::<_, PreparedActionSendAuthorityRow>(
         r#"SELECT action.operation_id,action.project_scope_id,action.organization_id,
                   action.campaign_id,action.prepared_action_id,
-                  authorization.authorization_receipt_id,execution.action_execution_id,
+                  auth.authorization_receipt_id,execution.action_execution_id,
                   action.private_manifest,action.private_manifest_hash,
-                  authorization.expires_at AS authorization_expires_at,
-                  authorization.campaign_dispatch_generation,
+                  auth.expires_at AS authorization_expires_at,
+                  auth.campaign_dispatch_generation,
                   hold.campaign_dispatch_held,
                   hold.campaign_dispatch_generation AS current_campaign_dispatch_generation,
                   hold.operation_admission_held,hold.operation_admission_generation,
@@ -677,17 +677,17 @@ pub async fn load_current_prepared_action_send_authority(
               AND campaign.operation_id=action.operation_id
               AND campaign.organization_id=action.organization_id
               AND campaign.terminal_at IS NULL AND campaign.superseded_at IS NULL
-             JOIN verification_prepared_action_authorizations authorization
-               ON authorization.prepared_action_id=action.prepared_action_id
-              AND authorization.authorization_receipt_id=$4
-              AND authorization.decision='authorized'
+             JOIN verification_prepared_action_authorizations auth
+               ON auth.prepared_action_id=action.prepared_action_id
+              AND auth.authorization_receipt_id=$4
+              AND auth.decision='authorized'
              JOIN verification_action_executions execution
                ON execution.prepared_action_id=action.prepared_action_id
-              AND execution.authorization_receipt_id=authorization.authorization_receipt_id
+              AND execution.authorization_receipt_id=auth.authorization_receipt_id
               AND execution.action_execution_id=$5
               AND execution.state='started'
               AND execution.campaign_dispatch_generation=
-                  authorization.campaign_dispatch_generation
+                  auth.campaign_dispatch_generation
              LEFT JOIN verification_credential_authority_heads credential
                ON credential.operation_id=action.operation_id
               AND credential.handle_id=NULLIF(
@@ -697,7 +697,7 @@ pub async fn load_current_prepared_action_send_authority(
              CROSS JOIN verification_campaign_safety_holds hold
             WHERE action.operation_id=$1 AND action.campaign_id=$2
               AND action.prepared_action_id=$3 AND action.state='started'
-              AND authorization.expires_at IS NOT NULL AND hold.singleton=TRUE"#,
+              AND auth.expires_at IS NOT NULL AND hold.singleton=TRUE"#,
     )
     .bind(operation_id)
     .bind(campaign_id)
@@ -794,11 +794,11 @@ pub async fn consume_prepared_action_budget_before_io(
         r#"SELECT execution.prepared_action_id,execution.budget_reservation_id,
                   execution.campaign_dispatch_generation
              FROM verification_action_executions execution
-             JOIN verification_prepared_action_authorizations authorization
-               ON authorization.authorization_receipt_id=execution.authorization_receipt_id
-              AND authorization.prepared_action_id=execution.prepared_action_id
-              AND authorization.decision='authorized'
-              AND authorization.expires_at>statement_timestamp()
+             JOIN verification_prepared_action_authorizations auth
+               ON auth.authorization_receipt_id=execution.authorization_receipt_id
+              AND auth.prepared_action_id=execution.prepared_action_id
+              AND auth.decision='authorized'
+              AND auth.expires_at>statement_timestamp()
              JOIN verification_prepared_actions action
                ON action.prepared_action_id=execution.prepared_action_id
               AND action.state='started'
@@ -1913,25 +1913,25 @@ pub async fn begin_authorized_action_with_fresh_tool_truth(
                           conflict_set.conflict_set_id,
                           action.action_contract_kind AS execution_kind,
                           COALESCE(MAX(execution.execution_ordinal),0)::INT+1 AS execution_ordinal,
-                          authorization.campaign_dispatch_generation
+                          auth.campaign_dispatch_generation
                      FROM verification_prepared_actions action
-                     JOIN verification_prepared_action_authorizations authorization
-                       ON authorization.authorization_receipt_id=$4
-                      AND authorization.prepared_action_id=action.prepared_action_id
-                      AND authorization.decision='authorized'
-                      AND authorization.expires_at>statement_timestamp()
+                     JOIN verification_prepared_action_authorizations auth
+                       ON auth.authorization_receipt_id=$4
+                      AND auth.prepared_action_id=action.prepared_action_id
+                      AND auth.decision='authorized'
+                      AND auth.expires_at>statement_timestamp()
                      JOIN verification_action_conflict_sets conflict_set
                        ON conflict_set.prepared_action_id=action.prepared_action_id
                       AND conflict_set.sealed_at IS NOT NULL
                      LEFT JOIN verification_action_executions execution
                        ON execution.prepared_action_id=action.prepared_action_id
-                      AND execution.authorization_receipt_id=authorization.authorization_receipt_id
+                      AND execution.authorization_receipt_id=auth.authorization_receipt_id
                     WHERE action.prepared_action_id=$1 AND action.operation_id=$2
                       AND action.campaign_id=$3 AND action.state='authorized'
                       AND action.row_version=$5
                     GROUP BY action.project_scope_id,action.organization_id,
                              conflict_set.conflict_set_id,action.action_contract_kind,
-                             authorization.campaign_dispatch_generation"#,
+                             auth.campaign_dispatch_generation"#,
             )
             .bind(request.prepared_action_id)
             .bind(request.operation_id)
@@ -1994,11 +1994,11 @@ pub async fn begin_authorized_action(
                SELECT contract.budget_contract_id,contract.parent_contract_id,
                       contract.scope_kind,contract.contract_hash,0::INTEGER AS depth
                  FROM verification_budget_contracts contract
-                 JOIN verification_prepared_actions action
-                   ON action.prepared_action_id=$1
+                 JOIN verification_prepared_actions prepared
+                   ON prepared.prepared_action_id=$1
                   AND contract.scope_kind='action'
-                  AND contract.scope_id=action.prepared_action_id
-                  AND contract.contract_hash=action.upper_budget_set_hash
+                  AND contract.scope_id=prepared.prepared_action_id
+                  AND contract.contract_hash=prepared.upper_budget_set_hash
                 WHERE contract.sealed_at IS NOT NULL
                UNION ALL
                SELECT parent.budget_contract_id,parent.parent_contract_id,
@@ -2300,7 +2300,8 @@ pub async fn begin_authorized_action(
         sqlx::query(
             r#"UPDATE verification_conflict_key_heads head
                   SET state='active',owner_campaign_id=action.campaign_id,
-                      owner_prepared_action_id=$1,fencing_token=$2,row_version=row_version+1
+                      owner_prepared_action_id=$1,fencing_token=$2,
+                      row_version=head.row_version+1
                  FROM verification_prepared_actions action
                 WHERE head.operation_id=$3 AND head.organization_id=$4
                   AND head.key_kind=$5 AND head.key_identity_hash=$6
@@ -2504,7 +2505,7 @@ pub async fn begin_verification_action_capability_receipt(
                   action.organization_id,action.action_kind AS capability,
                   execution.execution_ordinal,action.target_live_id,
                   action.private_manifest #>> '{exact_target_url}' AS exact_target_url,
-                  parent.execution_authority_id,root.execution_authority_hash,
+                  parent.id AS execution_authority_id,root.execution_authority_hash,
                   root.project_path_at_freeze,root.scope_snapshot_id,
                   root.stage_execution_id,root.stage_kind,
                   root.id AS parent_denominator_id,
@@ -2826,10 +2827,734 @@ pub struct FinalizeVerificationActionCapabilityReceipt {
     pub observation: Value,
 }
 
-/// Metadata-only V1 finalization is explicit and non-vacuous: it preserves the
-/// host observation in the Tool Truth landing, but remains partial so an
-/// oracle can only produce an inconclusive result until a complete raw witness
-/// contract is installed.
+const DIRECTORY_FINGERPRINT_CAPABILITY_V1: &str = "verify.directory_fingerprint.v1";
+const DIRECTORY_FINGERPRINT_OBSERVATION_V1: &str = "directory-soft404-fingerprint-observation.v1";
+const DIRECTORY_FINGERPRINT_WITNESS_V1: &str = "complete_fingerprint_v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DirectoryFingerprintOracleVerdictV1 {
+    Proof,
+    Refutation,
+    Inconclusive,
+}
+
+impl DirectoryFingerprintOracleVerdictV1 {
+    const fn observation_value(self) -> &'static str {
+        match self {
+            Self::Proof => "verified",
+            Self::Refutation => "refuted",
+            Self::Inconclusive => "inconclusive",
+        }
+    }
+
+    const fn oracle_value(self) -> &'static str {
+        match self {
+            Self::Proof => "proof",
+            Self::Refutation => "refutation",
+            Self::Inconclusive => "inconclusive",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerificationActionWitnessV1 {
+    MetadataOnly,
+    DirectoryFingerprint(DirectoryFingerprintOracleVerdictV1),
+}
+
+type DirectoryHttpFingerprintV1<'a> = (u16, u64, &'a str, Option<&'a str>);
+type VerificationResidualSpecV1<'a> = (&'a str, &'a [u8], Value);
+type VerificationOracleLandingPlanV1<'a> = (
+    &'a str,
+    &'a str,
+    Option<VerificationResidualSpecV1<'a>>,
+    &'a [u8],
+);
+
+impl VerificationActionWitnessV1 {
+    const fn witness_completeness(self) -> &'static str {
+        match self {
+            Self::MetadataOnly => "metadata_only",
+            Self::DirectoryFingerprint(_) => DIRECTORY_FINGERPRINT_WITNESS_V1,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryFingerprintObservationV1 {
+    assessment: DirectoryFingerprintAssessmentV1,
+    candidate: DirectoryFingerprintHttpObservationV1,
+    capability_id: String,
+    contract_version: String,
+    controls: Vec<DirectoryFingerprintHttpObservationV1>,
+    request_count: u32,
+    witness_completeness: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryFingerprintAssessmentV1 {
+    controls_consistent: bool,
+    verdict: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryFingerprintHttpObservationV1 {
+    final_url: String,
+    hops: Vec<DirectoryFingerprintHttpHopV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DirectoryFingerprintHttpHopV1 {
+    url: String,
+    status: u16,
+    response_bytes: u64,
+    body_sha256: String,
+    content_type: Option<String>,
+}
+
+fn directory_http_origin_and_terminal_fingerprint(
+    observation: &DirectoryFingerprintHttpObservationV1,
+) -> Option<(String, DirectoryHttpFingerprintV1<'_>)> {
+    let first = observation.hops.first()?;
+    let terminal = observation.hops.last()?;
+    if observation.final_url != terminal.url
+        || observation.hops.iter().any(|hop| {
+            !hop.body_sha256.starts_with("sha256:")
+                || hop.body_sha256.len() != 71
+                || !hop.body_sha256[7..]
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+    {
+        return None;
+    }
+    let origin = reqwest::Url::parse(&first.url)
+        .ok()?
+        .origin()
+        .ascii_serialization();
+    if observation.hops.iter().any(|hop| {
+        reqwest::Url::parse(&hop.url)
+            .map(|url| url.origin().ascii_serialization() != origin)
+            .unwrap_or(true)
+    }) {
+        return None;
+    }
+    Some((
+        origin,
+        (
+            terminal.status,
+            terminal.response_bytes,
+            terminal.body_sha256.as_str(),
+            terminal.content_type.as_deref(),
+        ),
+    ))
+}
+
+fn classify_verification_action_witness(
+    prepared_action_id: Uuid,
+    terminal_state: &str,
+    observation: &Value,
+) -> Result<VerificationActionWitnessV1> {
+    let declared = observation
+        .get("witness_completeness")
+        .and_then(Value::as_str)
+        .ok_or_else(|| conflict(CONTRACT_INVALID))?;
+    if declared == "metadata_only" {
+        return Ok(VerificationActionWitnessV1::MetadataOnly);
+    }
+    if declared != DIRECTORY_FINGERPRINT_WITNESS_V1 || terminal_state != "succeeded" {
+        return Err(conflict(CONTRACT_INVALID));
+    }
+    let typed: DirectoryFingerprintObservationV1 =
+        serde_json::from_value(observation.clone()).map_err(|_| conflict(CONTRACT_INVALID))?;
+    if typed.capability_id != DIRECTORY_FINGERPRINT_CAPABILITY_V1
+        || typed.contract_version != DIRECTORY_FINGERPRINT_OBSERVATION_V1
+        || typed.witness_completeness != DIRECTORY_FINGERPRINT_WITNESS_V1
+        || typed.request_count != 4
+        || typed.controls.len() != 3
+    {
+        return Err(conflict(CONTRACT_INVALID));
+    }
+    let (candidate_origin, candidate_fingerprint) =
+        directory_http_origin_and_terminal_fingerprint(&typed.candidate)
+            .ok_or_else(|| conflict(CONTRACT_INVALID))?;
+    let candidate_first_url = reqwest::Url::parse(
+        &typed
+            .candidate
+            .hops
+            .first()
+            .ok_or_else(|| conflict(CONTRACT_INVALID))?
+            .url,
+    )
+    .map_err(|_| conflict(CONTRACT_INVALID))?;
+    let parent_path = candidate_first_url
+        .path()
+        .rsplit_once('/')
+        .map(|(parent, _)| parent)
+        .unwrap_or("");
+    let nonce = prepared_action_id.simple().to_string();
+    let mut control_fingerprints = Vec::with_capacity(typed.controls.len());
+    for (index, control) in typed.controls.iter().enumerate() {
+        let expected_path = format!("{parent_path}/.golish-soft404-{nonce}-{}", index + 1);
+        let first_url = reqwest::Url::parse(
+            &control
+                .hops
+                .first()
+                .ok_or_else(|| conflict(CONTRACT_INVALID))?
+                .url,
+        )
+        .map_err(|_| conflict(CONTRACT_INVALID))?;
+        let (origin, fingerprint) = directory_http_origin_and_terminal_fingerprint(control)
+            .ok_or_else(|| conflict(CONTRACT_INVALID))?;
+        if origin != candidate_origin
+            || first_url.origin().ascii_serialization() != candidate_origin
+            || first_url.path() != expected_path
+            || first_url.query().is_some()
+            || first_url.fragment().is_some()
+        {
+            return Err(conflict(CONTRACT_INVALID));
+        }
+        control_fingerprints.push(fingerprint);
+    }
+    let controls_consistent = control_fingerprints
+        .windows(2)
+        .all(|window| window[0] == window[1]);
+    let verdict = if !controls_consistent {
+        DirectoryFingerprintOracleVerdictV1::Inconclusive
+    } else if candidate_fingerprint == control_fingerprints[0] {
+        DirectoryFingerprintOracleVerdictV1::Refutation
+    } else {
+        DirectoryFingerprintOracleVerdictV1::Proof
+    };
+    if typed.assessment.controls_consistent != controls_consistent
+        || typed.assessment.verdict != verdict.observation_value()
+    {
+        return Err(conflict(CONTRACT_INVALID));
+    }
+    Ok(VerificationActionWitnessV1::DirectoryFingerprint(verdict))
+}
+
+#[derive(Debug)]
+struct DirectoryFingerprintToolTruthAuthorityV1 {
+    temporal_census_id: Uuid,
+    reconciliation_id: Uuid,
+    semantic_authority_version: i64,
+    semantic_reconciliation_hash: String,
+}
+
+/// Seals the non-raw directory fingerprint as a complete typed derivative.
+///
+/// The capability receipt deliberately remains `sampled`: Golish did not
+/// retain the response bodies and must not claim a complete raw witness.  The
+/// one-member derived denominator is nevertheless complete when the host has
+/// independently validated all four full-body hashes.  This compound records
+/// that narrower truth as an evidence-backed receipt input, temporal census
+/// and semantic reconciliation so downstream all-fresh consumers do not
+/// confuse "no raw bytes retained" with "the assigned verification input was
+/// not executed".
+async fn seal_directory_fingerprint_tool_truth_authority_v1(
+    tx: &mut Transaction<'_, Postgres>,
+    command: &FinalizeVerificationActionCapabilityReceipt,
+    observation_hash: &str,
+    finalization_hash: &str,
+    observation_state: &str,
+) -> Result<DirectoryFingerprintToolTruthAuthorityV1> {
+    #[derive(sqlx::FromRow)]
+    struct Authority {
+        execution_authority_id: Uuid,
+        denominator_id: Uuid,
+        temporal_validity_policy_id: Uuid,
+        semantic_authority_version: i64,
+        predecessor_reconciliation_id: Option<Uuid>,
+        observation_started_at: DateTime<Utc>,
+        operation_id: Uuid,
+        project_scope_id: Uuid,
+        project_path_at_freeze: String,
+        scope_snapshot_id: Uuid,
+        organization_id: Uuid,
+        stage_execution_id: Uuid,
+        stage_kind: String,
+        execution_authority_hash: String,
+        execution_owner_kind: String,
+        worker_run_id: Option<Uuid>,
+        worker_attempt_epoch: Option<i64>,
+        lease_token: Option<Uuid>,
+        source_tool_call_id: Option<Uuid>,
+        denominator_item_id: Uuid,
+        input_key: String,
+        technique: String,
+        target_id: Uuid,
+        exact_asset: String,
+    }
+
+    let authority = sqlx::query_as::<_, Authority>(
+        r#"SELECT receipt.execution_authority_id,
+                  receipt.denominator_id,receipt.temporal_validity_policy_id,
+                  receipt.current_semantic_authority_version AS semantic_authority_version,
+                  receipt.current_semantic_reconciliation_id AS predecessor_reconciliation_id,
+                  receipt.observation_started_at,
+                  execution_authority.operation_id,execution_authority.project_scope_id,
+                  execution_authority.project_path_at_freeze,
+                  execution_authority.scope_snapshot_id,execution_authority.organization_id,
+                  execution_authority.stage_execution_id,execution_authority.stage_kind,
+                  execution_authority.authority_hash AS execution_authority_hash,
+                  execution_authority.execution_owner_kind,
+                  execution_authority.worker_run_id,
+                  execution_authority.worker_attempt_epoch,
+                  execution_authority.lease_token,
+                  execution_authority.source_tool_call_id,
+                  item.id AS denominator_item_id,item.input_key,item.technique,
+                  item.target_id,item.exact_asset
+             FROM verification_action_capability_receipt_bindings binding
+             JOIN capability_execution_receipts receipt
+               ON receipt.id=binding.capability_execution_receipt_id
+              AND receipt.denominator_id=binding.derived_denominator_id
+              AND receipt.execution_authority_id=binding.execution_authority_id
+             JOIN tool_truth_execution_authorities execution_authority
+               ON execution_authority.id=receipt.execution_authority_id
+             JOIN coverage_denominator_items item
+               ON item.denominator_id=receipt.denominator_id
+              AND item.execution_authority_id=receipt.execution_authority_id
+              AND item.expected_capability=receipt.capability
+            WHERE binding.action_execution_id=$1 AND binding.prepared_action_id=$2
+              AND binding.capability_execution_receipt_id=$3
+              AND receipt.capability=$4
+              AND (SELECT count(*) FROM coverage_denominator_items exact_item
+                    WHERE exact_item.denominator_id=receipt.denominator_id
+                      AND exact_item.expected_capability=receipt.capability)=1
+            FOR SHARE OF binding,receipt,execution_authority,item"#,
+    )
+    .bind(command.action_execution_id)
+    .bind(command.prepared_action_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(DIRECTORY_FINGERPRINT_CAPABILITY_V1)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| conflict(AUTHORITY_STALE))?;
+
+    let snapshot_byte_count: i64 =
+        sqlx::query_scalar("SELECT octet_length(($1::JSONB)::TEXT)::BIGINT")
+            .bind(&command.observation)
+            .fetch_one(&mut **tx)
+            .await?;
+    let mut producer = serde_json::json!({
+        "organization_id": authority.organization_id,
+        "stage_execution_id": authority.stage_execution_id,
+        "receipt_id": command.capability_execution_receipt_id,
+        "fingerprint_observation_hash": observation_hash,
+        "finalization_hash": finalization_hash,
+    });
+    if authority.execution_owner_kind == "worker_tool" {
+        let producer = producer
+            .as_object_mut()
+            .ok_or_else(|| conflict(CONTRACT_INVALID))?;
+        producer.insert(
+            "worker_run_id".to_owned(),
+            serde_json::json!(authority.worker_run_id),
+        );
+        producer.insert(
+            "worker_attempt_epoch".to_owned(),
+            serde_json::json!(authority.worker_attempt_epoch),
+        );
+        producer.insert(
+            "lease_token".to_owned(),
+            serde_json::json!(authority.lease_token),
+        );
+        producer.insert(
+            "source_tool_call_id".to_owned(),
+            serde_json::json!(authority.source_tool_call_id),
+        );
+    }
+    let audit_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO audit_log(
+               action,category,details,project_path,source,status,detail,run_id,
+               audit_role,evidence_technique,evidence_outcome
+           ) VALUES('verification_directory_fingerprint_observed','tool_truth',
+                    'Complete non-raw directory fingerprint witness',$1,
+                    'tool_truth_receipt','completed',$2,$3,'evidence',$4,$5)
+           RETURNING id"#,
+    )
+    .bind(&authority.project_path_at_freeze)
+    .bind(serde_json::json!({"tool_truth_producer": producer}))
+    .bind(authority.operation_id)
+    .bind(&authority.technique)
+    .bind(observation_state)
+    .fetch_one(&mut **tx)
+    .await?;
+    let scope_version: i64 =
+        sqlx::query_scalar("SELECT scope_rules_version FROM organizations WHERE id=$1")
+            .bind(authority.organization_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let classification_id: i64 = sqlx::query_scalar(
+        r#"INSERT INTO evidence_classifications(
+               evidence_audit_id,classification,scope_version,reason,
+               classified_by_session,producing_stage_run_id
+           ) VALUES($1,'in_scope',$2,'sealed directory fingerprint witness',
+                    'verification_action_receipt',$3)
+           RETURNING id"#,
+    )
+    .bind(audit_id)
+    .bind(scope_version)
+    .bind(authority.stage_execution_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let production_binding_id = Uuid::new_v5(
+        &command.capability_execution_receipt_id,
+        b"verification-fingerprint-evidence-production.v1",
+    );
+    let placeholder_hash =
+        json_hash_on(tx, &serde_json::json!({"untrusted": "server_recomputes"})).await?;
+    sqlx::query(
+        r#"INSERT INTO tool_truth_evidence_production_bindings(
+               id,execution_authority_id,operation_id,project_scope_id,
+               project_path_at_freeze,scope_snapshot_id,organization_id,
+               stage_execution_id,stage_kind,execution_authority_hash,
+               evidence_audit_id,evidence_classification_id,production_binding_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"#,
+    )
+    .bind(production_binding_id)
+    .bind(authority.execution_authority_id)
+    .bind(authority.operation_id)
+    .bind(authority.project_scope_id)
+    .bind(&authority.project_path_at_freeze)
+    .bind(authority.scope_snapshot_id)
+    .bind(authority.organization_id)
+    .bind(authority.stage_execution_id)
+    .bind(&authority.stage_kind)
+    .bind(&authority.execution_authority_hash)
+    .bind(audit_id)
+    .bind(classification_id)
+    .bind(&placeholder_hash)
+    .execute(&mut **tx)
+    .await?;
+    let evidence_authority_id = Uuid::new_v5(
+        &command.capability_execution_receipt_id,
+        b"verification-fingerprint-evidence-authority.v1",
+    );
+    sqlx::query(
+        r#"INSERT INTO tool_truth_evidence_authorities(
+               id,production_binding_id,execution_authority_id,operation_id,
+               project_scope_id,project_path_at_freeze,scope_snapshot_id,
+               organization_id,stage_execution_id,stage_kind,execution_authority_hash,
+               evidence_audit_id,evidence_classification_id,audit_row_hash,
+               classification_row_hash,evidence_chain_hash,authority_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14,$14,$14)"#,
+    )
+    .bind(evidence_authority_id)
+    .bind(production_binding_id)
+    .bind(authority.execution_authority_id)
+    .bind(authority.operation_id)
+    .bind(authority.project_scope_id)
+    .bind(&authority.project_path_at_freeze)
+    .bind(authority.scope_snapshot_id)
+    .bind(authority.organization_id)
+    .bind(authority.stage_execution_id)
+    .bind(&authority.stage_kind)
+    .bind(&authority.execution_authority_hash)
+    .bind(audit_id)
+    .bind(classification_id)
+    .bind(&placeholder_hash)
+    .execute(&mut **tx)
+    .await?;
+
+    let input_id = Uuid::new_v5(
+        &command.capability_execution_receipt_id,
+        b"verification-fingerprint-input.v1",
+    );
+    sqlx::query(
+        r#"INSERT INTO capability_execution_receipt_inputs(
+               id,receipt_id,denominator_id,denominator_item_id,execution_authority_id,
+               input_key,attempt_state,landing_state,observation_state,coverage_extent,
+               coverage_gap_reason
+           ) VALUES($1,$2,$3,$4,$5,$6,'succeeded','committed',$7,'complete','none')"#,
+    )
+    .bind(input_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(authority.denominator_id)
+    .bind(authority.denominator_item_id)
+    .bind(authority.execution_authority_id)
+    .bind(&authority.input_key)
+    .bind(observation_state)
+    .execute(&mut **tx)
+    .await?;
+    let input_member_hash = json_hash_on(
+        tx,
+        &serde_json::json!({
+            "input_key": &authority.input_key,
+            "technique": &authority.technique,
+            "evidence_authority_id": evidence_authority_id,
+            "observation_hash": observation_hash,
+            "observation_state": observation_state,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO capability_execution_input_evidence_members(
+               id,input_id,receipt_id,denominator_item_id,execution_authority_id,
+               evidence_authority_id,ordinal,member_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,0,$7)"#,
+    )
+    .bind(Uuid::new_v5(&input_id, b"fingerprint-evidence:v1"))
+    .bind(input_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(authority.denominator_item_id)
+    .bind(authority.execution_authority_id)
+    .bind(evidence_authority_id)
+    .bind(input_member_hash)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE capability_execution_receipt_inputs SET sealed_at=statement_timestamp() WHERE id=$1",
+    )
+    .bind(input_id)
+    .execute(&mut **tx)
+    .await?;
+
+    let policy_member: (Uuid, String, i64, i64) = sqlx::query_as(
+        r#"SELECT id,member_hash,positive_ttl_ms,negative_ttl_ms
+             FROM evidence_temporal_validity_policy_members
+            WHERE policy_id=$1 AND fact_class='target_state' FOR SHARE"#,
+    )
+    .bind(authority.temporal_validity_policy_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let target_scope_identity_hash: String = sqlx::query_scalar(
+        r#"SELECT tool_truth_sha256(jsonb_build_object(
+               'operation_id',$1::uuid,'organization_id',$2::uuid,
+               'target_id',$3::uuid,'exact_asset',$4::text
+           )::TEXT)"#,
+    )
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(authority.target_id)
+    .bind(&authority.exact_asset)
+    .fetch_one(&mut **tx)
+    .await?;
+    let genesis_event_id = Uuid::new_v5(
+        &authority.operation_id,
+        format!("target-state-epoch:{target_scope_identity_hash}:0").as_bytes(),
+    );
+    sqlx::query(
+        r#"INSERT INTO tool_truth_target_state_epoch_events(
+               id,operation_id,project_scope_id,project_path_at_freeze,
+               scope_snapshot_id,organization_id,target_scope_identity_hash,
+               epoch,predecessor_event_id,reason_code,source_authority_hash,event_hash
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,0,NULL,'initial_observation',$8,$7)
+           ON CONFLICT(operation_id,organization_id,target_scope_identity_hash,epoch)
+           DO NOTHING"#,
+    )
+    .bind(genesis_event_id)
+    .bind(authority.operation_id)
+    .bind(authority.project_scope_id)
+    .bind(&authority.project_path_at_freeze)
+    .bind(authority.scope_snapshot_id)
+    .bind(authority.organization_id)
+    .bind(&target_scope_identity_hash)
+    .bind(&authority.execution_authority_hash)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO tool_truth_target_state_epoch_heads(
+               operation_id,organization_id,target_scope_identity_hash,
+               current_epoch,current_event_id
+           ) VALUES($1,$2,$3,0,$4)
+           ON CONFLICT(operation_id,organization_id,target_scope_identity_hash)
+           DO NOTHING"#,
+    )
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(&target_scope_identity_hash)
+    .bind(genesis_event_id)
+    .execute(&mut **tx)
+    .await?;
+    let (target_state_epoch, target_state_epoch_event_id): (i64, Uuid) = sqlx::query_as(
+        r#"SELECT current_epoch,current_event_id
+             FROM tool_truth_target_state_epoch_heads
+            WHERE operation_id=$1 AND organization_id=$2
+              AND target_scope_identity_hash=$3 FOR SHARE"#,
+    )
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(&target_scope_identity_hash)
+    .fetch_one(&mut **tx)
+    .await?;
+    let temporal_census_id = Uuid::new_v5(
+        &command.capability_execution_receipt_id,
+        b"verification-fingerprint-temporal-census.v1",
+    );
+    let selected_ttl_ms = if observation_state == "found" {
+        policy_member.2
+    } else {
+        policy_member.3
+    };
+    sqlx::query(
+        r#"INSERT INTO capability_execution_temporal_censuses(
+               id,receipt_id,execution_authority_id,receipt_authority_hash,
+               temporal_validity_policy_id,temporal_validity_policy_hash,
+               observation_window_started_at,observation_window_completed_at,
+               effective_valid_until,target_state_epoch_set_hash
+           ) SELECT $1,receipt.id,receipt.execution_authority_id,
+                    receipt.receipt_authority_hash,receipt.temporal_validity_policy_id,
+                    receipt.temporal_validity_policy_hash,$3,statement_timestamp(),
+                    statement_timestamp()+$4*INTERVAL '1 millisecond',$5
+               FROM capability_execution_receipts receipt WHERE receipt.id=$2"#,
+    )
+    .bind(temporal_census_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(authority.observation_started_at)
+    .bind(selected_ttl_ms)
+    .bind(
+        json_hash_on(
+            tx,
+            &serde_json::json!([{
+                "input_key": &authority.input_key,
+                "target_scope_identity_hash": &target_scope_identity_hash,
+                "target_state_epoch_event_id": target_state_epoch_event_id,
+                "target_state_epoch": target_state_epoch,
+            }]),
+        )
+        .await?,
+    )
+    .execute(&mut **tx)
+    .await?;
+    let polarity = if observation_state == "found" {
+        "positive"
+    } else {
+        "negative"
+    };
+    let temporal_member_hash = json_hash_on(
+        tx,
+        &serde_json::json!({
+            "receipt_id": command.capability_execution_receipt_id,
+            "input_key": &authority.input_key,
+            "observation_hash": observation_hash,
+            "polarity": polarity,
+            "target_state_epoch_event_id": target_state_epoch_event_id,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO capability_execution_temporal_census_members(
+               id,census_id,receipt_id,execution_authority_id,ordinal,input_key,
+               observation_identity_hash,temporal_validity_policy_id,
+               policy_member_id,policy_member_hash,target_state_operation_id,
+               target_state_organization_id,target_scope_identity_hash,
+               target_state_epoch_event_id,target_state_epoch,temporal_fact_class,
+               observation_polarity,mapping_rule_id,mapping_rule_version,
+               mapping_rule_digest,selected_ttl_ms,observed_at,
+               effective_valid_until,member_hash
+           ) VALUES($1,$2,$3,$4,0,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                    'target_state',$15,'verification_fingerprint.policy_v1','1',$16,$17,
+                    statement_timestamp(),
+                    statement_timestamp()+$17*INTERVAL '1 millisecond',$18)"#,
+    )
+    .bind(Uuid::new_v5(
+        &temporal_census_id,
+        authority.input_key.as_bytes(),
+    ))
+    .bind(temporal_census_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(authority.execution_authority_id)
+    .bind(&authority.input_key)
+    .bind(observation_hash)
+    .bind(authority.temporal_validity_policy_id)
+    .bind(policy_member.0)
+    .bind(&policy_member.1)
+    .bind(authority.operation_id)
+    .bind(authority.organization_id)
+    .bind(&target_scope_identity_hash)
+    .bind(target_state_epoch_event_id)
+    .bind(target_state_epoch)
+    .bind(polarity)
+    .bind(
+        json_hash_on(
+            tx,
+            &serde_json::json!({"rule": "verification_fingerprint.policy_v1", "version": 1}),
+        )
+        .await?,
+    )
+    .bind(selected_ttl_ms)
+    .bind(temporal_member_hash)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE capability_execution_temporal_censuses SET sealed_at=statement_timestamp() WHERE id=$1",
+    )
+    .bind(temporal_census_id)
+    .execute(&mut **tx)
+    .await?;
+
+    let semantic_authority_version = authority.semantic_authority_version + 1;
+    let reconciliation_id = Uuid::new_v5(
+        &command.capability_execution_receipt_id,
+        format!("verification-fingerprint-reconciliation:{semantic_authority_version}").as_bytes(),
+    );
+    sqlx::query(
+        r#"INSERT INTO capability_execution_reconciliations(
+               id,receipt_id,execution_authority_id,semantic_authority_version,
+               predecessor_reconciliation_id,reconciliation_state
+           ) VALUES($1,$2,$3,$4,$5,'pending')"#,
+    )
+    .bind(reconciliation_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(authority.execution_authority_id)
+    .bind(semantic_authority_version)
+    .bind(authority.predecessor_reconciliation_id)
+    .execute(&mut **tx)
+    .await?;
+    let reconciliation_member_hash = json_hash_on(
+        tx,
+        &serde_json::json!({
+            "source_kind": "evidence",
+            "evidence_authority_id": evidence_authority_id,
+            "receipt_id": command.capability_execution_receipt_id,
+            "observation_hash": observation_hash,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO capability_execution_reconciliation_members(
+               id,reconciliation_id,receipt_id,execution_authority_id,ordinal,
+               source_kind,evidence_authority_id,member_hash
+           ) VALUES($1,$2,$3,$4,0,'evidence',$5,$6)"#,
+    )
+    .bind(Uuid::new_v5(&reconciliation_id, b"fingerprint-evidence:v1"))
+    .bind(reconciliation_id)
+    .bind(command.capability_execution_receipt_id)
+    .bind(authority.execution_authority_id)
+    .bind(evidence_authority_id)
+    .bind(reconciliation_member_hash)
+    .execute(&mut **tx)
+    .await?;
+    let semantic_reconciliation_hash: String = sqlx::query_scalar(
+        r#"UPDATE capability_execution_reconciliations
+              SET reconciliation_state='consistent',observed_artifact_sha256=$2,
+                  observed_artifact_byte_count=$3,sealed_at=statement_timestamp()
+            WHERE id=$1 RETURNING semantic_reconciliation_hash"#,
+    )
+    .bind(reconciliation_id)
+    .bind(observation_hash)
+    .bind(snapshot_byte_count)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(DirectoryFingerprintToolTruthAuthorityV1 {
+        temporal_census_id,
+        reconciliation_id,
+        semantic_authority_version,
+        semantic_reconciliation_hash,
+    })
+}
+
+/// Finalization preserves the exact host observation in Tool Truth. Generic
+/// and failed observations remain metadata-only; the directory-fingerprint
+/// contract is accepted as complete only after this repository independently
+/// revalidates its four-request shape, same-origin control paths, full-body
+/// hashes, control consistency and claimed verdict.
 pub async fn finalize_verification_action_capability_receipt(
     pool: &PgPool,
     command: &FinalizeVerificationActionCapabilityReceipt,
@@ -2852,6 +3577,12 @@ pub async fn finalize_verification_action_capability_receipt_in_transaction(
     {
         return Err(conflict(CONTRACT_INVALID));
     }
+    let witness = classify_verification_action_witness(
+        command.prepared_action_id,
+        &command.terminal_state,
+        &command.observation,
+    )?;
+    let witness_completeness = witness.witness_completeness();
     let binding: (Uuid, Uuid, String, i64, Option<DateTime<Utc>>) = sqlx::query_as(
         r#"SELECT binding.binding_id,binding.execution_authority_id,
                   receipt.attempt_state,receipt.row_version,receipt.finalized_at
@@ -2878,7 +3609,7 @@ pub async fn finalize_verification_action_capability_receipt_in_transaction(
             "prepared_action_id": command.prepared_action_id,
             "capability_execution_receipt_id": command.capability_execution_receipt_id,
             "terminal_state": &command.terminal_state,
-            "witness_completeness": "metadata_only",
+            "witness_completeness": witness_completeness,
             "observation_hash": &observation_hash,
         }),
     )
@@ -2904,25 +3635,108 @@ pub async fn finalize_verification_action_capability_receipt_in_transaction(
     }
     let typed_landing = serde_json::json!({
         "contract_version": "verification-action-observation.v1",
-        "witness_completeness": "metadata_only",
+        "witness_completeness": witness_completeness,
         "observation_hash": &observation_hash,
         "observation": &command.observation,
     });
+    let (
+        landing_state,
+        observation_state,
+        coverage_extent,
+        coverage_gap_reason,
+        security_interpretation,
+    ) = match witness {
+        VerificationActionWitnessV1::DirectoryFingerprint(
+            DirectoryFingerprintOracleVerdictV1::Proof,
+        ) => ("committed", "found", "sampled", "none", "signal"),
+        VerificationActionWitnessV1::DirectoryFingerprint(
+            DirectoryFingerprintOracleVerdictV1::Refutation,
+        ) => ("committed", "no_match", "sampled", "none", "signal"),
+        VerificationActionWitnessV1::DirectoryFingerprint(
+            DirectoryFingerprintOracleVerdictV1::Inconclusive,
+        ) => (
+            "committed",
+            "indeterminate",
+            "sampled",
+            "none",
+            "inconclusive",
+        ),
+        VerificationActionWitnessV1::MetadataOnly => (
+            if command.terminal_state == "succeeded" {
+                "partial"
+            } else {
+                "failed"
+            },
+            "indeterminate",
+            "partial",
+            if command.terminal_state == "outcome_unknown" {
+                "transport"
+            } else {
+                "unsupported"
+            },
+            "inconclusive",
+        ),
+    };
+    let fingerprint_authority = if matches!(
+        witness,
+        VerificationActionWitnessV1::DirectoryFingerprint(_)
+    ) {
+        Some(
+            seal_directory_fingerprint_tool_truth_authority_v1(
+                tx,
+                command,
+                &observation_hash,
+                &finalization_hash,
+                observation_state,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let updated = sqlx::query(
         r#"UPDATE capability_execution_receipts
-              SET attempt_state=$1,landing_state=CASE WHEN $1='succeeded' THEN 'partial' ELSE 'failed' END,
-                  observation_state='indeterminate',coverage_extent='partial',
-                  coverage_gap_reason=CASE WHEN $1='outcome_unknown' THEN 'transport' ELSE 'unsupported' END,
-                  reconciliation_state='consistent',security_interpretation='inconclusive',
-                  typed_landing=$2,finalization_request_hash=$3,row_version=row_version+1,
+              SET attempt_state=$1,landing_state=$2,observation_state=$3,
+                  coverage_extent=$4,coverage_gap_reason=$5,
+                  reconciliation_state='consistent',security_interpretation=$6,
+                  typed_landing=$7,finalization_request_hash=$8,row_version=row_version+1,
+                  temporal_census_id=$9,
+                  current_semantic_authority_version=COALESCE($10,current_semantic_authority_version),
+                  current_semantic_reconciliation_id=$11,
+                  current_semantic_reconciliation_hash=$12,
                   observation_completed_at=statement_timestamp(),
-                  valid_until=statement_timestamp()+INTERVAL '60 seconds',
+                  valid_until=COALESCE(
+                      (SELECT effective_valid_until
+                         FROM capability_execution_temporal_censuses WHERE id=$9),
+                      statement_timestamp()+INTERVAL '60 seconds'
+                  ),
                   finalized_at=statement_timestamp()
-            WHERE id=$4 AND row_version=$5 AND finalized_at IS NULL"#,
+            WHERE id=$13 AND row_version=$14 AND finalized_at IS NULL"#,
     )
     .bind(&command.terminal_state)
+    .bind(landing_state)
+    .bind(observation_state)
+    .bind(coverage_extent)
+    .bind(coverage_gap_reason)
+    .bind(security_interpretation)
     .bind(&typed_landing)
     .bind(&finalization_hash)
+    .bind(fingerprint_authority.as_ref().map(|value| value.temporal_census_id))
+    .bind(
+        fingerprint_authority
+            .as_ref()
+            .map(|value| value.semantic_authority_version),
+    )
+    .bind(
+        fingerprint_authority
+            .as_ref()
+            .map(|value| value.reconciliation_id),
+    )
+    .bind(
+        fingerprint_authority
+            .as_ref()
+            .map(|value| value.semantic_reconciliation_hash.as_str()),
+    )
     .bind(command.capability_execution_receipt_id)
     .bind(binding.3)
     .execute(&mut **tx)
@@ -2935,7 +3749,7 @@ pub async fn finalize_verification_action_capability_receipt_in_transaction(
                finalization_id,stable_request_id,binding_id,action_execution_id,
                prepared_action_id,capability_execution_receipt_id,terminal_state,
                witness_completeness,observation_hash,finalization_hash
-           ) VALUES($1,$2,$3,$4,$5,$6,$7,'metadata_only',$8,$9)"#,
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)"#,
     )
     .bind(Uuid::new_v5(
         &command.stable_request_id,
@@ -2947,6 +3761,7 @@ pub async fn finalize_verification_action_capability_receipt_in_transaction(
     .bind(command.prepared_action_id)
     .bind(command.capability_execution_receipt_id)
     .bind(&command.terminal_state)
+    .bind(witness_completeness)
     .bind(&observation_hash)
     .bind(&finalization_hash)
     .execute(&mut **tx)
@@ -2982,7 +3797,7 @@ pub struct FinalizeVerificationActionSemanticLanding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerificationActionSemanticLanding {
     pub oracle_assessment_id: Uuid,
-    pub residual_id: Uuid,
+    pub residual_id: Option<Uuid>,
     pub closeout_hash: String,
     pub execution_row_version: i64,
     pub terminal_state: String,
@@ -3052,8 +3867,10 @@ pub async fn finalize_verification_action_semantic_landing(
     struct LandingAuthority {
         project_scope_id: Uuid,
         organization_id: Uuid,
+        action_kind: String,
         campaign_coverage_member_id: Uuid,
         control_binding_kind: String,
+        expected_oracle_kind: String,
         oracle_contract_version: String,
         oracle_contract_hash: String,
         observation_receipt_hash: String,
@@ -3061,9 +3878,16 @@ pub async fn finalize_verification_action_semantic_landing(
         typed_landing: Value,
         budget_reservation_id: Uuid,
     }
+    #[derive(Clone, sqlx::FromRow)]
+    struct LandingOracleMember {
+        campaign_coverage_member_id: Uuid,
+        control_binding_kind: String,
+        expected_oracle_kind: String,
+    }
     let authority = sqlx::query_as::<_, LandingAuthority>(
-        r#"SELECT action.project_scope_id,action.organization_id,
+        r#"SELECT action.project_scope_id,action.organization_id,action.action_kind,
                   member.campaign_coverage_member_id,member.control_binding_kind,
+                  member.expected_oracle_kind,
                   action.private_manifest #>> '{oracle_contract_version}' AS oracle_contract_version,
                   action.oracle_contract_hash,
                   receipt.receipt_authority_hash AS observation_receipt_hash,
@@ -3102,100 +3926,252 @@ pub async fn finalize_verification_action_semantic_landing(
         return Err(conflict(super::verification_campaigns::REPLAY_DRIFT));
     }
 
-    let residual_id = Uuid::new_v5(
-        &command.stable_request_id,
-        b"verification-action-raw-witness-incomplete.v1",
-    );
-    let residual_hash = json_hash_on(
-        &mut tx,
-        &serde_json::json!({
-            "prepared_action_id": command.prepared_action_id,
-            "action_execution_id": command.action_execution_id,
-            "capability_execution_receipt_id": command.capability_execution_receipt_id,
-            "reason_code": "raw_witness_incomplete",
-        }),
+    // A Campaign intentionally owns one active action lane, while one sealed
+    // strategy may contain several component obligations observed by that
+    // same request. Bind the single immutable observation to every exact
+    // applied coverage member. Legacy/direct repository callers retain the
+    // manifest-bound member as a one-member fallback.
+    let mut oracle_members = sqlx::query_as::<_, LandingOracleMember>(
+        r#"SELECT member.campaign_coverage_member_id,member.control_binding_kind,
+                  member.expected_oracle_kind
+             FROM verification_prepared_actions landing_action
+             JOIN investigation_verification_task_advisory_receipts advisory
+               ON advisory.operation_id=landing_action.operation_id
+             JOIN investigation_verification_task_advisory_seals advisory_seal
+               ON advisory_seal.advisory_receipt_id=advisory.advisory_receipt_id
+             JOIN investigation_verification_advisory_campaign_applies apply
+               ON apply.advisory_receipt_id=advisory.advisory_receipt_id
+              AND apply.campaign_id=landing_action.campaign_id
+              AND apply.strategy_artifact_id=landing_action.strategy_artifact_id
+              AND apply.result_kind='prepared_action'
+             JOIN verification_campaign_coverage_members member
+               ON member.campaign_denominator_id=apply.campaign_denominator_id
+              AND member.campaign_coverage_member_id=apply.campaign_coverage_member_id
+            WHERE landing_action.campaign_id=$1
+              AND landing_action.prepared_action_id=$2
+              AND landing_action.operation_id=$3
+              AND advisory.status='applied'
+              AND advisory.applied_at IS NOT NULL
+            ORDER BY (member.campaign_coverage_member_id=$4) DESC,
+                     member.member_ordinal,member.campaign_coverage_member_id"#,
     )
-    .await?;
-    let affected_inputs = serde_json::json!([
-        command.prepared_action_id,
-        command.action_execution_id,
-        command.capability_execution_receipt_id,
-    ]);
-    let next_action = serde_json::json!({
-        "kind": "install_complete_capability_raw_witness_contract",
-        "oracle_contract_version": authority.oracle_contract_version,
-    });
-    sqlx::query(
-        r#"INSERT INTO hypothesis_residual_risks(
-               residual_id,operation_id,organization_id,reason_code,owner_kind,
-               affected_inputs,next_action,residual_hash
-           ) VALUES($1,$2,$3,'raw_witness_incomplete','plan_c',$4,$5,$6)
-           ON CONFLICT(residual_id) DO NOTHING"#,
-    )
-    .bind(residual_id)
+    .bind(command.campaign_id)
+    .bind(command.prepared_action_id)
     .bind(command.operation_id)
-    .bind(authority.organization_id)
-    .bind(&affected_inputs)
-    .bind(&next_action)
-    .bind(&residual_hash)
-    .execute(&mut *tx)
+    .bind(authority.campaign_coverage_member_id)
+    .fetch_all(&mut *tx)
     .await?;
-    let stored_residual: (Uuid, Uuid, String, Value, Value, String) = sqlx::query_as(
-        r#"SELECT operation_id,organization_id,reason_code,affected_inputs,
-                  next_action,residual_hash
-             FROM hypothesis_residual_risks WHERE residual_id=$1 FOR SHARE"#,
-    )
-    .bind(residual_id)
-    .fetch_one(&mut *tx)
-    .await?;
-    if stored_residual
-        != (
-            command.operation_id,
-            authority.organization_id,
-            "raw_witness_incomplete".to_owned(),
-            affected_inputs,
-            next_action,
-            residual_hash,
-        )
-    {
-        return Err(conflict(super::verification_campaigns::REPLAY_DRIFT));
+    if oracle_members.is_empty() {
+        oracle_members.push(LandingOracleMember {
+            campaign_coverage_member_id: authority.campaign_coverage_member_id,
+            control_binding_kind: authority.control_binding_kind.clone(),
+            expected_oracle_kind: authority.expected_oracle_kind.clone(),
+        });
+    } else if oracle_members.first().is_none_or(|member| {
+        member.campaign_coverage_member_id != authority.campaign_coverage_member_id
+    }) {
+        return Err(conflict(AUTHORITY_STALE));
     }
 
-    let oracle_assessment_id = super::verification_oracles::record_action_oracle_in_transaction(
-        &mut tx,
-        &super::verification_oracles::RecordActionOracle {
-            stable_request_id: Uuid::new_v5(
+    let witness = classify_verification_action_witness(
+        command.prepared_action_id,
+        &command.terminal_state,
+        &command.observation,
+    )?;
+    if matches!(
+        witness,
+        VerificationActionWitnessV1::DirectoryFingerprint(_)
+    ) && (authority.action_kind != DIRECTORY_FINGERPRINT_CAPABILITY_V1
+        || oracle_members
+            .iter()
+            .any(|member| member.expected_oracle_kind != "directory_soft404_fingerprint.v1"))
+    {
+        return Err(conflict(CONTRACT_INVALID));
+    }
+    let (oracle_verdict, precondition_validity, residual_spec, oracle_request_domain):
+        VerificationOracleLandingPlanV1<'_> = match witness {
+        VerificationActionWitnessV1::DirectoryFingerprint(
+            DirectoryFingerprintOracleVerdictV1::Proof,
+        ) => (
+            "proof",
+            "valid",
+            None,
+            b"verification-action-directory-fingerprint-oracle.v1",
+        ),
+        VerificationActionWitnessV1::DirectoryFingerprint(
+            DirectoryFingerprintOracleVerdictV1::Refutation,
+        ) => (
+            "refutation",
+            "valid",
+            None,
+            b"verification-action-directory-fingerprint-oracle.v1",
+        ),
+        VerificationActionWitnessV1::DirectoryFingerprint(
+            DirectoryFingerprintOracleVerdictV1::Inconclusive,
+        ) => (
+            "inconclusive",
+            "valid",
+            Some((
+                "directory_soft404_controls_inconsistent",
+                b"verification-action-directory-controls-inconsistent.v1",
+                serde_json::json!({
+                    "kind": "repeat_directory_fingerprint_after_control_stability",
+                    "oracle_contract_version": &authority.oracle_contract_version,
+                }),
+            )),
+            b"verification-action-directory-fingerprint-oracle.v1",
+        ),
+        VerificationActionWitnessV1::MetadataOnly => (
+            "inconclusive",
+            "unknown",
+            Some((
+                "raw_witness_incomplete",
+                b"verification-action-raw-witness-incomplete.v1",
+                serde_json::json!({
+                    "kind": "install_complete_capability_raw_witness_contract",
+                    "oracle_contract_version": &authority.oracle_contract_version,
+                }),
+            )),
+            b"verification-action-inconclusive-oracle.v1",
+        ),
+    };
+    let residual_reason_code = residual_spec.as_ref().map(|spec| spec.0);
+    let mut primary_oracle_assessment_id = None;
+    let mut primary_residual_id = None;
+    for (index, member) in oracle_members.iter().enumerate() {
+        let member_request_id = if index == 0 {
+            command.stable_request_id
+        } else {
+            Uuid::new_v5(
                 &command.stable_request_id,
-                b"verification-action-inconclusive-oracle.v1",
-            ),
-            campaign_id: command.campaign_id,
-            prepared_action_id: command.prepared_action_id,
-            action_execution_id: command.action_execution_id,
-            campaign_coverage_member_id: authority.campaign_coverage_member_id,
-            operation_id: command.operation_id,
-            project_scope_id: authority.project_scope_id,
-            organization_id: authority.organization_id,
-            oracle_revision_ordinal: 1,
-            oracle_contract_version: authority.oracle_contract_version,
-            oracle_contract_hash: authority.oracle_contract_hash,
-            observation_receipt_hash: authority.observation_receipt_hash.clone(),
-            precondition_validity: "unknown".to_owned(),
-            control_validity: if authority.control_binding_kind == "explicit_no_control" {
-                "not_required".to_owned()
+                format!("coverage-member:{}", member.campaign_coverage_member_id).as_bytes(),
+            )
+        };
+        let affected_inputs = serde_json::json!([
+            command.prepared_action_id,
+            command.action_execution_id,
+            command.capability_execution_receipt_id,
+        ]);
+        let residual_id =
+            if let Some((reason_code, residual_domain, next_action)) = residual_spec.as_ref() {
+                let residual_id = Uuid::new_v5(&member_request_id, residual_domain);
+                let residual_hash = json_hash_on(
+                    &mut tx,
+                    &serde_json::json!({
+                        "prepared_action_id": command.prepared_action_id,
+                        "action_execution_id": command.action_execution_id,
+                        "capability_execution_receipt_id": command.capability_execution_receipt_id,
+                        "reason_code": reason_code,
+                    }),
+                )
+                .await?;
+                sqlx::query(
+                    r#"INSERT INTO hypothesis_residual_risks(
+                       residual_id,operation_id,organization_id,reason_code,owner_kind,
+                       affected_inputs,next_action,residual_hash
+                   ) VALUES($1,$2,$3,$4,'plan_c',$5,$6,$7)
+                   ON CONFLICT(residual_id) DO NOTHING"#,
+                )
+                .bind(residual_id)
+                .bind(command.operation_id)
+                .bind(authority.organization_id)
+                .bind(*reason_code)
+                .bind(&affected_inputs)
+                .bind(next_action)
+                .bind(&residual_hash)
+                .execute(&mut *tx)
+                .await?;
+                let stored_residual: (Uuid, Uuid, String, Value, Value, String) = sqlx::query_as(
+                    r#"SELECT operation_id,organization_id,reason_code,affected_inputs,
+                          next_action,residual_hash
+                     FROM hypothesis_residual_risks WHERE residual_id=$1 FOR SHARE"#,
+                )
+                .bind(residual_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if stored_residual
+                    != (
+                        command.operation_id,
+                        authority.organization_id,
+                        (*reason_code).to_owned(),
+                        affected_inputs,
+                        next_action.clone(),
+                        residual_hash,
+                    )
+                {
+                    return Err(conflict(super::verification_campaigns::REPLAY_DRIFT));
+                }
+                Some(residual_id)
             } else {
-                "not_assessed".to_owned()
-            },
-            verdict: "inconclusive".to_owned(),
-            assessment_body: serde_json::json!({
+                None
+            };
+        let oracle_assessment_body = match witness {
+            VerificationActionWitnessV1::MetadataOnly => serde_json::json!({
                 "contract_version": "verification-action-oracle-assessment.v1",
                 "witness_completeness": "metadata_only",
                 "reason_code": "raw_witness_incomplete",
-                "typed_landing": authority.typed_landing,
+                "typed_landing": authority.typed_landing.clone(),
             }),
-            residual_id: Some(residual_id),
-        },
-    )
-    .await?;
+            VerificationActionWitnessV1::DirectoryFingerprint(verdict) => serde_json::json!({
+                "contract_version": "verification-action-oracle-assessment.v1",
+                "witness_completeness": DIRECTORY_FINGERPRINT_WITNESS_V1,
+                "reason_code": residual_reason_code,
+                "recomputed_verdict": verdict.oracle_value(),
+                "typed_landing": authority.typed_landing.clone(),
+            }),
+        };
+        let control_validity = match witness {
+            VerificationActionWitnessV1::DirectoryFingerprint(
+                DirectoryFingerprintOracleVerdictV1::Inconclusive,
+            ) => "invalid",
+            VerificationActionWitnessV1::DirectoryFingerprint(_) => {
+                if member.control_binding_kind == "explicit_no_control" {
+                    "not_required"
+                } else {
+                    "valid"
+                }
+            }
+            VerificationActionWitnessV1::MetadataOnly => {
+                if member.control_binding_kind == "explicit_no_control" {
+                    "not_required"
+                } else {
+                    "not_assessed"
+                }
+            }
+        };
+        let oracle_assessment_id =
+            super::verification_oracles::record_action_oracle_in_transaction(
+                &mut tx,
+                &super::verification_oracles::RecordActionOracle {
+                    stable_request_id: Uuid::new_v5(&member_request_id, oracle_request_domain),
+                    campaign_id: command.campaign_id,
+                    prepared_action_id: command.prepared_action_id,
+                    action_execution_id: command.action_execution_id,
+                    campaign_coverage_member_id: member.campaign_coverage_member_id,
+                    operation_id: command.operation_id,
+                    project_scope_id: authority.project_scope_id,
+                    organization_id: authority.organization_id,
+                    oracle_revision_ordinal: i32::try_from(index + 1)
+                        .map_err(|_| conflict(CONTRACT_INVALID))?,
+                    oracle_contract_version: authority.oracle_contract_version.clone(),
+                    oracle_contract_hash: authority.oracle_contract_hash.clone(),
+                    observation_receipt_hash: authority.observation_receipt_hash.clone(),
+                    precondition_validity: precondition_validity.to_owned(),
+                    control_validity: control_validity.to_owned(),
+                    verdict: oracle_verdict.to_owned(),
+                    assessment_body: oracle_assessment_body,
+                    residual_id,
+                },
+            )
+            .await?;
+        if index == 0 {
+            primary_oracle_assessment_id = Some(oracle_assessment_id);
+            primary_residual_id = residual_id;
+        }
+    }
+    let oracle_assessment_id =
+        primary_oracle_assessment_id.ok_or_else(|| conflict(AUTHORITY_STALE))?;
+    let residual_id = primary_residual_id;
 
     let budget_actuals = sqlx::query_as::<_, (Uuid, String, i64)>(
         r#"SELECT reserve.ancestor_contract_id,reserve.axis_kind,
@@ -4063,4 +5039,154 @@ pub async fn recover_unknown_action(
         execution_row_version,
         replayed: false,
     })
+}
+
+#[cfg(test)]
+mod directory_fingerprint_witness_tests {
+    use super::{
+        classify_verification_action_witness, DirectoryFingerprintOracleVerdictV1,
+        VerificationActionWitnessV1,
+    };
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn http_observation(url: String, body_byte: char) -> serde_json::Value {
+        json!({
+            "final_url": url,
+            "hops": [{
+                "url": url,
+                "status": 200,
+                "response_bytes": 8,
+                "body_sha256": format!("sha256:{}", body_byte.to_string().repeat(64)),
+                "content_type": "text/html",
+            }],
+        })
+    }
+
+    fn complete_directory_observation(
+        prepared_action_id: Uuid,
+        candidate_body: char,
+        control_bodies: [char; 3],
+        claimed_verdict: &str,
+        claimed_controls_consistent: bool,
+    ) -> serde_json::Value {
+        let nonce = prepared_action_id.simple().to_string();
+        json!({
+            "assessment": {
+                "controls_consistent": claimed_controls_consistent,
+                "verdict": claimed_verdict,
+            },
+            "candidate": http_observation("https://example.test/admin".to_owned(), candidate_body),
+            "capability_id": "verify.directory_fingerprint.v1",
+            "contract_version": "directory-soft404-fingerprint-observation.v1",
+            "controls": control_bodies.into_iter().enumerate().map(|(index, body)| {
+                http_observation(
+                    format!("https://example.test/.golish-soft404-{nonce}-{}", index + 1),
+                    body,
+                )
+            }).collect::<Vec<_>>(),
+            "request_count": 4,
+            "witness_completeness": "complete_fingerprint_v1",
+        })
+    }
+
+    #[test]
+    fn directory_fingerprint_complete_witness_is_recomputed_for_all_verdicts() {
+        let prepared_action_id = Uuid::new_v4();
+        for (observation, expected) in [
+            (
+                complete_directory_observation(
+                    prepared_action_id,
+                    'a',
+                    ['b', 'b', 'b'],
+                    "verified",
+                    true,
+                ),
+                DirectoryFingerprintOracleVerdictV1::Proof,
+            ),
+            (
+                complete_directory_observation(
+                    prepared_action_id,
+                    'b',
+                    ['b', 'b', 'b'],
+                    "refuted",
+                    true,
+                ),
+                DirectoryFingerprintOracleVerdictV1::Refutation,
+            ),
+            (
+                complete_directory_observation(
+                    prepared_action_id,
+                    'a',
+                    ['b', 'c', 'b'],
+                    "inconclusive",
+                    false,
+                ),
+                DirectoryFingerprintOracleVerdictV1::Inconclusive,
+            ),
+        ] {
+            assert_eq!(
+                classify_verification_action_witness(
+                    prepared_action_id,
+                    "succeeded",
+                    &observation,
+                )
+                .expect("exact directory witness is valid"),
+                VerificationActionWitnessV1::DirectoryFingerprint(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn directory_fingerprint_complete_witness_rejects_model_or_transport_drift() {
+        let prepared_action_id = Uuid::new_v4();
+        let forged_verdict = complete_directory_observation(
+            prepared_action_id,
+            'a',
+            ['b', 'b', 'b'],
+            "refuted",
+            true,
+        );
+        assert!(classify_verification_action_witness(
+            prepared_action_id,
+            "succeeded",
+            &forged_verdict,
+        )
+        .is_err());
+
+        let mut forged_control = complete_directory_observation(
+            prepared_action_id,
+            'a',
+            ['b', 'b', 'b'],
+            "verified",
+            true,
+        );
+        forged_control["controls"][0]["hops"][0]["url"] =
+            json!("https://example.test/model-selected-control");
+        forged_control["controls"][0]["final_url"] =
+            json!("https://example.test/model-selected-control");
+        assert!(classify_verification_action_witness(
+            prepared_action_id,
+            "succeeded",
+            &forged_control,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn metadata_only_witness_remains_inconclusive_compatible() {
+        assert_eq!(
+            classify_verification_action_witness(
+                Uuid::new_v4(),
+                "outcome_unknown",
+                &json!({
+                    "contract_version": "verification-action-observation.v1",
+                    "witness_completeness": "metadata_only",
+                    "recovery_disposition": "durable_begin_without_terminal_receipt",
+                }),
+            )
+            .expect("legacy recovery observation remains accepted"),
+            VerificationActionWitnessV1::MetadataOnly
+        );
+    }
 }

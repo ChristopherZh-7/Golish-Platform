@@ -166,6 +166,13 @@ impl AgentBridge {
         self.services.runtime_memory = Some(repository);
     }
 
+    pub fn set_investigation_asset_verification_tools(
+        &mut self,
+        host: Arc<dyn golish_app_core::ports::pentest::InvestigationAssetVerificationToolHost>,
+    ) {
+        self.services.investigation_asset_verification_tools = Some(host);
+    }
+
     /// Install the product-owned AU controller used by the Primary Agent's
     /// visible `stage_run` call. The controller retains all frozen-scope and
     /// deterministic Gate authority.
@@ -174,19 +181,6 @@ impl AgentBridge {
         runtime: Arc<dyn golish_agent_kit::task_orchestrator::ApplicationUnderstandingStageRuntime>,
     ) {
         self.services.application_understanding_runtime = Some(runtime);
-    }
-
-    /// Install the host-owned Plan B Candidate analysis runtime.
-    ///
-    /// The bridge deliberately accepts only the closed runtime port; it never
-    /// constructs a repository or derives database authority itself.
-    pub fn set_hypothesis_analysis_runtime(
-        &mut self,
-        runtime: Arc<
-            dyn golish_agent_kit::task_orchestrator::hypothesis_analysis::HypothesisAnalysisStageRuntime,
-        >,
-    ) {
-        self.services.hypothesis_analysis_runtime = Some(runtime);
     }
 
     /// Inject the process-shared canonical Memory Fabric transaction port.
@@ -641,6 +635,13 @@ impl AgentBridge {
     /// Set the model factory for sub-agent model overrides.
     pub fn set_model_factory(&mut self, factory: Arc<LlmClientFactory>) {
         self.llm.model_factory = Some(factory);
+    }
+
+    /// Disable per-agent provider/model overrides for this bridge instance.
+    /// Existing agent definitions may retain audit-visible override metadata;
+    /// execution falls back to the already-constructed main client.
+    pub fn clear_model_factory(&mut self) {
+        self.llm.model_factory = None;
     }
 
     /// Override the tool configuration (e.g. to disable all tools for title-gen sessions).

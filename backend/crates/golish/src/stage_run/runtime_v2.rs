@@ -266,9 +266,34 @@ struct StageTeamResumeAuthority {
     plan: StageTeamPlanRow,
     work_items: Vec<StageWorkItemRow>,
     outputs: Vec<StageWorkerOutputRow>,
+    asset_primary_schedule: Option<InvestigationAssetPrimaryResumeAuthority>,
     completed_synthesis_primary_worker_ids: HashSet<Uuid>,
     recoverable_company_finalizer_worker_ids: HashSet<Uuid>,
     recoverable_target_intel_finalizer_worker_ids: HashSet<Uuid>,
+}
+
+#[derive(Debug)]
+struct InvestigationAssetPrimaryResumeAuthority {
+    schedule_contract: String,
+    asset_lane_id: Uuid,
+    evolution_epoch: i32,
+    schedule_round: i32,
+    primary_work_item_id: Uuid,
+    primary_worker_run_id: Uuid,
+    primary_message_chain_id: Uuid,
+    primary_lineage_members: HashSet<(Uuid, Uuid)>,
+    role_work_item_ids: Option<[Uuid; 4]>,
+}
+
+fn investigation_asset_primary_chain_owner(
+    schedule: &InvestigationAssetPrimaryResumeAuthority,
+    worker: &StageWorkerRunRow,
+) -> bool {
+    worker.work_item_id.is_some_and(|work_item_id| {
+        schedule
+            .primary_lineage_members
+            .contains(&(work_item_id, worker.id))
+    })
 }
 
 fn exact_target_intel_finalizer_recovery_preflight(
@@ -483,23 +508,6 @@ fn select_stage_team_primary_worker<'a>(
         "Stage Team leader/aggregator/final-submitter contract diverged"
     );
 
-    let leader_items = team
-        .work_items
-        .iter()
-        .filter(|item| {
-            item.role == plan.leader_role
-                && item.stable_key == "leader:primary"
-                && !item.required_for_barrier
-                && item.created_by == "server_seed"
-        })
-        .collect::<Vec<_>>();
-    let [leader_item] = leader_items.as_slice() else {
-        return Err(anyhow!(
-            "Stage Team Unit requires exactly one leader WorkItem, found {}",
-            leader_items.len()
-        ));
-    };
-
     for item in &team.work_items {
         anyhow::ensure!(
             item.team_plan_id == plan.id
@@ -522,6 +530,157 @@ fn select_stage_team_primary_worker<'a>(
             "Stage Team WorkerOutput identity crossed plan/Unit/operation/scope"
         );
     }
+
+    if let Some(schedule) = &team.asset_primary_schedule {
+        let current_items = team
+            .work_items
+            .iter()
+            .filter(|item| item.dispatch_epoch == plan.dispatch_epoch)
+            .collect::<Vec<_>>();
+        let primary_items = current_items
+            .iter()
+            .copied()
+            .filter(|item| item.id == schedule.primary_work_item_id)
+            .collect::<Vec<_>>();
+        let [primary_item] = primary_items.as_slice() else {
+            return Err(anyhow!(
+                "Investigation Asset schedule requires exactly one Primary WorkItem"
+            ));
+        };
+        let expected_primary_key = match schedule.schedule_contract.as_str() {
+            "fixed_roster_v1" => format!(
+                "asset:{}:primary:{}",
+                schedule.asset_lane_id, schedule.evolution_epoch
+            ),
+            "primary_dynamic_v2" => format!(
+                "asset:{}:primary:{}:round:{}",
+                schedule.asset_lane_id, schedule.evolution_epoch, schedule.schedule_round
+            ),
+            contract => {
+                return Err(anyhow!(
+                    "Investigation Asset schedule has unsupported contract {contract}"
+                ));
+            }
+        };
+        anyhow::ensure!(
+            plan.stage_kind == "investigation"
+                && plan.dynamic_request_policy.get("coordination_mode")
+                    == Some(&serde_json::Value::String(
+                        "investigation_task_orchestrator".to_owned()
+                    ))
+                && primary_item.kind == "investigation_asset_primary"
+                && primary_item.stable_key == expected_primary_key
+                && primary_item.role == plan.leader_role
+                && !primary_item.required_for_barrier
+                && primary_item.created_by == "server_phase_transition",
+            "Investigation Asset Primary resume authority drifted"
+        );
+        if let Some(role_work_item_ids) = schedule.role_work_item_ids {
+            let expected_roles = ["browser", "researcher", "pentester", "adviser"];
+            anyhow::ensure!(
+                schedule.schedule_contract == "fixed_roster_v1" && current_items.len() == 5,
+                "fixed-roster Investigation Asset resume census drifted"
+            );
+            for (role, work_item_id) in expected_roles.iter().zip(role_work_item_ids) {
+                let matching = current_items
+                    .iter()
+                    .copied()
+                    .filter(|item| item.id == work_item_id)
+                    .collect::<Vec<_>>();
+                let [item] = matching.as_slice() else {
+                    return Err(anyhow!(
+                        "Investigation Asset schedule has no unique {role} WorkItem"
+                    ));
+                };
+                anyhow::ensure!(
+                    item.kind == "investigation_asset_role"
+                        && item.stable_key
+                            == format!(
+                                "asset:{}:role:{role}:{}",
+                                schedule.asset_lane_id, schedule.evolution_epoch
+                            )
+                        && item.role == *role
+                        && item.required_for_barrier
+                        && item.created_by == "server_phase_transition",
+                    "Investigation Asset role resume authority drifted"
+                );
+            }
+        } else {
+            anyhow::ensure!(
+                schedule.schedule_contract == "primary_dynamic_v2"
+                    && current_items.iter().all(|item| {
+                        item.id == primary_item.id || item.created_by == "accepted_worker_request"
+                    }),
+                "dynamic Investigation Asset resume census drifted"
+            );
+        }
+        let primary_workers = workers
+            .iter()
+            .copied()
+            .filter(|worker| {
+                worker.id == schedule.primary_worker_run_id
+                    && worker.work_item_id == Some(schedule.primary_work_item_id)
+            })
+            .collect::<Vec<_>>();
+        let [primary_worker] = primary_workers.as_slice() else {
+            return Err(anyhow!(
+                "Investigation Asset schedule requires exactly one Primary Worker"
+            ));
+        };
+        for worker in workers {
+            let work_item_id = worker
+                .work_item_id
+                .ok_or_else(|| anyhow!("Stage Team Worker has no bound WorkItem"))?;
+            let item = team
+                .work_items
+                .iter()
+                .find(|item| item.id == work_item_id)
+                .ok_or_else(|| anyhow!("Stage Team Worker references a foreign WorkItem"))?;
+            anyhow::ensure!(
+                worker.operation_id == unit.operation_id
+                    && worker.stage_execution_id == unit.stage_execution_id
+                    && worker.stage_run_unit_id == unit.id
+                    && worker.organization_id == unit.organization_id
+                    && worker.specialist == item.role
+                    && worker.work_item_kind == item.kind
+                    && worker.work_item_key == item.stable_key,
+                "Stage Team Worker identity crossed WorkItem/Unit/operation"
+            );
+        }
+        anyhow::ensure!(
+            primary_worker.message_chain_id == Some(schedule.primary_message_chain_id),
+            "Investigation Asset Primary durable chain drifted"
+        );
+        if matches!(primary_worker.status.as_str(), "failed" | "exhausted") {
+            anyhow::ensure!(
+                primary_item.status == "exhausted"
+                    && primary_item.terminal_at.is_some()
+                    && primary_worker.terminal_at.is_some()
+                    && primary_worker.lease_token.is_none()
+                    && primary_worker.active_tool_call_id.is_none(),
+                "terminal Investigation Asset Primary cannot enter controlled rearm"
+            );
+            return Ok(None);
+        }
+        return Ok(Some(*primary_worker));
+    }
+
+    let leader_items = team
+        .work_items
+        .iter()
+        .filter(|item| {
+            item.role == plan.leader_role
+                && item.stable_key == "leader:primary"
+                && !item.required_for_barrier
+                && item.created_by == "server_seed"
+        })
+        .collect::<Vec<_>>();
+    let [leader_item] = leader_items.as_slice() else {
+        return Err(anyhow!(
+            "Stage Team Unit requires exactly one leader WorkItem, found {}",
+            leader_items.len()
+        ));
+    };
 
     if workers.is_empty() {
         anyhow::ensure!(
@@ -861,6 +1020,196 @@ async fn load_stage_team_resume_authorities(
         let outputs = golish_db::repo::stage_teams::list_outputs_with_executor(pool, plan.id)
             .await
             .context("load Stage Team WorkerOutputs for V2 runtime authority")?;
+        let asset_primary_schedule = sqlx::query_as::<
+            _,
+            (
+                String,
+                Uuid,
+                i32,
+                i32,
+                Uuid,
+                Uuid,
+                Uuid,
+                Option<Uuid>,
+                Option<Uuid>,
+                Option<Uuid>,
+                Option<Uuid>,
+            ),
+        >(
+            r#"SELECT source.schedule_contract,current.asset_lane_id,
+                      current.evolution_epoch,current.schedule_round,
+                      current.primary_work_item_id,current.primary_worker_run_id,
+                      current.primary_message_chain_id,source.browser_work_item_id,
+                      source.researcher_work_item_id,source.pentester_work_item_id,
+                      source.adviser_work_item_id
+                 FROM investigation_asset_primary_current_authorities current
+                 JOIN investigation_asset_primary_schedules source
+                   ON source.schedule_receipt_id=current.source_schedule_receipt_id
+                WHERE current.stage_team_plan_id=$1
+                UNION ALL
+                SELECT fixed.schedule_contract,fixed.asset_lane_id,
+                       fixed.evolution_epoch,fixed.schedule_round,
+                       fixed.primary_work_item_id,fixed.primary_worker_run_id,
+                       fixed.primary_message_chain_id,fixed.browser_work_item_id,
+                       fixed.researcher_work_item_id,fixed.pentester_work_item_id,
+                       fixed.adviser_work_item_id
+                  FROM investigation_asset_primary_schedules fixed
+                 WHERE fixed.stage_team_plan_id=$1
+                   AND fixed.schedule_contract='fixed_roster_v1'
+                   AND fixed.status='applied'
+                   AND NOT EXISTS(
+                       SELECT 1 FROM investigation_asset_primary_current_authorities current
+                        WHERE current.stage_team_plan_id=fixed.stage_team_plan_id)"#,
+        )
+        .bind(plan.id)
+        .fetch_optional(pool)
+        .await
+        .context("load Investigation Asset Primary schedule resume authority")?
+        .map(
+            |(
+                schedule_contract,
+                asset_lane_id,
+                evolution_epoch,
+                schedule_round,
+                primary_work_item_id,
+                primary_worker_run_id,
+                primary_message_chain_id,
+                browser_work_item_id,
+                researcher_work_item_id,
+                pentester_work_item_id,
+                adviser_work_item_id,
+            )| InvestigationAssetPrimaryResumeAuthority {
+                schedule_contract,
+                asset_lane_id,
+                evolution_epoch,
+                schedule_round,
+                primary_work_item_id,
+                primary_worker_run_id,
+                primary_message_chain_id,
+                primary_lineage_members: HashSet::new(),
+                role_work_item_ids: match (
+                    browser_work_item_id,
+                    researcher_work_item_id,
+                    pentester_work_item_id,
+                    adviser_work_item_id,
+                ) {
+                    (Some(browser), Some(researcher), Some(pentester), Some(adviser)) => {
+                        Some([browser, researcher, pentester, adviser])
+                    }
+                    (None, None, None, None) => None,
+                    _ => None,
+                },
+            },
+        );
+        let mut asset_primary_schedule = asset_primary_schedule;
+        if let Some(schedule) = asset_primary_schedule.as_mut() {
+            if schedule.schedule_contract == "primary_dynamic_v2" {
+                let lineage = sqlx::query_as::<_, (Uuid, Uuid, i64, i64)>(
+                    r#"WITH current_primary AS (
+                           SELECT current.source_schedule_receipt_id,
+                                  current.primary_message_chain_id
+                             FROM investigation_asset_primary_current_authorities current
+                            WHERE current.stage_team_plan_id=$1
+                       ), lineage AS (
+                           SELECT source.primary_work_item_id,source.primary_worker_run_id,
+                                  source.primary_message_chain_id,source.stage_team_plan_id,
+                                  source.operation_id,source.stage_execution_id,
+                                  source.stage_run_unit_id,source.scope_snapshot_id,
+                                  source.organization_id
+                             FROM investigation_asset_primary_schedules source
+                             JOIN current_primary current
+                               ON current.source_schedule_receipt_id=source.schedule_receipt_id
+                            WHERE source.schedule_contract='primary_dynamic_v2'
+                              AND source.status='applied'
+                           UNION ALL
+                           SELECT rearm.primary_work_item_id,rearm.primary_worker_run_id,
+                                  rearm.primary_message_chain_id,rearm.stage_team_plan_id,
+                                  rearm.operation_id,rearm.stage_execution_id,
+                                  rearm.stage_run_unit_id,rearm.scope_snapshot_id,
+                                  rearm.organization_id
+                             FROM investigation_asset_primary_rearms rearm
+                             JOIN current_primary current
+                               ON current.source_schedule_receipt_id=
+                                  rearm.source_schedule_receipt_id
+                            WHERE rearm.status='applied'
+                       ), validated AS (
+                           SELECT lineage.primary_work_item_id,lineage.primary_worker_run_id
+                             FROM lineage
+                             JOIN current_primary current ON TRUE
+                             JOIN stage_work_items item
+                               ON item.id=lineage.primary_work_item_id
+                              AND item.team_plan_id=lineage.stage_team_plan_id
+                              AND item.operation_id=lineage.operation_id
+                              AND item.stage_execution_id=lineage.stage_execution_id
+                              AND item.stage_run_unit_id=lineage.stage_run_unit_id
+                              AND item.scope_snapshot_id=lineage.scope_snapshot_id
+                              AND item.organization_id=lineage.organization_id
+                              AND item.kind='investigation_asset_primary'
+                             JOIN stage_worker_runs worker
+                               ON worker.id=lineage.primary_worker_run_id
+                              AND worker.work_item_id=item.id
+                              AND worker.operation_id=lineage.operation_id
+                              AND worker.stage_execution_id=lineage.stage_execution_id
+                              AND worker.stage_run_unit_id=lineage.stage_run_unit_id
+                              AND worker.organization_id=lineage.organization_id
+                              AND worker.message_chain_id=lineage.primary_message_chain_id
+                            WHERE lineage.stage_team_plan_id=$1
+                              AND lineage.operation_id=$2
+                              AND lineage.stage_execution_id=$3
+                              AND lineage.stage_run_unit_id=$4
+                              AND lineage.scope_snapshot_id=$5
+                              AND lineage.organization_id=$6
+                              AND lineage.primary_message_chain_id=
+                                  current.primary_message_chain_id
+                       )
+                       SELECT validated.primary_work_item_id,
+                              validated.primary_worker_run_id,
+                              (SELECT COUNT(*) FROM lineage),
+                              (SELECT COUNT(*) FROM current_primary)
+                         FROM validated
+                        ORDER BY validated.primary_work_item_id,
+                                 validated.primary_worker_run_id"#,
+                )
+                .bind(plan.id)
+                .bind(plan.operation_id)
+                .bind(plan.stage_execution_id)
+                .bind(plan.stage_run_unit_id)
+                .bind(plan.scope_snapshot_id)
+                .bind(plan.organization_id)
+                .fetch_all(pool)
+                .await
+                .context("load full Investigation Asset Primary execution lineage")?;
+                let expected_lineage_count = lineage
+                    .first()
+                    .map(|row| row.2)
+                    .ok_or_else(|| anyhow!("Investigation Asset Primary lineage is empty"))?;
+                anyhow::ensure!(
+                    lineage
+                        .iter()
+                        .all(|row| { row.2 == expected_lineage_count && row.3 == 1 })
+                        && i64::try_from(lineage.len()).ok() == Some(expected_lineage_count),
+                    "Investigation Asset Primary lineage authority is incomplete"
+                );
+                schedule.primary_lineage_members = lineage
+                    .into_iter()
+                    .map(|(work_item_id, worker_run_id, _, _)| (work_item_id, worker_run_id))
+                    .collect();
+                anyhow::ensure!(
+                    schedule.primary_lineage_members.len()
+                        == usize::try_from(expected_lineage_count).unwrap_or(usize::MAX)
+                        && schedule.primary_lineage_members.contains(&(
+                            schedule.primary_work_item_id,
+                            schedule.primary_worker_run_id,
+                        )),
+                    "Investigation Asset Primary lineage membership is ambiguous"
+                );
+            } else {
+                schedule.primary_lineage_members.insert((
+                    schedule.primary_work_item_id,
+                    schedule.primary_worker_run_id,
+                ));
+            }
+        }
         let completed_synthesis_primary_worker_ids = sqlx::query_scalar::<_, Uuid>(
             r#"SELECT DISTINCT census.primary_worker_run_id
                  FROM investigation_pentagi_task_plans task_plan
@@ -925,11 +1274,12 @@ async fn load_stage_team_resume_authorities(
                           AND (SELECT COUNT(*) FROM investigation_pentagi_pipeline_events synthesis
                                 WHERE synthesis.task_plan_id=task_plan.task_plan_id
                                   AND synthesis.event_kind='primary_synthesis')=1
-                          AND (SELECT COUNT(*) FROM jsonb_path_query(
-                                worker.checkpoint,
-                                'strict $.** ? (@.name == "submit_result")'))=1
-                          AND unified_investigation_submit_result_v1(worker.checkpoint)
-                                IS NOT NULL
+                          -- A persistent Primary emits submit_result for its
+                          -- initial plan and each accepted refiner patch. The
+                          -- unique sealed primary_synthesis event is the
+                          -- terminal resume witness; a whole-checkpoint
+                          -- single-call predicate rejects every non-trivial
+                          -- multi-worker Investigation plan.
                           AND (
                               (work.current_state='blocked'
                                AND latest.to_state='blocked'
@@ -1124,6 +1474,7 @@ async fn load_stage_team_resume_authorities(
                 plan,
                 work_items,
                 outputs,
+                asset_primary_schedule,
                 completed_synthesis_primary_worker_ids,
                 recoverable_company_finalizer_worker_ids,
                 recoverable_target_intel_finalizer_worker_ids,
@@ -1468,6 +1819,7 @@ pub(crate) async fn load_relational_resume_authority(
     session_id: Uuid,
     operation: &golish_db::repo::operation_state::OperationStateRow,
     stage: StageKind,
+    expected_pre_freeze_organization_id: Option<Uuid>,
 ) -> Result<RuntimeV2ResumeAuthority> {
     let runtime_contract = persisted_contract(&operation.runtime_memory_contract)?;
     if operation.project_scope_id.is_none() {
@@ -1530,9 +1882,28 @@ pub(crate) async fn load_relational_resume_authority(
             scope.is_none() && units.is_empty() && workers.is_empty(),
             "relational V2 scoping resume is not the exact pre-freeze shape"
         );
-        let organization_id = operation.engagement_org_id.ok_or_else(|| {
-            anyhow!("relational V2 scoping resume has no persisted engagement organization")
-        })?;
+        let organization_id = match operation.engagement_org_id {
+            Some(organization_id) => organization_id,
+            None => {
+                let organization_id = expected_pre_freeze_organization_id.ok_or_else(|| {
+                    anyhow!(
+                        "relational V2 pre-freeze Scoping resume requires an exact expected organization"
+                    )
+                })?;
+                anyhow::ensure!(
+                    golish_db::repo::scoping_company_identities::exact_human_selection_root_is_ready(
+                        pool,
+                        operation.operation_id,
+                        execution.id,
+                        organization_id,
+                    )
+                    .await
+                    .context("validate pre-freeze Scoping Human/root authority")?,
+                    "relational V2 pre-freeze Scoping root lacks an exact Human selection/create witness"
+                );
+                organization_id
+            }
+        };
         let decision = classify_runtime_v2_resume(&RuntimeV2ResumeSnapshot {
             operation_id: operation.operation_id,
             active_stage_execution_id: execution.id,
@@ -1686,14 +2057,36 @@ pub(crate) async fn load_relational_resume_authority(
                         unit.id
                     )));
                 }
-                let expected_chain_agent = resume_worker_chain_agent(expected_specialist)
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "relational V2 specialist '{expected_specialist}' has no durable chain agent"
-                        )
-                    })?;
                 let mut worker_status = None;
                 for bound_worker in &unit_workers {
+                    let asset_primary_schedule = team_authority
+                        .and_then(|authority| authority.asset_primary_schedule.as_ref());
+                    let is_asset_primary_chain_owner =
+                        asset_primary_schedule.is_some_and(|schedule| {
+                            investigation_asset_primary_chain_owner(schedule, bound_worker)
+                        });
+                    let is_replaced_asset_primary =
+                        asset_primary_schedule.is_some_and(|schedule| {
+                            schedule.schedule_contract == "primary_dynamic_v2"
+                                && bound_worker.id != schedule.primary_worker_run_id
+                                && bound_worker.message_chain_id.is_none()
+                                && matches!(
+                                    bound_worker.status.as_str(),
+                                    "failed" | "exhausted" | "superseded" | "passed"
+                                )
+                                && bound_worker.terminal_at.is_some()
+                                && bound_worker.lease_token.is_none()
+                                && bound_worker.active_tool_call_id.is_none()
+                        });
+                    let expected_chain_agent = if is_asset_primary_chain_owner {
+                        AgentType::Primary
+                    } else {
+                        resume_worker_chain_agent(expected_specialist).ok_or_else(|| {
+                            anyhow!(
+                                "relational V2 specialist '{expected_specialist}' has no durable chain agent"
+                            )
+                        })?
+                    };
                     anyhow::ensure!(
                         bound_worker.operation_id == operation.operation_id
                             && bound_worker.stage_execution_id == execution.id
@@ -1751,7 +2144,8 @@ pub(crate) async fn load_relational_resume_authority(
                             decode_relational_message_chain(chain_body)?;
                         }
                         None => anyhow::ensure!(
-                            bound_status == RuntimeWorkerStatus::Queued,
+                            bound_status == RuntimeWorkerStatus::Queued
+                                || is_replaced_asset_primary,
                             "relational V2 non-queued Worker has no bound message chain"
                         ),
                     }
@@ -2382,6 +2776,7 @@ mod tests {
             plan,
             work_items: vec![leader_item, child_item],
             outputs: Vec::new(),
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
@@ -2425,6 +2820,7 @@ mod tests {
             plan,
             work_items: vec![leader_item],
             outputs: vec![output],
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
@@ -2471,6 +2867,7 @@ mod tests {
             plan,
             work_items: vec![leader_item],
             outputs: Vec::new(),
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
@@ -2489,6 +2886,21 @@ mod tests {
             .expect("sealed normal Primary is resumable")
             .expect("completed normal Primary remains the logical Primary");
         assert_eq!(selected.id, leader_worker.id);
+    }
+
+    #[test]
+    fn completed_investigation_resume_uses_the_sealed_synthesis_not_single_submit_count() {
+        let source = include_str!("runtime_v2.rs");
+        let loader = source
+            .split("async fn load_stage_team_resume_authorities")
+            .nth(1)
+            .and_then(|tail| tail.split("let recoverable_target_intel").next())
+            .expect("completed synthesis witness query");
+
+        assert!(loader.contains("event.event_kind='primary_synthesis'"));
+        assert!(loader.contains("refiner_seal.task_plan_id=task_plan.task_plan_id"));
+        assert!(!loader.contains("COUNT(*) FROM jsonb_path_query"));
+        assert!(!loader.contains("unified_investigation_submit_result_v1(worker.checkpoint)"));
     }
 
     #[test]
@@ -2514,6 +2926,7 @@ mod tests {
             plan,
             work_items: vec![leader_item],
             outputs: Vec::new(),
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
@@ -2527,6 +2940,282 @@ mod tests {
 
         unit.status = "running".to_string();
         assert!(select_stage_team_primary_worker(&unit, &[], Some(&authority)).is_err());
+    }
+
+    #[test]
+    fn stage_team_resume_accepts_exact_investigation_asset_primary_schedule() {
+        let mut unit = stage_team_resume_unit();
+        unit.stage_kind = "investigation".to_owned();
+        unit.specialist = Some("investigation".to_owned());
+        unit.status = "running".to_owned();
+        unit.terminal_at = None;
+        let mut plan = stage_team_resume_plan(&unit);
+        plan.stage_kind = "investigation".to_owned();
+        plan.leader_role = "investigation".to_owned();
+        plan.aggregator_role = Some("investigation".to_owned());
+        plan.allowed_worker_roles = serde_json::json!([
+            "investigation",
+            "browser",
+            "researcher",
+            "pentester",
+            "adviser"
+        ]);
+        plan.dynamic_request_policy =
+            serde_json::json!({"coordination_mode":"investigation_task_orchestrator"});
+        plan.dispatch_epoch = 1;
+        plan.requests_closed_at = None;
+        let asset_lane_id = Uuid::new_v4();
+        let mut primary_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "investigation",
+            "investigation_asset_primary",
+            &format!("asset:{asset_lane_id}:primary:0"),
+            false,
+        );
+        primary_item.dispatch_epoch = 1;
+        primary_item.status = "running".to_owned();
+        primary_item.created_by = "server_phase_transition".to_owned();
+        primary_item.terminal_at = None;
+        let mut primary_worker = stage_team_resume_worker(&unit, &primary_item);
+        primary_worker.status = "running".to_owned();
+        primary_worker.terminal_at = None;
+        let primary_message_chain_id = primary_worker.message_chain_id.unwrap();
+        let mut role_items = Vec::new();
+        for role in ["browser", "researcher", "pentester", "adviser"] {
+            let mut item = stage_team_resume_item(
+                &unit,
+                &plan,
+                role,
+                "investigation_asset_role",
+                &format!("asset:{asset_lane_id}:role:{role}:0"),
+                true,
+            );
+            item.dispatch_epoch = 1;
+            item.status = "queued".to_owned();
+            item.created_by = "server_phase_transition".to_owned();
+            item.started_at = None;
+            item.terminal_at = None;
+            role_items.push(item);
+        }
+        let schedule = InvestigationAssetPrimaryResumeAuthority {
+            schedule_contract: "fixed_roster_v1".to_owned(),
+            asset_lane_id,
+            evolution_epoch: 0,
+            schedule_round: 0,
+            primary_work_item_id: primary_item.id,
+            primary_worker_run_id: primary_worker.id,
+            primary_message_chain_id,
+            primary_lineage_members: HashSet::from([(primary_item.id, primary_worker.id)]),
+            role_work_item_ids: Some([
+                role_items[0].id,
+                role_items[1].id,
+                role_items[2].id,
+                role_items[3].id,
+            ]),
+        };
+        let mut work_items = vec![primary_item];
+        work_items.extend(role_items);
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items,
+            outputs: Vec::new(),
+            asset_primary_schedule: Some(schedule),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        let workers = [&primary_worker];
+        let selected = select_stage_team_primary_worker(&unit, &workers, Some(&authority))
+            .expect("exact Asset Primary authority resumes")
+            .expect("Asset Primary worker");
+        assert_eq!(selected.id, primary_worker.id);
+    }
+
+    #[test]
+    fn stage_team_resume_accepts_dynamic_asset_primary_rearm_head() {
+        let mut unit = stage_team_resume_unit();
+        unit.stage_kind = "investigation".to_owned();
+        unit.specialist = Some("investigation".to_owned());
+        unit.status = "running".to_owned();
+        unit.terminal_at = None;
+        let mut plan = stage_team_resume_plan(&unit);
+        plan.stage_kind = "investigation".to_owned();
+        plan.leader_role = "investigation".to_owned();
+        plan.aggregator_role = Some("investigation".to_owned());
+        plan.dynamic_request_policy =
+            serde_json::json!({"coordination_mode":"investigation_task_orchestrator"});
+        plan.dispatch_epoch = 3;
+        plan.requests_closed_at = None;
+        let asset_lane_id = Uuid::new_v4();
+        let mut primary_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "investigation",
+            "investigation_asset_primary",
+            &format!("asset:{asset_lane_id}:primary:0:round:2"),
+            false,
+        );
+        primary_item.dispatch_epoch = 3;
+        primary_item.status = "queued".to_owned();
+        primary_item.created_by = "server_phase_transition".to_owned();
+        primary_item.started_at = None;
+        primary_item.terminal_at = None;
+        let mut primary_worker = stage_team_resume_worker(&unit, &primary_item);
+        primary_worker.status = "queued".to_owned();
+        primary_worker.terminal_at = None;
+        let primary_message_chain_id = primary_worker.message_chain_id.unwrap();
+        let base_work_item_id = Uuid::new_v4();
+        let base_worker_run_id = Uuid::new_v4();
+        let predecessor_work_item_id = Uuid::new_v4();
+        let predecessor_worker_run_id = Uuid::new_v4();
+        let schedule = InvestigationAssetPrimaryResumeAuthority {
+            schedule_contract: "primary_dynamic_v2".to_owned(),
+            asset_lane_id,
+            evolution_epoch: 0,
+            schedule_round: 2,
+            primary_work_item_id: primary_item.id,
+            primary_worker_run_id: primary_worker.id,
+            primary_message_chain_id,
+            primary_lineage_members: HashSet::from([
+                (base_work_item_id, base_worker_run_id),
+                (predecessor_work_item_id, predecessor_worker_run_id),
+                (primary_item.id, primary_worker.id),
+            ]),
+            role_work_item_ids: None,
+        };
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![primary_item],
+            outputs: Vec::new(),
+            asset_primary_schedule: Some(schedule),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        let workers = [&primary_worker];
+        let selected = select_stage_team_primary_worker(&unit, &workers, Some(&authority))
+            .expect("dynamic rearm head resumes")
+            .expect("dynamic Asset Primary worker");
+        assert_eq!(selected.id, primary_worker.id);
+        let mut predecessor = primary_worker.clone();
+        predecessor.id = predecessor_worker_run_id;
+        predecessor.work_item_id = Some(predecessor_work_item_id);
+        assert!(investigation_asset_primary_chain_owner(
+            authority
+                .asset_primary_schedule
+                .as_ref()
+                .expect("dynamic schedule"),
+            &predecessor,
+        ));
+        let mut base = primary_worker.clone();
+        base.id = base_worker_run_id;
+        base.work_item_id = Some(base_work_item_id);
+        assert!(investigation_asset_primary_chain_owner(
+            authority
+                .asset_primary_schedule
+                .as_ref()
+                .expect("dynamic schedule"),
+            &base,
+        ));
+        let mut foreign_same_chain = primary_worker.clone();
+        foreign_same_chain.id = Uuid::new_v4();
+        foreign_same_chain.work_item_id = Some(Uuid::new_v4());
+        assert!(!investigation_asset_primary_chain_owner(
+            authority
+                .asset_primary_schedule
+                .as_ref()
+                .expect("dynamic schedule"),
+            &foreign_same_chain,
+        ));
+    }
+
+    #[test]
+    fn asset_primary_resume_authority_loads_the_complete_exact_rearm_lineage() {
+        let source = include_str!("runtime_v2.rs");
+        let loader = source
+            .split("async fn load_stage_team_resume_authorities")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("let completed_synthesis_primary_worker_ids")
+                    .next()
+            })
+            .expect("Asset Primary lineage loader");
+        for required in [
+            "FROM investigation_asset_primary_schedules source",
+            "FROM investigation_asset_primary_rearms rearm",
+            "rearm.status='applied'",
+            "worker.work_item_id=item.id",
+            "worker.message_chain_id=lineage.primary_message_chain_id",
+            "lineage.primary_message_chain_id=",
+            "current.primary_message_chain_id",
+        ] {
+            assert!(
+                loader.contains(required),
+                "missing lineage fence: {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_team_resume_routes_exhausted_dynamic_primary_to_controlled_rearm() {
+        let mut unit = stage_team_resume_unit();
+        unit.stage_kind = "investigation".to_owned();
+        unit.specialist = Some("investigation".to_owned());
+        unit.status = "running".to_owned();
+        unit.terminal_at = None;
+        let mut plan = stage_team_resume_plan(&unit);
+        plan.stage_kind = "investigation".to_owned();
+        plan.leader_role = "investigation".to_owned();
+        plan.aggregator_role = Some("investigation".to_owned());
+        plan.dynamic_request_policy =
+            serde_json::json!({"coordination_mode":"investigation_task_orchestrator"});
+        plan.dispatch_epoch = 2;
+        plan.requests_closed_at = None;
+        let asset_lane_id = Uuid::new_v4();
+        let mut primary_item = stage_team_resume_item(
+            &unit,
+            &plan,
+            "investigation",
+            "investigation_asset_primary",
+            &format!("asset:{asset_lane_id}:primary:0:round:1"),
+            false,
+        );
+        primary_item.dispatch_epoch = 2;
+        primary_item.status = "exhausted".to_owned();
+        primary_item.created_by = "server_phase_transition".to_owned();
+        primary_item.terminal_at = Some(Utc::now());
+        let mut primary_worker = stage_team_resume_worker(&unit, &primary_item);
+        primary_worker.status = "failed".to_owned();
+        primary_worker.terminal_at = Some(Utc::now());
+        let primary_message_chain_id = primary_worker.message_chain_id.unwrap();
+        let authority = StageTeamResumeAuthority {
+            plan,
+            work_items: vec![primary_item.clone()],
+            outputs: Vec::new(),
+            asset_primary_schedule: Some(InvestigationAssetPrimaryResumeAuthority {
+                schedule_contract: "primary_dynamic_v2".to_owned(),
+                asset_lane_id,
+                evolution_epoch: 0,
+                schedule_round: 1,
+                primary_work_item_id: primary_item.id,
+                primary_worker_run_id: primary_worker.id,
+                primary_message_chain_id,
+                primary_lineage_members: HashSet::from([(primary_item.id, primary_worker.id)]),
+                role_work_item_ids: None,
+            }),
+            completed_synthesis_primary_worker_ids: HashSet::new(),
+            recoverable_company_finalizer_worker_ids: HashSet::new(),
+            recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
+        };
+
+        assert!(
+            select_stage_team_primary_worker(&unit, &[&primary_worker], Some(&authority))
+                .expect("exhausted Primary is a resumable rearm boundary")
+                .is_none()
+        );
     }
 
     #[test]
@@ -2557,6 +3246,7 @@ mod tests {
             plan,
             work_items: vec![leader_item, child_item],
             outputs: Vec::new(),
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
@@ -2607,6 +3297,7 @@ mod tests {
             plan,
             work_items: vec![leader_item, recovery_item],
             outputs: vec![output],
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),
@@ -2670,6 +3361,7 @@ mod tests {
             plan,
             work_items: vec![leader_item, recovery_v1, recovery_v2.clone()],
             outputs: vec![leader_output, recovery_v1_output],
+            asset_primary_schedule: None,
             completed_synthesis_primary_worker_ids: HashSet::new(),
             recoverable_company_finalizer_worker_ids: HashSet::new(),
             recoverable_target_intel_finalizer_worker_ids: HashSet::new(),

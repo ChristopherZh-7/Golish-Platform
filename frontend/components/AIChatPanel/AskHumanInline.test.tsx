@@ -44,6 +44,30 @@ describe("AskHumanInline", () => {
     expect(onSubmit).toHaveBeenCalledWith("Production");
   });
 
+  it("shows subsidiary-scope protocol options in Chinese but submits the raw value", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <AskHumanInline
+        request={makeRequest({
+          question: "请选择子公司测试范围",
+          options: ["root_only", "include_51", "include_100"],
+          context:
+            '{"decision":"subsidiary_scope","organization_id":"11111111-2222-3333-4444-555555555555"}',
+        })}
+        onSubmit={onSubmit}
+        onSkip={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText("root_only")).not.toBeInTheDocument();
+    expect(screen.queryByText("include_51")).not.toBeInTheDocument();
+    expect(screen.queryByText("include_100")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /纳入持股 51% 及以上的子公司/ }));
+    expect(onSubmit).toHaveBeenCalledWith("include_51");
+  });
+
   it("does not render a generic Submit button for choice questions", () => {
     render(<AskHumanInline request={makeRequest()} onSubmit={vi.fn()} onSkip={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Submit" })).not.toBeInTheDocument();
@@ -502,7 +526,7 @@ describe("AskHumanInline auto-confirm countdown", () => {
         request={req({
           inputType: "choice",
           question: "杭州默安科技有限公司是否纳入子公司？",
-          options: ["不纳入子公司（仅母公司）", "纳入：≥51% 控股子公司"],
+          options: ["root_only", "include_51", "include_100"],
           context: "Subsidiary scope decision",
         })}
         onSubmit={onSubmit}

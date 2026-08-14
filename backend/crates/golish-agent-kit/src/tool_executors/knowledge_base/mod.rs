@@ -12,9 +12,10 @@
 //! rebuild, `wiki_base_dir`) live in [`wiki`].
 //!
 //! Storage strategy: the markdown wiki on disk (resolved by
-//! [`golish_core::paths::wiki_dir`]) is the source of truth; PostgreSQL provides full-text
-//! search and cross-reference tables. When the DB tracker is unavailable,
-//! search falls back to a filesystem scan via
+//! [`golish_core::paths::wiki_dir`]) feeds PostgreSQL full-text search and exact
+//! indexed-page reads. A tracked read uses the same logical DB path returned by
+//! search so packaged runtime roots cannot make a hit unreadable. When the DB
+//! tracker is unavailable, search/read fall back to the bundled filesystem via
 //! [`wiki::kb_search_filesystem_fallback`].
 
 use crate::tool_executors::common::ToolResult;
@@ -34,7 +35,7 @@ pub async fn execute_knowledge_base_tool(
 ) -> Option<ToolResult> {
     match tool_name {
         "search_knowledge_base" => Some(search::handle_search(args, db_tracker).await),
-        "read_knowledge" => Some(read::handle_read(args).await),
+        "read_knowledge" => Some(read::handle_read(args, db_tracker).await),
         "write_knowledge" => Some(save::handle_write(args, db_tracker).await),
         "ingest_cve" => Some(save::handle_ingest_cve(args, db_tracker).await),
         "save_poc" => Some(save::handle_save_poc(args, db_tracker).await),

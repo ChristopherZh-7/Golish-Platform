@@ -41,7 +41,7 @@ impl RiskLevel {
             }
             "debug_agent" | "analyze_agent" | "get_errors" => RiskLevel::Low,
             "list_skills" | "search_skills" | "load_skill" | "search_tools" => RiskLevel::Low,
-            "update_plan" => RiskLevel::Low,
+            "update_plan" | "list_in_scope_targets" => RiskLevel::Low,
             "web_fetch" => RiskLevel::Low,
 
             // Write operations (recoverable)
@@ -272,5 +272,10 @@ mod tests {
         assert_eq!(RiskLevel::for_tool("delete_file"), RiskLevel::Critical);
         assert_eq!(RiskLevel::for_tool("sub_agent_analyzer"), RiskLevel::Medium);
         assert_eq!(RiskLevel::for_tool("unknown_tool"), RiskLevel::High);
+        assert_eq!(
+            RiskLevel::for_tool("list_in_scope_targets"),
+            RiskLevel::Low,
+            "server-scoped asset census is read-only and must not be presented as high-risk HITL"
+        );
     }
 }

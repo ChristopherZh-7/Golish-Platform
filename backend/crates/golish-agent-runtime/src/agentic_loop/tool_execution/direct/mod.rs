@@ -23,11 +23,8 @@ use golish_agent_kit::tool_executors::{
 mod sub_agent_call;
 use self::sub_agent_call::execute_sub_agent_call;
 
-#[allow(dead_code)] // wired into stage_run_call by Task 9 composition work
-pub mod candidate_analysis_agent_runner;
-pub mod candidate_verification;
+mod investigation_asset_queue;
 mod stage_team_scheduler;
-pub mod verification_campaign;
 
 // `pub(crate)` so `execution_mode::selection_apply` can pull the tool definition
 // (co-located with its handler) when exposing `stage_run` to the primary agent.

@@ -1,10 +1,8 @@
 use super::builder::{create_default_sub_agents, create_default_sub_agents_from_registry};
 use super::prompts::{
-    build_attack_analyst_prompt, build_browser_prompt, build_candidate_hypothesis_analyst_prompt,
-    build_candidate_verifier_prompt, build_coder_prompt, build_enumerator_prompt,
-    build_merge_conflict_critic_prompt, build_orchestrator_prompt, build_pentester_prompt,
-    build_planner_prompt, build_post_exploit_operator_prompt, build_prober_prompt,
-    build_recon_prompt, build_researcher_prompt, build_vuln_scanner_prompt,
+    build_browser_prompt, build_coder_prompt, build_enumerator_prompt, build_orchestrator_prompt,
+    build_pentester_prompt, build_planner_prompt, build_post_exploit_operator_prompt,
+    build_prober_prompt, build_recon_prompt, build_researcher_prompt, build_vuln_scanner_prompt,
 };
 
 fn has_tool(agent: &crate::SubAgentDefinition, tool: &str) -> bool {
@@ -19,7 +17,7 @@ fn test_create_default_sub_agents_count() {
     // + vuln_scanner (formulaic vuln-triage worker) + two closed AU modelers,
     // Investigation cognitive Primary + post_exploit_operator —
     // the stage_run per-org specialists (2026-06-13-stage-run-fanout / C6 P6b).
-    assert_eq!(agents.len(), 40);
+    assert_eq!(agents.len(), 22);
 }
 
 #[test]
@@ -41,14 +39,6 @@ fn test_create_default_sub_agents_ids() {
     assert!(ids.contains(&"application_understanding_company_synthesizer"));
     assert!(!ids.contains(&"application_understanding"));
     assert!(ids.contains(&"investigation"));
-    assert!(ids.contains(&"attack_analyst"));
-    assert!(ids.contains(&"candidate_hypothesis_controller"));
-    assert!(ids.contains(&"candidate_hypothesis_analyst"));
-    assert!(ids.contains(&"merge_conflict_critic"));
-    assert!(ids.contains(&"candidate_verifier"));
-    assert!(ids.contains(&"verification_lead"));
-    assert!(ids.contains(&"verification_independent_critic"));
-    assert!(ids.contains(&"verification_refiner"));
     assert!(ids.contains(&"post_exploit_operator"));
     assert!(ids.contains(&"memorist"));
     assert!(ids.contains(&"planner"));
@@ -590,219 +580,6 @@ fn test_vuln_scanner_prompt_is_wrapper_based() {
     assert!(!prompt.contains("wait_for_background_jobs"));
     assert!(prompt.contains("The gate reads the DATABASE"));
     assert!(!prompt.contains("list_in_scope_targets first"));
-}
-
-#[test]
-fn candidate_verifier_has_exact_closed_tool_surface() {
-    let agents = create_default_sub_agents();
-    let verifier = agents
-        .iter()
-        .find(|agent| agent.id == "candidate_verifier")
-        .unwrap();
-    assert_eq!(
-        verifier.allowed_tools,
-        vec![
-            "verify_execute_candidate_action",
-            "list_recent_evidence",
-            "submit_candidate_attempt",
-        ]
-    );
-    assert!(verifier.delegatable_agents.is_empty());
-    for forbidden in [
-        "pentest_run",
-        "record_finding",
-        "vuln_nuclei_general",
-        "vuln_nuclei_fingerprint_targeted",
-        "wait_for_background_jobs",
-        "check_job",
-        "kill_job",
-        "run_pty_cmd",
-    ] {
-        assert!(!has_tool(verifier, forbidden));
-    }
-
-    let prompt = build_candidate_verifier_prompt();
-    assert!(prompt.contains("action_ordinal"));
-    assert!(prompt.contains("foreground"));
-    assert!(prompt.contains("outcome_unknown"));
-}
-
-#[test]
-fn attack_analyst_is_reasoning_only_and_distinct_from_verifier() {
-    let agents = create_default_sub_agents();
-    let analyst = agents
-        .iter()
-        .find(|agent| agent.id == "attack_analyst")
-        .unwrap();
-    assert!(has_tool(analyst, "query_target_data"));
-    assert!(has_tool(analyst, "list_recent_evidence"));
-    assert!(has_tool(analyst, "submit_stage_deliverable"));
-    assert!(!has_tool(analyst, "verify_execute_candidate_action"));
-    assert!(!has_tool(analyst, "pentest_run"));
-    assert!(!has_tool(analyst, "record_finding"));
-    assert!(build_attack_analyst_prompt().contains("reasoning-only"));
-    assert!(build_attack_analyst_prompt().contains("first response MUST call"));
-    assert!(build_attack_analyst_prompt().contains("nuclei_template_ids"));
-}
-
-#[test]
-fn candidate_specialist_prompts_do_not_own_the_durable_wave_cursor() {
-    let analyst = build_attack_analyst_prompt();
-    for required in [
-        "initial vuln_triage_handoff",
-        "follow-on fact_delta_consolidation",
-        "zero-input",
-        "durable Candidate review",
-    ] {
-        assert!(
-            analyst.contains(required),
-            "missing analyst contract: {required}"
-        );
-    }
-    assert!(analyst.contains("never decides or opens the next Wave"));
-
-    let verifier = build_candidate_verifier_prompt();
-    for required in [
-        "FactDelta proposals",
-        "canonical ref/version/hash",
-        "opened_next_wave",
-        "closed_no_delta",
-        "exhausted",
-        "residual risk",
-    ] {
-        assert!(
-            verifier.contains(required),
-            "missing verifier contract: {required}"
-        );
-    }
-    assert!(verifier.contains("never accepts, consumes, or opens"));
-}
-
-#[test]
-fn candidate_hypothesis_team_has_exact_tool_free_readonly_surface() {
-    let agents = create_default_sub_agents();
-    let expected = [
-        "candidate_hypothesis_controller",
-        "candidate_hypothesis_analyst",
-        "merge_conflict_critic",
-    ];
-
-    for id in expected {
-        let agent = agents
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .unwrap_or_else(|| panic!("missing Candidate analysis role {id}"));
-        assert!(agent.readonly, "{id} must be read-only");
-        assert_eq!(agent.allowed_tools, ["submit_result"]);
-        assert!(agent.delegatable_agents.is_empty());
-        assert_eq!(agent.max_iterations, 8);
-        assert_eq!(agent.idle_timeout_secs, Some(180));
-        for forbidden in [
-            "run_pty_cmd",
-            "pentest_run",
-            "web_search",
-            "web_fetch",
-            "browser_collect_js_api",
-            "search_knowledge_base",
-            "read_knowledge",
-            "write_knowledge",
-            "ingest_cve",
-            "feed_refresh",
-        ] {
-            assert!(!has_tool(agent, forbidden), "{id} exposes {forbidden}");
-        }
-    }
-
-    let controller = agents
-        .iter()
-        .find(|agent| agent.id == "candidate_hypothesis_controller")
-        .expect("controller");
-    assert!(controller.system_prompt.contains("unique final submitter"));
-    assert!(controller
-        .system_prompt
-        .contains("instruction_authority=false"));
-
-    let analyst = build_candidate_hypothesis_analyst_prompt();
-    for required in [
-        "closed frozen input",
-        "instruction_authority=false",
-        "knowledge_signal",
-        "unknown product version",
-        "stale feed",
-        "must not claim proof or refutation",
-        "must not invent identity or hash",
-    ] {
-        assert!(
-            analyst.contains(required),
-            "missing analyst rule: {required}"
-        );
-    }
-}
-
-#[test]
-fn verification_campaign_team_has_exact_closed_tool_surface() {
-    let agents = create_default_sub_agents();
-    let expected = crate::executor::verification_campaign::VERIFICATION_CAMPAIGN_ROLE_IDS;
-    for id in expected {
-        let agent = agents
-            .iter()
-            .find(|candidate| candidate.id == id)
-            .unwrap_or_else(|| panic!("missing Verification Campaign role {id}"));
-        assert!(agent.readonly, "{id} must be read-only");
-        assert_eq!(agent.allowed_tools, ["submit_result"]);
-        assert!(agent.delegatable_agents.is_empty());
-        for forbidden in [
-            "verify_execute_candidate_action",
-            "pentest_run",
-            "record_finding",
-            "web_search",
-            "web_fetch",
-            "browser_collect_js_api",
-            "write_knowledge",
-        ] {
-            assert!(!has_tool(agent, forbidden), "{id} exposes {forbidden}");
-        }
-        for forbidden_text in ["Authorization:", "Cookie:", "curl ", "raw body"] {
-            assert!(
-                !agent.system_prompt.contains(forbidden_text),
-                "{id} prompt contains executable/secret material {forbidden_text}"
-            );
-        }
-    }
-}
-
-#[test]
-fn merge_conflict_critic_prompt_closes_review_and_synthesis_schemas() {
-    let prompt = build_merge_conflict_critic_prompt();
-    for required in [
-        "proposal_conflict_review.v1",
-        "hypothesis_coverage_subreview.v1",
-        "hypothesis_coverage_synthesis.v1",
-        "attack-class",
-        "trust-boundary",
-        "second",
-        "third",
-        "designated immutable chunks",
-        "cross_chunk",
-        "cross_input_partition",
-        "cross_input_reduce",
-        "cross_dimension_reduce",
-        "global_semantic_root",
-        "transitive descendant-worker set",
-        "page receipt is not proof of understanding",
-        "sampling_omitted",
-        "blocked",
-        "degraded",
-    ] {
-        assert!(prompt.contains(required), "missing critic rule: {required}");
-    }
-    for forbidden_claim in [
-        "page receipt proves understanding",
-        "adequate means complete security coverage",
-        "knowledge_signal is proof",
-    ] {
-        assert!(!prompt.contains(forbidden_claim));
-    }
 }
 
 #[test]

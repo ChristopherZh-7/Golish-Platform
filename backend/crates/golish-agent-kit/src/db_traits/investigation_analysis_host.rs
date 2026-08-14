@@ -33,6 +33,14 @@ pub enum InvestigationAnalysisHostError {
     AuthorityMismatch { detail: String },
     #[error("investigation_analysis_host_snapshot_blocked: {detail}")]
     SnapshotBlocked { detail: String },
+    #[error(
+        "investigation_analysis_host_revalidation_required: retry_mode=tool_truth_revalidation operation_id={operation_id} revalidation_obligation_ids={revalidation_obligation_ids:?} stale_roots={stale_roots:?}"
+    )]
+    RevalidationRequired {
+        operation_id: Uuid,
+        revalidation_obligation_ids: Vec<Uuid>,
+        stale_roots: Vec<String>,
+    },
     #[error("investigation_analysis_host_infrastructure: {detail}")]
     Infrastructure { detail: String },
 }
@@ -46,6 +54,9 @@ impl InvestigationAnalysisHostError {
             Self::Conflict { .. } => "investigation_analysis_host_conflict",
             Self::AuthorityMismatch { .. } => "investigation_analysis_host_authority_mismatch",
             Self::SnapshotBlocked { .. } => "investigation_analysis_host_snapshot_blocked",
+            Self::RevalidationRequired { .. } => {
+                "investigation_analysis_host_revalidation_required"
+            }
             Self::Infrastructure { .. } => "investigation_analysis_host_infrastructure",
         }
     }
@@ -58,6 +69,10 @@ pub struct PrepareInvestigationAnalysisSubject {
     pub stable_request_id: Uuid,
     pub identity: UnifiedInvestigationUnitIdentity,
     pub work_id: Uuid,
+    /// Exact current asset lane. New Investigation analysis has no
+    /// organization-wide fallback.
+    pub asset_lane_id: Uuid,
+    pub pending_evolution_authority_id: Option<Uuid>,
 }
 
 /// One exact immutable chunk selector belonging to a frozen Candidate input.
@@ -105,6 +120,8 @@ pub struct PreparedInvestigationAnalysisSubject {
     pub candidate_snapshot_sha256: String,
     pub subject_fingerprint_sha256: String,
     pub binding_id: Uuid,
+    pub asset_lane_id: Uuid,
+    pub pending_evolution_authority_id: Option<Uuid>,
     pub authority_inputs: Vec<InvestigationAnalysisAuthorityInputV1>,
     pub subject_authorities: Vec<InvestigationAnalysisSubjectAuthorityV1>,
     pub replayed: bool,
@@ -130,6 +147,26 @@ pub struct InvestigationAdvisoryActionIntentV1 {
     pub evidence_authority_refs: Vec<String>,
 }
 
+/// A closed, non-authoritative explanation for why a sealed Analysis Primary
+/// emitted no bounded hypothesis.  This is not evidence and cannot create a
+/// Candidate, Campaign, action, or execution authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationAnalysisResidualV1 {
+    pub kind: String,
+    pub reason_code: String,
+}
+
+impl InvestigationAnalysisResidualV1 {
+    pub const NO_BOUNDED_HYPOTHESIS_KIND: &'static str = "no_bounded_hypothesis";
+    pub const SEALED_INPUT_UNSUPPORTED_REASON: &'static str =
+        "sealed_input_did_not_support_a_proof_bound_hypothesis";
+
+    pub fn is_valid_no_hypothesis_residual(&self) -> bool {
+        self.kind == Self::NO_BOUNDED_HYPOTHESIS_KIND
+            && self.reason_code == Self::SEALED_INPUT_UNSUPPORTED_REASON
+    }
+}
+
 /// Typed advisory envelope emitted by Primary/Workers. There is intentionally
 /// no CandidateRegistryMutationV1, canonical claim component, verification
 /// contract/plan, Finding, URL, credential, raw command, or executable action
@@ -142,6 +179,7 @@ pub struct InvestigationCognitiveOutputV1 {
     pub subject_fingerprint_sha256: String,
     pub candidate_proposals: Vec<CandidateHypothesisProposal>,
     pub action_intents: Vec<InvestigationAdvisoryActionIntentV1>,
+    pub residuals: Vec<InvestigationAnalysisResidualV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,6 +197,7 @@ pub struct InvestigationCognitiveAdvisoryView {
     pub subject_fingerprint_sha256: String,
     pub candidate_proposals: Vec<CandidateHypothesisProposal>,
     pub action_intents: Vec<InvestigationAdvisoryActionIntentV1>,
+    pub residuals: Vec<InvestigationAnalysisResidualV1>,
 }
 
 /// Server-callable compound input. No canonical mutation, route, revision,
@@ -268,155 +307,10 @@ pub struct InvestigationGenerationAdmissionView {
     pub generation_ordinal: u32,
     pub generation_seal_id: Uuid,
     pub generation_member_count: u32,
-    pub admission_objective_count: u32,
     pub verification_task_ids: Vec<Uuid>,
-    pub campaign_ids: Vec<Uuid>,
-    pub replayed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrepareInvestigationVerificationTaskSubject {
-    pub stable_request_id: Uuid,
-    pub identity: UnifiedInvestigationUnitIdentity,
-    pub verification_task_id: Uuid,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvestigationBoundedContextRefV1 {
-    pub kind: String,
-    pub id: Uuid,
-    pub authority_sha256: String,
-}
-
-/// Canonical reservation binding one VerificationTask Campaign to the exact
-/// plan objective and verification objective it is allowed to serve. This is
-/// identity/hash authority only and cannot carry executable material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvestigationVerificationCampaignSubjectV1 {
-    pub campaign_id: Uuid,
-    pub plan_objective_id: Uuid,
-    pub objective_id: Uuid,
-    pub reservation_sha256: String,
-    pub capability_assessment_set_sha256: String,
-    /// Exact closed capability ids whose current sealed assessment is
-    /// `available` for this Campaign. This is cognitive selection authority,
-    /// never executable target/argument/credential material.
-    pub available_capability_ids: Vec<String>,
-}
-
-/// Closed, non-executable capability choice for a VerificationTask strategy.
-/// These values name host registry contracts; the host still derives target,
-/// arguments, budgets, credentials, network policy and Operator lease.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum InvestigationVerificationCapabilityV1 {
-    AnonymousAuthenticatedDifferential,
-    DirectoryFingerprint,
-    NucleiExactReplay,
-    ConcurrentRaceDifferential,
-}
-
-/// Read-only input for running a VerificationTask through the same PentAGI
-/// runner. It names exact durable authority and exposes only bounded hashes;
-/// no SQL handle, raw action, credential, URL, or execution lease is present.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreparedInvestigationVerificationTaskSubject {
-    pub subject_kind: UnifiedInvestigationSubjectKind,
-    pub verification_task_id: Uuid,
-    pub hypothesis_revision_id: Uuid,
-    pub hypothesis_revision_sha256: String,
-    pub verification_plan_id: Uuid,
-    pub verification_plan_sha256: String,
-    pub assignment_set_id: Uuid,
-    pub assignment_set_sha256: String,
-    /// Compatibility/index view; `campaigns` is the canonical objective-bound
-    /// authority used for strategy validation.
-    pub campaign_ids: Vec<Uuid>,
-    pub campaigns: Vec<InvestigationVerificationCampaignSubjectV1>,
-    pub campaign_denominator_sha256: String,
-    pub subject_fingerprint_sha256: String,
-    pub bounded_context: Vec<InvestigationBoundedContextRefV1>,
-    pub replayed: bool,
-}
-
-/// Cognitive strategy only. Capability/control identifiers are resolved by
-/// the host registry; this type cannot carry target, protocol arguments,
-/// credentials, commands, request bodies, budgets, or execution authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvestigationVerificationStrategyV1 {
-    pub strategy_id: Uuid,
-    pub campaign_id: Uuid,
-    pub objective_id: Uuid,
-    pub capability: InvestigationVerificationCapabilityV1,
-    pub purpose_code: String,
-    pub required_control_codes: Vec<String>,
-    pub evidence_authority_refs: Vec<String>,
-}
-
-/// Verification-task-local action intent. It references a typed strategy and
-/// Campaign, never an analysis proposal, and still carries no executable
-/// target, request, credential, command, argument, or budget material.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvestigationVerificationActionIntentV1 {
-    pub intent_id: Uuid,
-    pub strategy_id: Uuid,
-    pub campaign_id: Uuid,
-    pub capability: InvestigationVerificationCapabilityV1,
-    pub purpose_code: String,
-    pub evidence_authority_refs: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApplyInvestigationVerificationTaskAdvisory {
-    pub stable_request_id: Uuid,
-    pub identity: UnifiedInvestigationUnitIdentity,
-    pub prepared_subject: PreparedInvestigationVerificationTaskSubject,
-    pub task_plan_id: Uuid,
-    pub delegation_census_seal_id: Uuid,
-    pub primary_worker_run_id: Uuid,
-    pub accepted_output_sha256: Vec<String>,
-    /// Exact Primary synthesis residual set. These are cognitive reducer
-    /// residuals, distinct from Campaign compilation residual receipts.
-    pub primary_residual_sha256: Vec<String>,
-    pub strategies: Vec<InvestigationVerificationStrategyV1>,
-    pub action_intents: Vec<InvestigationVerificationActionIntentV1>,
-}
-
-/// Crash-recovery probe for a VerificationTask whose PentAGI advisory may
-/// already have been frozen. The host returns `None` only when no immutable
-/// advisory receipt exists; otherwise it resumes that exact envelope without
-/// consulting the model again.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResumeInvestigationVerificationTaskAdvisory {
-    pub stable_request_id: Uuid,
-    pub identity: UnifiedInvestigationUnitIdentity,
-    pub prepared_subject: PreparedInvestigationVerificationTaskSubject,
-    pub task_plan_id: Uuid,
-    pub primary_worker_run_id: Uuid,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvestigationVerificationApplyView {
-    pub verification_task_id: Uuid,
-    pub campaign_ids: Vec<Uuid>,
-    pub prepared_action_ids: Vec<Uuid>,
-    pub residual_receipt_ids: Vec<Uuid>,
-    pub primary_residual_count: u32,
-    pub primary_residual_set_sha256: String,
-    pub fact_delta_bundle_ids: Vec<Uuid>,
-    pub replayed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FinalizeInvestigationVerificationTasks {
-    pub identity: super::UnifiedInvestigationStageIdentity,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FinalizedInvestigationVerificationTasksView {
-    pub task_count: u32,
-    pub terminal_count: u32,
-    pub blocked_count: u32,
-    pub outcome_set_ids: Vec<Uuid>,
+    /// The pending evolution batch was closed without a successor generation;
+    /// generation fields identify the source authority, not newly admitted work.
+    pub evolution_fixed_point: bool,
     pub replayed: bool,
 }
 
@@ -441,9 +335,16 @@ pub fn reduce_investigation_cognitive_output(
             detail: "cognitive output subject authority drifted".to_owned(),
         });
     }
-    if request.output.candidate_proposals.is_empty() {
+    let valid_residual_shape = if request.output.candidate_proposals.is_empty() {
+        request.output.action_intents.is_empty()
+            && request.output.residuals.len() == 1
+            && request.output.residuals[0].is_valid_no_hypothesis_residual()
+    } else {
+        request.output.residuals.is_empty()
+    };
+    if !valid_residual_shape {
         return Err(InvestigationAnalysisHostError::InvalidRequest {
-            detail: "empty advisory output requires a typed residual contract".to_owned(),
+            detail: "proposal/residual exact set is invalid".to_owned(),
         });
     }
     let mut proposal_ids = BTreeSet::new();
@@ -498,6 +399,7 @@ pub fn reduce_investigation_cognitive_output(
         subject_fingerprint_sha256: request.output.subject_fingerprint_sha256,
         candidate_proposals: request.output.candidate_proposals,
         action_intents: request.output.action_intents,
+        residuals: request.output.residuals,
     })
 }
 
@@ -567,36 +469,6 @@ pub trait InvestigationAnalysisHostRepository: Send + Sync {
             operation: "resume_analysis_primary_post_synthesis",
         })
     }
-
-    async fn prepare_verification_task_subject(
-        &self,
-        request: PrepareInvestigationVerificationTaskSubject,
-    ) -> InvestigationAnalysisHostResult<PreparedInvestigationVerificationTaskSubject>;
-
-    async fn apply_verification_task_advisory(
-        &self,
-        request: ApplyInvestigationVerificationTaskAdvisory,
-    ) -> InvestigationAnalysisHostResult<InvestigationVerificationApplyView>;
-
-    async fn resume_verification_task_advisory(
-        &self,
-        request: ResumeInvestigationVerificationTaskAdvisory,
-    ) -> InvestigationAnalysisHostResult<Option<InvestigationVerificationApplyView>> {
-        let _ = request;
-        Err(InvestigationAnalysisHostError::Unavailable {
-            operation: "resume_verification_task_advisory",
-        })
-    }
-
-    async fn finalize_verification_tasks_from_campaign_truth(
-        &self,
-        request: FinalizeInvestigationVerificationTasks,
-    ) -> InvestigationAnalysisHostResult<FinalizedInvestigationVerificationTasksView> {
-        let _ = request;
-        Err(InvestigationAnalysisHostError::Unavailable {
-            operation: "finalize_verification_tasks_from_campaign_truth",
-        })
-    }
 }
 
 #[cfg(test)]
@@ -610,11 +482,13 @@ mod tests {
     fn subject() -> PreparedInvestigationAnalysisSubject {
         PreparedInvestigationAnalysisSubject {
             subject_kind: UnifiedInvestigationSubjectKind::AnalysisAttempt,
+            asset_lane_id: Uuid::new_v4(),
             analysis_attempt_id: Uuid::new_v4(),
             candidate_snapshot_id: Uuid::new_v4(),
             candidate_snapshot_sha256: digest('1'),
             subject_fingerprint_sha256: digest('2'),
             binding_id: Uuid::new_v4(),
+            pending_evolution_authority_id: None,
             authority_inputs: Vec::new(),
             subject_authorities: vec![InvestigationAnalysisSubjectAuthorityV1 {
                 subject_id: Uuid::new_v4(),
@@ -657,6 +531,7 @@ mod tests {
                 subject_fingerprint_sha256: subject.subject_fingerprint_sha256.clone(),
                 candidate_proposals: vec![proposal()],
                 action_intents: Vec::new(),
+                residuals: Vec::new(),
             },
         }
     }
@@ -706,5 +581,22 @@ mod tests {
             reduce_investigation_cognitive_output(empty),
             Err(InvestigationAnalysisHostError::InvalidRequest { .. })
         ));
+    }
+
+    #[test]
+    fn typed_no_hypothesis_residual_is_a_legal_zero_proposal_advisory() {
+        let subject = subject();
+        let mut empty = request(&subject);
+        empty.output.candidate_proposals.clear();
+        empty.output.residuals = vec![InvestigationAnalysisResidualV1 {
+            kind: InvestigationAnalysisResidualV1::NO_BOUNDED_HYPOTHESIS_KIND.to_owned(),
+            reason_code: InvestigationAnalysisResidualV1::SEALED_INPUT_UNSUPPORTED_REASON
+                .to_owned(),
+        }];
+
+        let reduced = reduce_investigation_cognitive_output(empty)
+            .expect("typed no-hypothesis residual is a legal sealed advisory");
+        assert!(reduced.candidate_proposals.is_empty());
+        assert_eq!(reduced.residuals.len(), 1);
     }
 }

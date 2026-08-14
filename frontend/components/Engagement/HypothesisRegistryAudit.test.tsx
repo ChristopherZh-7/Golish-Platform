@@ -46,7 +46,6 @@ function envelope(mode = "registry_authoritative_legacy_projection") {
       gateAuthority: "registry",
       allowLegacyMutation: false,
       campaignWritePolicy: "forbidden",
-      allowPreparedActionJit: false,
       comparePolicy: "none",
       legacyProjectionPolicy: "project",
     },

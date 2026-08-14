@@ -2718,54 +2718,26 @@ async fn configure_core_services(bridge: &mut AgentBridge, state: &AgentState) {
     let ready_gate = crate::ai::tracking_bridge::CoreDbReadyGate(state.db_ready.clone());
     bridge.set_db_backend(tracking_backend, ready_gate, chain_persistence);
     bridge.set_runtime_memory_repository(runtime_memory);
+    let verification_guard_port: std::sync::Arc<
+        dyn golish_app_core::ports::pentest::InvestigationAssetVerificationGuardPort,
+    > = std::sync::Arc::new(
+        crate::ai::db_bridge::PgInvestigationAssetVerificationRepository::new(
+            state.db_pool.clone(),
+        ),
+    );
+    let verification_host = state
+        .pentest_tool_factory
+        .create_investigation_asset_verification_host(
+            verification_guard_port,
+            state.pentest_config_manager.clone(),
+            state.db_pool.clone(),
+        );
+    bridge.set_investigation_asset_verification_tools(verification_host);
     bridge.set_application_understanding_runtime(std::sync::Arc::new(
         crate::ai::application_understanding_runtime::PgApplicationUnderstandingStageRuntime::new(
             state.db_pool.clone(),
         ),
     ));
-
-    // Candidate Registry owns a separate closed repository/runtime capability.
-    // It must not reuse `GolishDbRepoProvider` or the legacy Candidate scheduler:
-    // the adapter derives its own exact scope snapshot and freezes the Checked
-    // Tool Truth + managed-feed authority before any model dispatch.
-    let candidate_registry = std::sync::Arc::new(
-        crate::ai::db_bridge::hypothesis_registry::PgHypothesisRegistryRepository::new(
-            state.db_pool.clone(),
-        ),
-    );
-    let candidate_registry_port: std::sync::Arc<
-        dyn golish_agent_kit::db_traits::HypothesisRegistryRepository,
-    > = candidate_registry;
-    let candidate_snapshot_source = std::sync::Arc::new(
-        crate::ai::candidate_analysis_gate::PgCandidateGateSnapshotSource::new(
-            candidate_registry_port.clone(),
-            state.db_pool.clone(),
-        ),
-    );
-    let candidate_finalizer = crate::ai::candidate_analysis_gate::AtomicCandidateFinalizer::new(
-        candidate_registry_port.clone(),
-        candidate_snapshot_source,
-    );
-    let candidate_repository = std::sync::Arc::new(
-        crate::ai::candidate_analysis_runtime::PgHypothesisAnalysisRuntimeRepository::new(
-            state.db_pool.clone(),
-            candidate_registry_port,
-            candidate_finalizer,
-        ),
-    );
-    let candidate_policy = golish_agent_kit::harness::load_embedded_stage_spec(
-        golish_agent_kit::harness::StageKind::AttackCandidate,
-    )
-    .expect("embedded Candidate StageSpec must remain valid")
-    .candidate_analysis_team
-    .expect("Candidate StageSpec must define its analysis-team policy");
-    let candidate_runtime =
-        crate::ai::candidate_analysis_runtime::PgHypothesisAnalysisStageRuntime::new(
-            candidate_repository,
-            candidate_policy,
-        )
-        .expect("embedded Candidate analysis policy must remain valid");
-    bridge.set_hypothesis_analysis_runtime(std::sync::Arc::new(candidate_runtime));
 
     let graph_backend = std::sync::Arc::new(crate::ai::graph_bridge::GraphClientBackend::new(
         state.db_pool.clone(),
@@ -3530,15 +3502,5 @@ mod tests {
         assert!(!source.contains(&forbidden_start));
         assert!(!source.contains(&forbidden_new));
         assert!(!source.contains(&forbidden_settings));
-    }
-
-    #[test]
-    fn candidate_analysis_runtime_is_injected_from_the_closed_registry_adapter() {
-        let source = include_str!("bridge_config.rs");
-        assert!(source.contains("PgHypothesisAnalysisRuntimeRepository::new"));
-        assert!(source.contains("PgHypothesisRegistryRepository::new"));
-        assert!(source.contains("bridge.set_hypothesis_analysis_runtime"));
-        let deferred_marker = ["TODO(Plan B", " Task 9)"].concat();
-        assert!(!source.contains(&deferred_marker));
     }
 }

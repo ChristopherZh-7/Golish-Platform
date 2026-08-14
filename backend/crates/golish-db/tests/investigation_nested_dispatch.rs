@@ -5,10 +5,16 @@ use golish_db::repo::investigation_nested_dispatch::{
 };
 use golish_db::repo::runtime_memory_tx::RuntimeMemoryTxFence;
 use golish_db::repo::runtime_memory_tx::{
-    claim_stage_team_leader, load_investigation_runtime_cursor, rearm_investigation_task_primary,
-    recover_investigation_advisory_primary, ClaimStageTeamLeaderRow, ClaimStageWorkItemRow,
-    InvestigationRuntimeCursorPhaseRow, LoadInvestigationRuntimeCursorRow,
-    RearmInvestigationTaskPrimaryRow, RecoverInvestigationAdvisoryPrimaryRow,
+    claim_stage_team_leader, claim_stage_work_item, close_stage_request_epoch,
+    ensure_investigation_evolution_analysis_primary,
+    ensure_investigation_verification_execution_primary, load_investigation_runtime_cursor,
+    park_stage_team_leader, rearm_investigation_task_primary,
+    recover_investigation_advisory_primary, request_stage_worker,
+    stage_worker_request_payload_hash, ClaimStageTeamLeaderRow, ClaimStageWorkItemRow,
+    CloseStageRequestEpochRow, EnsureInvestigationEvolutionAnalysisPrimaryRow,
+    EnsureInvestigationVerificationExecutionPrimaryRow, InvestigationRuntimeCursorPhaseRow,
+    LoadInvestigationRuntimeCursorRow, ParkStageTeamLeaderRow, RearmInvestigationTaskPrimaryRow,
+    RecoverInvestigationAdvisoryPrimaryRow, RequestStageWorkerRow,
 };
 use golish_db::repo::stage_teams::{
     complete_investigation_task_primary, CompleteInvestigationTaskPrimaryRow,
@@ -70,6 +76,20 @@ fn hash_json(value: &Value) -> String {
     )
 }
 
+fn refresh_worker_output_hash(input: &mut CompleteStageWorkerRow) {
+    input.output_hash = hash_json(&json!({
+        "blocker_code": input.blocker_codes.first(),
+        "canonical_output": input.canonical_output,
+        "checked_empty_units": input.checked_empty_cells,
+        "disposition": input.business_disposition,
+        "evidence_ids": input.evidence_ids,
+        "fact_refs": input.canonical_fact_refs,
+        "output_schema": input.output_schema,
+        "work_item_id": input.work_item_id,
+        "worker_run_id": input.fence.worker_run_id,
+    }));
+}
+
 async fn migrated_db() -> (GolishDb, tempfile::TempDir) {
     let data_dir = tempfile::tempdir().expect("temporary postgres data directory");
     let db = GolishDb::start(DbConfig {
@@ -101,8 +121,504 @@ async fn runtime_cursor_starts_from_the_durable_analysis_primary() {
     .expect("derive initial Analysis cursor from the active Primary");
     assert_eq!(cursor.phase, InvestigationRuntimeCursorPhaseRow::Analysis);
     assert_eq!(cursor.verification_task_id, None);
+    assert_eq!(cursor.pending_evolution_authority_id, None);
     assert!(!cursor.analysis_read_session_sealed);
     assert_eq!(cursor.dispatch_epoch, 0);
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_evolution_rearms_one_durable_analysis_primary_with_exact_replay() {
+    let (mut db, _data_dir) = migrated_db().await;
+    let f = fixture(&db).await;
+    let project_scope_id: Uuid =
+        sqlx::query_scalar("SELECT project_scope_id FROM operation_state WHERE operation_id=$1")
+            .bind(f.operation_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("load project scope");
+    let pending_evolution_authority_id = Uuid::new_v4();
+    let source_generation_id = Uuid::new_v4();
+    let source_generation_seal_id = Uuid::new_v4();
+    let candidate_snapshot_id = Uuid::new_v4();
+    let analysis_attempt_id = Uuid::new_v4();
+    let attempt_input_hash = digest('6');
+    let consolidation_batch_id = Uuid::new_v4();
+    let source_wave_denominator_id = Uuid::new_v4();
+    let wave_coverage_receipt_id = Uuid::new_v4();
+    let source_snapshot_hash = digest('7');
+    let primary_chain_id = Uuid::new_v4();
+    let mut tx = db.pool().begin().await.expect("begin evolution fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *tx)
+        .await
+        .expect("isolate retained authority fixture");
+    sqlx::query(
+        r#"INSERT INTO message_chains(
+               id,session_id,task_id,agent,model,provider,chain)
+           VALUES($1,$2,$3,'primary','fixture-model','fixture-provider',$4)"#,
+    )
+    .bind(primary_chain_id)
+    .bind(f.session_id)
+    .bind(f.operation_id)
+    .bind(json!([{"role":"assistant","content":"retained Analysis context"}]))
+    .execute(&mut *tx)
+    .await
+    .expect("insert retained Analysis Primary chain");
+    sqlx::query("UPDATE stage_worker_runs SET message_chain_id=$2 WHERE id=$1")
+        .bind(f.primary_worker_run_id)
+        .bind(primary_chain_id)
+        .execute(&mut *tx)
+        .await
+        .expect("bind retained Analysis Primary chain");
+    sqlx::query(
+        "UPDATE stage_work_items
+            SET status='completed',row_version=1,terminal_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(f.leader_work_item_id)
+    .execute(&mut *tx)
+    .await
+    .expect("complete retained Analysis Primary");
+    sqlx::query(
+        "UPDATE stage_work_items
+            SET status='completed',row_version=1,terminal_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(f.parent_work_item_id)
+    .execute(&mut *tx)
+    .await
+    .expect("complete retained child");
+    sqlx::query(
+        "UPDATE stage_worker_runs
+            SET status='passed',checkpoint_version=2,lease_token=NULL,lease_owner=NULL,
+                lease_acquired_at=NULL,lease_expires_at=NULL,heartbeat_at=NULL,
+                terminal_at=NOW(),updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(f.parent_worker_run_id)
+    .execute(&mut *tx)
+    .await
+    .expect("pass retained child Worker");
+    sqlx::query(
+        r#"INSERT INTO stage_worker_outputs(
+               id,team_plan_id,work_item_id,worker_run_id,operation_id,stage_execution_id,
+               stage_run_unit_id,scope_snapshot_id,organization_id,output_schema,
+               output_version,business_disposition,canonical_output,canonical_fact_refs,
+               evidence_ids,checked_empty_cells,blocker_codes,output_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'investigation_cognitive_output.v1',1,
+                  'checked_empty','{}'::JSONB,'[]'::JSONB,'{}'::BIGINT[],
+                  '[]'::JSONB,'{}'::TEXT[],$10)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(f.stage_team_plan_id)
+    .bind(f.parent_work_item_id)
+    .bind(f.parent_worker_run_id)
+    .bind(f.operation_id)
+    .bind(f.stage_execution_id)
+    .bind(f.stage_run_unit_id)
+    .bind(f.scope_snapshot_id)
+    .bind(f.organization_id)
+    .bind(digest('8'))
+    .execute(&mut *tx)
+    .await
+    .expect("insert retained child output");
+    sqlx::query(
+        "UPDATE stage_team_plans
+            SET requests_closed_at=NOW(),row_version=1,updated_at=NOW()
+          WHERE id=$1",
+    )
+    .bind(f.stage_team_plan_id)
+    .execute(&mut *tx)
+    .await
+    .expect("close retained Analysis epoch");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_generations(
+               generation_id,operation_id,organization_id,generation_ordinal,
+               candidate_snapshot_id,candidate_gate_decision_id,
+               candidate_snapshot_authority_hash)
+           VALUES($1,$2,$3,0,$4,$5,$6)"#,
+    )
+    .bind(source_generation_id)
+    .bind(f.operation_id)
+    .bind(f.organization_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(digest('9'))
+    .execute(&mut *tx)
+    .await
+    .expect("insert source generation");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_generation_seals(
+               seal_id,generation_id,member_count,member_set_hash,event_count,
+               event_set_hash,open_obligation_set_hash,controller_worker_run_id,
+               generation_hash)
+           VALUES($1,$2,0,$3,0,$4,$5,$6,$7)"#,
+    )
+    .bind(source_generation_seal_id)
+    .bind(source_generation_id)
+    .bind(digest('a'))
+    .bind(digest('b'))
+    .bind(digest('c'))
+    .bind(f.primary_worker_run_id)
+    .bind(digest('d'))
+    .execute(&mut *tx)
+    .await
+    .expect("seal source generation");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_snapshots(
+               snapshot_id,operation_id,organization_id,wave_ordinal,scope_snapshot_id,
+               genesis,previous_generation_seal_id,source_set_hash,fact_delta_watermark,
+               capability_revision_hash,policy_revision_hash,credential_revision_hash,
+               snapshot_status,tool_truth_authority_bundle_seal_id,
+               stable_consumer_request_id,relevant_root_count,relevant_root_set_hash,
+               bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
+               freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
+               temporal_validity_policy_set_hash,target_state_epoch_set_hash,
+               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash)
+           VALUES($1,$2,$3,1,$4,FALSE,$5,$6,0,$7,$8,$9,'sealed_ready',$10,$11,4,
+                  $12,4,$13,$14,$15,$16,$17,$18,$19,NOW(),$20)"#,
+    )
+    .bind(candidate_snapshot_id)
+    .bind(f.operation_id)
+    .bind(f.organization_id)
+    .bind(f.scope_snapshot_id)
+    .bind(source_generation_seal_id)
+    .bind(digest('0'))
+    .bind(digest('1'))
+    .bind(digest('2'))
+    .bind(digest('3'))
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(digest('4'))
+    .bind(digest('5'))
+    .bind(digest('6'))
+    .bind(digest('7'))
+    .bind(digest('8'))
+    .bind(digest('9'))
+    .bind(digest('a'))
+    .bind(digest('b'))
+    .bind(digest('c'))
+    .execute(&mut *tx)
+    .await
+    .expect("insert exact successor Candidate snapshot");
+    sqlx::query(
+        r#"INSERT INTO candidate_analysis_attempts(
+               analysis_attempt_id,snapshot_id,operation_id,organization_id,attempt_ordinal,
+               predecessor_attempt_id,attempt_input_hash,attack_class_checklist_version,
+               attack_class_checklist_digest,trust_boundary_checklist_version,
+               trust_boundary_checklist_digest,coverage_sampling_contract_version,
+               coverage_sampling_contract_digest,retry_limit)
+           VALUES($1,$2,$3,$4,0,NULL,$5,'fixture-v1',$6,'fixture-v1',$7,
+                  'fixture-v1',$8,1)"#,
+    )
+    .bind(analysis_attempt_id)
+    .bind(candidate_snapshot_id)
+    .bind(f.operation_id)
+    .bind(f.organization_id)
+    .bind(&attempt_input_hash)
+    .bind(digest('d'))
+    .bind(digest('e'))
+    .bind(digest('f'))
+    .execute(&mut *tx)
+    .await
+    .expect("insert exact successor ordinal-zero Analysis attempt");
+    sqlx::query(
+        r#"INSERT INTO hypothesis_pending_evolution_authorities(
+               pending_evolution_authority_id,stable_request_id,consolidation_batch_id,
+               operation_id,project_scope_id,organization_id,source_generation_id,
+               source_wave_denominator_id,wave_coverage_receipt_id,
+               fact_delta_member_count,applied_fact_delta_set_hash,residual_set_hash,
+               source_snapshot_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,1,$10,$11,$12)"#,
+    )
+    .bind(pending_evolution_authority_id)
+    .bind(Uuid::new_v4())
+    .bind(consolidation_batch_id)
+    .bind(f.operation_id)
+    .bind(project_scope_id)
+    .bind(f.organization_id)
+    .bind(source_generation_id)
+    .bind(source_wave_denominator_id)
+    .bind(wave_coverage_receipt_id)
+    .bind(digest('e'))
+    .bind(digest('f'))
+    .bind(&source_snapshot_hash)
+    .execute(&mut *tx)
+    .await
+    .expect("insert exact pending evolution authority");
+    tx.commit().await.expect("commit evolution fixture");
+
+    let subject_fingerprint_sha256: String =
+        sqlx::query_scalar("SELECT investigation_evolution_analysis_subject_fingerprint($1,$2)")
+            .bind(pending_evolution_authority_id)
+            .bind(&attempt_input_hash)
+            .fetch_one(db.pool())
+            .await
+            .expect("derive pending evolution subject fingerprint");
+    let cursor_request = LoadInvestigationRuntimeCursorRow {
+        operation_id: f.operation_id,
+        stage_execution_id: f.stage_execution_id,
+        stage_run_unit_id: f.stage_run_unit_id,
+        stage_team_plan_id: f.stage_team_plan_id,
+    };
+    let pending_cursor = load_investigation_runtime_cursor(db.pool(), &cursor_request)
+        .await
+        .expect("derive pending evolution Analysis cursor");
+    assert_eq!(
+        pending_cursor.phase,
+        InvestigationRuntimeCursorPhaseRow::Analysis
+    );
+    assert_eq!(pending_cursor.verification_task_id, None);
+    assert_eq!(
+        pending_cursor.pending_evolution_authority_id,
+        Some(pending_evolution_authority_id)
+    );
+    let request = EnsureInvestigationEvolutionAnalysisPrimaryRow {
+        operation_id: f.operation_id,
+        stage_execution_id: f.stage_execution_id,
+        stage_run_unit_id: f.stage_run_unit_id,
+        stage_team_plan_id: f.stage_team_plan_id,
+        pending_evolution_authority_id,
+        subject_fingerprint_sha256,
+    };
+    let drift = ensure_investigation_evolution_analysis_primary(
+        db.pool(),
+        &EnsureInvestigationEvolutionAnalysisPrimaryRow {
+            subject_fingerprint_sha256: digest('0'),
+            ..request.clone()
+        },
+    )
+    .await
+    .expect_err("attempt-bound subject hash drift must not rearm Evolution Analysis");
+    assert!(
+        format!("{drift}").contains("authority_mismatch"),
+        "unexpected subject drift error: {drift}"
+    );
+    let rearmed = ensure_investigation_evolution_analysis_primary(db.pool(), &request)
+        .await
+        .expect("rearm exact Evolution Analysis Primary");
+    assert!(!rearmed.replayed);
+    assert_eq!(rearmed.plan.dispatch_epoch, 1);
+    assert_eq!(
+        rearmed.primary_work_item.stable_key,
+        format!("evolution:{pending_evolution_authority_id}:primary")
+    );
+    assert_eq!(rearmed.primary_work_item.status, "queued");
+    assert_eq!(
+        rearmed.primary_worker.specialist,
+        "investigation_evolution_primary"
+    );
+    assert_eq!(rearmed.primary_worker.status, "queued");
+    assert_eq!(
+        rearmed.primary_worker.message_chain_id,
+        Some(rearmed.message_chain_id)
+    );
+    let (source_chain, copied_chain): (Value, Value) = sqlx::query_as(
+        "SELECT source.chain,target.chain
+           FROM message_chains source,message_chains target
+          WHERE source.id=$1 AND target.id=$2",
+    )
+    .bind(primary_chain_id)
+    .bind(rearmed.message_chain_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("compare retained Evolution Analysis chain");
+    assert_eq!(copied_chain, source_chain);
+    let replay = ensure_investigation_evolution_analysis_primary(db.pool(), &request)
+        .await
+        .expect("replay exact Evolution Analysis Primary");
+    assert!(replay.replayed);
+    assert_eq!(replay.primary_work_item.id, rearmed.primary_work_item.id);
+    assert_eq!(replay.primary_worker.id, rearmed.primary_worker.id);
+    let counts: (i64, i64, i64, i64) = sqlx::query_as(
+        r#"SELECT
+              (SELECT COUNT(*) FROM investigation_evolution_analysis_primary_rearms
+                WHERE pending_evolution_authority_id=$1 AND status='applied'),
+              (SELECT COUNT(*) FROM stage_work_items WHERE id=$2),
+              (SELECT COUNT(*) FROM stage_worker_runs WHERE id=$3),
+              (SELECT COUNT(*) FROM message_chains WHERE id=$4)"#,
+    )
+    .bind(pending_evolution_authority_id)
+    .bind(rearmed.primary_work_item.id)
+    .bind(rearmed.primary_worker.id)
+    .bind(rearmed.message_chain_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("count exact Evolution rearm authority");
+    assert_eq!(counts, (1, 1, 1, 1));
+
+    let primary_claim = || ClaimStageWorkItemRow {
+        operation_id: f.operation_id,
+        stage_execution_id: f.stage_execution_id,
+        stage_run_unit_id: f.stage_run_unit_id,
+        stage_team_plan_id: f.stage_team_plan_id,
+        exact_work_item_id: Some(rearmed.primary_work_item.id),
+        lease_owner: "evolution-analysis-primary-fixture".to_owned(),
+        lease_seconds: 600,
+        session_id: f.session_id,
+        subtask_id: None,
+        agent: AgentType::Primary,
+        model: None,
+        provider: None,
+        parent_chain_id: None,
+        initial_chain: json!([]),
+        initial_checkpoint: json!([]),
+    };
+    let claimed_primary = claim_stage_team_leader(
+        db.pool(),
+        &ClaimStageTeamLeaderRow {
+            claim: primary_claim(),
+        },
+    )
+    .await
+    .expect("claim rearmed Evolution Analysis Primary")
+    .expect("Evolution Analysis Primary is claimable");
+    let primary_fence = RuntimeMemoryTxFence {
+        operation_id: f.operation_id,
+        stage_execution_id: f.stage_execution_id,
+        stage_run_unit_id: f.stage_run_unit_id,
+        worker_run_id: claimed_primary.worker.id,
+        lease_token: claimed_primary.worker.lease_token.expect("Primary lease"),
+        attempt_epoch: claimed_primary.worker.attempt_epoch,
+        expected_checkpoint_version: claimed_primary.worker.checkpoint_version,
+    };
+    let mut child_request = RequestStageWorkerRow {
+        fence: primary_fence.clone(),
+        stage_team_plan_id: f.stage_team_plan_id,
+        parent_work_item_id: claimed_primary.work_item.id,
+        expected_dispatch_epoch: rearmed.plan.dispatch_epoch,
+        requested_role: "researcher".to_owned(),
+        requested_kind: "analysis_task".to_owned(),
+        subject_refs: Vec::new(),
+        reason: json!({
+            "schema":"stage_team_controller_request.v1",
+            "objective":"Test one bounded successor-analysis hypothesis angle",
+            "parent_tool_request_id":"evolution-primary-tool-call-1",
+        })
+        .to_string(),
+        output_schema: json!("investigation_cognitive_output.v1"),
+        budget_hint: json!({}),
+        dedupe_key: "evolution-analysis-angle-1".to_owned(),
+        request_sha256: String::new(),
+    };
+    child_request.request_sha256 = stage_worker_request_payload_hash(&child_request);
+    let requested_child = request_stage_worker(db.pool(), &child_request)
+        .await
+        .expect("Evolution Analysis Primary durably requests a cognitive child");
+    assert_eq!(requested_child.request.status, "accepted");
+    let child_item = requested_child.work_item.expect("accepted Evolution child");
+
+    let parked_primary = park_stage_team_leader(
+        db.pool(),
+        &ParkStageTeamLeaderRow {
+            fence: primary_fence,
+            stage_team_plan_id: f.stage_team_plan_id,
+            leader_work_item_id: claimed_primary.work_item.id,
+            expected_work_item_row_version: claimed_primary.work_item.row_version,
+            checkpoint: json!({"waiting_for":"evolution-analysis-angle-1"}),
+        },
+    )
+    .await
+    .expect("park exact Evolution Analysis Primary behind its child");
+    assert_eq!(parked_primary.work_item.status, "waiting_dependency");
+    assert_eq!(parked_primary.worker.status, "waiting_background");
+
+    let claimed_child = claim_stage_work_item(
+        db.pool(),
+        &ClaimStageWorkItemRow {
+            exact_work_item_id: Some(child_item.id),
+            lease_owner: "evolution-analysis-child-fixture".to_owned(),
+            agent: AgentType::Adviser,
+            ..primary_claim()
+        },
+    )
+    .await
+    .expect("claim accepted Evolution Analysis child")
+    .expect("Evolution Analysis child is claimable");
+    let mut child_completion = CompleteStageWorkerRow {
+        fence: RuntimeMemoryTxFence {
+            operation_id: f.operation_id,
+            stage_execution_id: f.stage_execution_id,
+            stage_run_unit_id: f.stage_run_unit_id,
+            worker_run_id: claimed_child.worker.id,
+            lease_token: claimed_child.worker.lease_token.expect("child lease"),
+            attempt_epoch: claimed_child.worker.attempt_epoch,
+            expected_checkpoint_version: claimed_child.worker.checkpoint_version,
+        },
+        team_plan_id: f.stage_team_plan_id,
+        work_item_id: claimed_child.work_item.id,
+        expected_work_item_row_version: claimed_child.work_item.row_version,
+        output_schema: "investigation_cognitive_output.v1".to_owned(),
+        business_disposition: "found".to_owned(),
+        canonical_output: json!({"advisory":"bounded successor-analysis result"}),
+        canonical_fact_refs: json!([]),
+        evidence_ids: Vec::new(),
+        checked_empty_cells: json!([]),
+        blocker_codes: Vec::new(),
+        output_hash: String::new(),
+        terminal_checkpoint: json!({"done":true}),
+        evidence_watermark: None,
+    };
+    refresh_worker_output_hash(&mut child_completion);
+    golish_db::repo::stage_teams::complete_stage_worker(db.pool(), child_completion)
+        .await
+        .expect("complete advisory-only Evolution Analysis child");
+
+    let resumed_primary = claim_stage_team_leader(
+        db.pool(),
+        &ClaimStageTeamLeaderRow {
+            claim: primary_claim(),
+        },
+    )
+    .await
+    .expect("resume Evolution Analysis Primary after child completion")
+    .expect("Evolution Analysis Primary dependency is ready");
+    assert_eq!(resumed_primary.worker.id, claimed_primary.worker.id);
+    assert_eq!(resumed_primary.work_item.status, "running");
+    let closed = close_stage_request_epoch(
+        db.pool(),
+        &CloseStageRequestEpochRow {
+            operation_id: f.operation_id,
+            stage_execution_id: f.stage_execution_id,
+            stage_run_unit_id: f.stage_run_unit_id,
+            stage_team_plan_id: f.stage_team_plan_id,
+            expected_dispatch_epoch: resumed_primary.plan.dispatch_epoch,
+            expected_plan_row_version: resumed_primary.plan.row_version,
+        },
+    )
+    .await
+    .expect("close Evolution Analysis Primary request epoch");
+    assert!(closed.barrier.ready_to_finalize());
+    let completed_primary = complete_investigation_task_primary(
+        db.pool(),
+        CompleteInvestigationTaskPrimaryRow {
+            fence: RuntimeMemoryTxFence {
+                operation_id: f.operation_id,
+                stage_execution_id: f.stage_execution_id,
+                stage_run_unit_id: f.stage_run_unit_id,
+                worker_run_id: resumed_primary.worker.id,
+                lease_token: resumed_primary
+                    .worker
+                    .lease_token
+                    .expect("resumed Primary lease"),
+                attempt_epoch: resumed_primary.worker.attempt_epoch,
+                expected_checkpoint_version: resumed_primary.worker.checkpoint_version,
+            },
+            team_plan_id: f.stage_team_plan_id,
+            primary_work_item_id: resumed_primary.work_item.id,
+            expected_work_item_row_version: resumed_primary.work_item.row_version,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.plan.dispatch_epoch,
+            expected_barrier_manifest_hash: closed.barrier.manifest_hash,
+            terminal_checkpoint: json!({"evolution_analysis_primary":"complete"}),
+        },
+    )
+    .await
+    .expect("complete exact Evolution Analysis Primary");
+    assert_eq!(completed_primary.work_item.status, "completed");
+    assert_eq!(completed_primary.worker.status, "passed");
     db.stop().await;
 }
 
@@ -1397,6 +1913,31 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
     .await
     .expect_err("a different VerificationTask cannot replay the open epoch");
     assert!(format!("{conflict}").contains("rearm_receipt_mismatch"));
+    let claimed_planning_primary = claim_stage_team_leader(
+        db.pool(),
+        &ClaimStageTeamLeaderRow {
+            claim: ClaimStageWorkItemRow {
+                operation_id: f.operation_id,
+                stage_execution_id: f.stage_execution_id,
+                stage_run_unit_id: f.stage_run_unit_id,
+                stage_team_plan_id: f.stage_team_plan_id,
+                exact_work_item_id: Some(rearmed.primary_work_item.id),
+                lease_owner: "verification-task-primary-fixture".to_string(),
+                lease_seconds: 600,
+                session_id: f.session_id,
+                subtask_id: None,
+                agent: AgentType::Primary,
+                model: None,
+                provider: None,
+                parent_chain_id: None,
+                initial_chain: json!([]),
+                initial_checkpoint: json!([]),
+            },
+        },
+    )
+    .await
+    .expect("claim open Verification planning Primary")
+    .expect("Verification planning Primary is claimable");
     let task_plan_id = Uuid::new_v4();
     let primary_dispatch_receipt_id = Uuid::new_v4();
     let delegation_census_seal_id = Uuid::new_v4();
@@ -1491,6 +2032,31 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
     .await
     .expect("seed frozen delegation census");
     sqlx::query(
+        r#"INSERT INTO investigation_pentagi_pipeline_events(
+               pipeline_event_id,stable_request_id,task_plan_id,event_ordinal,event_kind,
+               actor_worker_run_id,parent_dispatch_receipt_id,event_sha256)
+           VALUES($1,$2,$3,0,'primary_synthesis',$4,$5,$6)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(task_plan_id)
+    .bind(rearmed.primary_worker.id)
+    .bind(primary_dispatch_receipt_id)
+    .bind(digest('0'))
+    .execute(&mut *advisory_tx)
+    .await
+    .expect("seed frozen Primary synthesis event");
+    sqlx::query("UPDATE stage_worker_runs SET checkpoint=$2 WHERE id=$1")
+        .bind(rearmed.primary_worker.id)
+        .bind(json!([{
+            "name": "submit_result",
+            "arguments": {"result": {"schema_version": 1}}
+        }]))
+        .execute(&mut *advisory_tx)
+        .await
+        .expect("freeze typed Primary synthesis in checkpoint");
+    let advisory_receipt_id = Uuid::new_v4();
+    sqlx::query(
         r#"INSERT INTO investigation_verification_task_advisory_receipts(
                advisory_receipt_id,stable_request_id,verification_task_id,authority_id,
                operation_id,stage_execution_id,stage_run_unit_id,scope_snapshot_id,
@@ -1504,7 +2070,7 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                   1,$21,ARRAY[]::TEXT[],0,$22,1,$23,$24,'building')"#,
     )
-    .bind(Uuid::new_v4())
+    .bind(advisory_receipt_id)
     .bind(Uuid::new_v4())
     .bind(task_id)
     .bind(f.authority_id)
@@ -1552,7 +2118,7 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
                 stage_run_unit_id: f.stage_run_unit_id,
                 stage_team_plan_id: f.stage_team_plan_id,
                 exact_work_item_id: Some(rearmed.primary_work_item.id),
-                lease_owner: "verification-task-primary-fixture".to_string(),
+                lease_owner: "closed-verification-primary-probe".to_string(),
                 lease_seconds: 600,
                 session_id: f.session_id,
                 subtask_id: None,
@@ -1579,7 +2145,7 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
                 stage_run_unit_id: f.stage_run_unit_id,
                 stage_team_plan_id: f.stage_team_plan_id,
                 exact_work_item_id: Some(rearmed.primary_work_item.id),
-                lease_owner: "verification-advisory-recovery-fixture".to_string(),
+                lease_owner: "verification-task-primary-fixture".to_string(),
                 lease_seconds: 600,
                 session_id: f.session_id,
                 subtask_id: None,
@@ -1597,6 +2163,7 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
     .expect("rearmed Primary is claimable");
     assert_eq!(claimed.work_item.id, rearmed.primary_work_item.id);
     assert_eq!(claimed.worker.id, rearmed.primary_worker.id);
+    assert_eq!(claimed.worker.id, claimed_planning_primary.worker.id);
     assert_eq!(claimed.message_chain_id, rearmed.message_chain_id);
     assert_eq!(claimed.plan.dispatch_epoch, 1);
     let exact_counts: (i64, i64, i64, i64) = sqlx::query_as(
@@ -1615,6 +2182,167 @@ async fn next_verification_task_primary_rearms_once_and_is_exactly_claimable() {
     .await
     .expect("count exact rearm rows");
     assert_eq!(exact_counts, (1, 1, 1, 1));
+
+    let mut terminal_tx = db
+        .pool()
+        .begin()
+        .await
+        .expect("begin execution Primary authority fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *terminal_tx)
+        .await
+        .expect("isolate execution Primary authority fixture");
+    sqlx::query(
+        "UPDATE investigation_verification_task_advisory_receipts
+            SET status='applied',applied_at=NOW(),row_version=row_version+1
+          WHERE advisory_receipt_id=$1",
+    )
+    .bind(advisory_receipt_id)
+    .execute(&mut *terminal_tx)
+    .await
+    .expect("apply frozen Verification advisory");
+    sqlx::query(
+        r#"INSERT INTO investigation_verification_task_advisory_seals(
+               advisory_seal_id,stable_request_id,advisory_receipt_id,
+               verification_task_id,campaign_apply_count,campaign_apply_set_sha256,
+               prepared_action_count,prepared_action_set_sha256,residual_count,
+               residual_set_sha256,seal_sha256)
+           VALUES($1,$2,$3,$4,1,$5,1,$6,0,$7,$8)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(advisory_receipt_id)
+    .bind(task_id)
+    .bind(digest('3'))
+    .bind(digest('4'))
+    .bind(digest('5'))
+    .bind(digest('6'))
+    .execute(&mut *terminal_tx)
+    .await
+    .expect("seal applied Verification advisory");
+    terminal_tx
+        .commit()
+        .await
+        .expect("commit execution Primary authority fixture");
+
+    let closed = golish_db::repo::runtime_memory_tx::close_stage_request_epoch(
+        db.pool(),
+        &golish_db::repo::runtime_memory_tx::CloseStageRequestEpochRow {
+            operation_id: f.operation_id,
+            stage_execution_id: f.stage_execution_id,
+            stage_run_unit_id: f.stage_run_unit_id,
+            stage_team_plan_id: f.stage_team_plan_id,
+            expected_dispatch_epoch: claimed.plan.dispatch_epoch,
+            expected_plan_row_version: claimed.plan.row_version,
+        },
+    )
+    .await
+    .expect("replay closed Verification planning epoch");
+    assert!(closed.barrier.ready_to_finalize());
+    let completed = complete_investigation_task_primary(
+        db.pool(),
+        CompleteInvestigationTaskPrimaryRow {
+            fence: RuntimeMemoryTxFence {
+                operation_id: f.operation_id,
+                stage_execution_id: f.stage_execution_id,
+                stage_run_unit_id: f.stage_run_unit_id,
+                worker_run_id: claimed.worker.id,
+                lease_token: claimed.worker.lease_token.expect("claimed Primary lease"),
+                attempt_epoch: claimed.worker.attempt_epoch,
+                expected_checkpoint_version: claimed.worker.checkpoint_version,
+            },
+            team_plan_id: f.stage_team_plan_id,
+            primary_work_item_id: claimed.work_item.id,
+            expected_work_item_row_version: claimed.work_item.row_version,
+            expected_plan_row_version: closed.plan.row_version,
+            expected_dispatch_epoch: closed.plan.dispatch_epoch,
+            expected_barrier_manifest_hash: closed.barrier.manifest_hash,
+            terminal_checkpoint: json!({"verification_planning":"sealed"}),
+        },
+    )
+    .await
+    .expect("complete cognitive Verification Primary before execution");
+    assert_eq!(completed.work_item.status, "completed");
+
+    let ensure = EnsureInvestigationVerificationExecutionPrimaryRow {
+        operation_id: f.operation_id,
+        stage_execution_id: f.stage_execution_id,
+        stage_run_unit_id: f.stage_run_unit_id,
+        stage_team_plan_id: f.stage_team_plan_id,
+        verification_task_id: task_id,
+        task_plan_id,
+    };
+    let execution = ensure_investigation_verification_execution_primary(db.pool(), &ensure)
+        .await
+        .expect("rearm the same durable Verification Primary for execution");
+    assert!(!execution.replayed);
+    assert_eq!(execution.plan.dispatch_epoch, 2);
+    assert_eq!(
+        execution.primary_work_item.kind,
+        "investigation_verification_execution_primary"
+    );
+    assert_eq!(
+        execution.primary_work_item.stable_key,
+        format!("task:{task_id}:primary")
+    );
+    assert_eq!(execution.primary_worker.status, "queued");
+    assert_eq!(
+        execution.primary_worker.message_chain_id,
+        Some(execution.message_chain_id)
+    );
+    assert_ne!(execution.message_chain_id, rearmed.message_chain_id);
+    let chain_histories: (Value, Value) = sqlx::query_as(
+        "SELECT source.chain,successor.chain
+           FROM message_chains source,message_chains successor
+          WHERE source.id=$1 AND successor.id=$2",
+    )
+    .bind(rearmed.message_chain_id)
+    .bind(execution.message_chain_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("load content-exact Verification Primary successor chain");
+    assert_eq!(chain_histories.0, chain_histories.1);
+    let execution_replay = ensure_investigation_verification_execution_primary(db.pool(), &ensure)
+        .await
+        .expect("replay exact execution Primary rearm");
+    assert!(execution_replay.replayed);
+    assert_eq!(
+        execution_replay.primary_worker.id,
+        execution.primary_worker.id
+    );
+    let claimed_execution_primary = claim_stage_team_leader(
+        db.pool(),
+        &ClaimStageTeamLeaderRow {
+            claim: ClaimStageWorkItemRow {
+                operation_id: f.operation_id,
+                stage_execution_id: f.stage_execution_id,
+                stage_run_unit_id: f.stage_run_unit_id,
+                stage_team_plan_id: f.stage_team_plan_id,
+                exact_work_item_id: Some(execution.primary_work_item.id),
+                lease_owner: "verification-execution-primary-fixture".to_string(),
+                lease_seconds: 600,
+                session_id: f.session_id,
+                subtask_id: None,
+                agent: AgentType::Primary,
+                model: None,
+                provider: None,
+                parent_chain_id: None,
+                initial_chain: json!([]),
+                initial_checkpoint: json!([]),
+            },
+        },
+    )
+    .await
+    .expect("claim exact Verification execution Primary")
+    .expect("Verification execution Primary is claimable");
+    assert_eq!(
+        claimed_execution_primary.message_chain_id,
+        execution.message_chain_id
+    );
+    assert_eq!(
+        claimed_execution_primary.worker.id,
+        execution.primary_worker.id
+    );
 
     db.stop().await;
 }

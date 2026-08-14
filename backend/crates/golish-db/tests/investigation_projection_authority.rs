@@ -73,9 +73,11 @@ async fn seed_operation(pool: &PgPool, label: &str) -> OperationFixture {
     .expect("insert authority project scope");
     sqlx::query(
         r#"INSERT INTO operation_state(
-               operation_id,profile,current_stage,runtime_memory_contract,
-               attack_execution_contract,tool_truth_contract,project_scope_id
-           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','legacy_v1',$2)"#,
+           operation_id,profile,current_stage,runtime_memory_contract,
+           attack_execution_contract,tool_truth_contract,project_scope_id,
+           investigation_contract_version,investigation_rollout_mode
+           ) VALUES($1,'assessment','target_intel','legacy_v1','legacy','receipt_v1',$2,
+                    'hypothesis_registry_v1','new_only')"#,
     )
     .bind(operation_id)
     .bind(project_scope_id)
@@ -207,6 +209,7 @@ struct RawAuthorityOptions {
     target_head: bool,
     feed_contract: bool,
     feed_member_heads: usize,
+    unavailable_witness_members: usize,
     expired: bool,
 }
 
@@ -252,7 +255,7 @@ async fn insert_raw_authority(
         Uuid::new_v4(),
         Uuid::new_v4(),
     ];
-    let roots = ["ti", "eas", "enum", "vuln"];
+    let roots = ["eas", "enum", "vuln"];
     let mut tx = pool.begin().await.expect("begin raw authority fixture");
     sqlx::query("SET LOCAL session_replication_role='replica'")
         .execute(&mut *tx)
@@ -268,10 +271,10 @@ async fn insert_raw_authority(
                target_state_epoch_set_hash,observation_window_started_at,
                observation_window_completed_at,effective_valid_until,
                consistent_fresh_count,stale_or_invalid_count,sealed_at
-           ) VALUES($1,$2,$3,$4,$5,$6,'candidate_analysis',$7,4,$8,4,$9,$10,$11,
+           ) VALUES($1,$2,$3,$4,$5,$6,'candidate_analysis',$7,3,$8,3,$9,$10,$11,
                     $12,$13,$14,NOW()-INTERVAL '2 minutes',NOW()-INTERVAL '1 minute',
                     CASE WHEN $15 THEN NOW()-INTERVAL '1 second'
-                         ELSE NOW()+INTERVAL '10 minutes' END,4,0,NOW())"#,
+                         ELSE NOW()+INTERVAL '10 minutes' END,3,0,NOW())"#,
     )
     .bind(bundle_id)
     .bind(operation.operation_id)
@@ -301,7 +304,7 @@ async fn insert_raw_authority(
                freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
                temporal_validity_policy_set_hash,target_state_epoch_set_hash,
                observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash
-           ) VALUES($1,$2,$3,0,$4,TRUE,$5,$6,$7,$8,'sealed_ready',$9,$10,4,$11,4,$12,
+           ) VALUES($1,$2,$3,0,$4,TRUE,$5,$6,$7,$8,'sealed_ready',$9,$10,3,$11,3,$12,
                     $13,$14,$15,$16,$17,$18,NOW(),$19)"#,
     )
     .bind(snapshot_id)
@@ -497,29 +500,75 @@ async fn insert_raw_authority(
     .execute(&mut *tx)
     .await
     .expect("insert raw feed snapshot");
-    for ordinal in 0..5 {
+    let unavailable_members = [
+        ("cve", "managed:cve"),
+        ("cpe", "managed:cpe"),
+        ("kev", "managed:kev"),
+        ("vendor_advisory", "managed:vendor-advisory"),
+        ("detection_rule", "managed:detection-rule"),
+    ];
+    for (ordinal, (source_kind, source_identity)) in unavailable_members.iter().enumerate() {
+        let expected_member_id = Uuid::new_v4();
+        let member_hash = digest(char::from_digit((ordinal + 10) as u32, 16).unwrap_or('a'));
+        if options.unavailable_witness_members > 0 {
+            sqlx::query(
+                r#"INSERT INTO candidate_analysis_knowledge_feed_denominator_members(
+                       expected_member_id,denominator_id,snapshot_id,ordinal,source_kind,
+                       source_identity,schema_name,minimum_schema_version,member_hash
+                   ) VALUES($1,$2,$3,$4,$5,$6,'managed_knowledge_feed.v1',1,$7)"#,
+            )
+            .bind(expected_member_id)
+            .bind(denominator_id)
+            .bind(snapshot_id)
+            .bind(ordinal as i32)
+            .bind(*source_kind)
+            .bind(*source_identity)
+            .bind(&member_hash)
+            .execute(&mut *tx)
+            .await
+            .expect("insert raw unavailable denominator member");
+        }
+        let feed_snapshot_member_id = Uuid::new_v4();
         sqlx::query(
             r#"INSERT INTO candidate_analysis_knowledge_feed_snapshot_members(
                    feed_snapshot_member_id,feed_snapshot_id,snapshot_id,denominator_id,
                    expected_member_id,ordinal,feed_schema,provenance,age_policy_version,
                    age_policy_digest,disposition,member_hash
-               ) VALUES($1,$2,$3,$4,$5,$6,'fixture','{}'::JSONB,'1',$7,'unavailable',$8)"#,
+               ) VALUES($1,$2,$3,$4,$5,$6,'managed_knowledge_feed.v1','{}'::JSONB,
+                        '1',$7,'unavailable',$8)"#,
         )
-        .bind(Uuid::new_v4())
+        .bind(feed_snapshot_member_id)
         .bind(feed_snapshot_id)
         .bind(snapshot_id)
         .bind(denominator_id)
-        .bind(Uuid::new_v4())
-        .bind(ordinal)
-        .bind(digest('9'))
-        .bind(digest('a'))
+        .bind(expected_member_id)
+        .bind(ordinal as i32)
+        .bind(digest('f'))
+        .bind(&member_hash)
         .execute(&mut *tx)
         .await
         .expect("insert raw feed snapshot member");
+        if ordinal < options.unavailable_witness_members {
+            sqlx::query(
+                r#"INSERT INTO candidate_analysis_enrichment_obligations(
+                       obligation_id,snapshot_id,obligation_kind,feed_snapshot_member_id,
+                       reason_code,affected_checklist_member_key,obligation_hash
+                   ) VALUES($1,$2,'feed_refresh',$3,'managed_feed_catalog_unavailable',$4,$5)"#,
+            )
+            .bind(Uuid::new_v4())
+            .bind(snapshot_id)
+            .bind(feed_snapshot_member_id)
+            .bind(format!("feed:{source_kind}"))
+            .bind(digest('e'))
+            .execute(&mut *tx)
+            .await
+            .expect("insert raw unavailable feed obligation");
+        }
     }
 
-    sqlx::query(
-        r#"INSERT INTO candidate_managed_feed_catalog_head(
+    if options.feed_contract {
+        sqlx::query(
+            r#"INSERT INTO candidate_managed_feed_catalog_head(
                singleton,catalog_id,catalog_version,catalog_hash,trust_policy_id,
                trust_policy_version,trust_policy_hash,signature_algorithm_allowlist_hash,
                required_source_count,required_source_set_hash,required_member_count,
@@ -535,19 +584,19 @@ async fn insert_raw_authority(
              required_source_set_hash=EXCLUDED.required_source_set_hash,
              required_member_count=EXCLUDED.required_member_count,
              required_member_set_hash=EXCLUDED.required_member_set_hash"#,
-    )
-    .bind(catalog_id)
-    .bind(digest('e'))
-    .bind(trust_policy_id)
-    .bind(digest('f'))
-    .bind(digest('1'))
-    .bind(digest('3'))
-    .bind(digest('4'))
-    .execute(&mut *tx)
-    .await
-    .expect("install raw current feed catalog head");
-    sqlx::query(
-        r#"INSERT INTO candidate_managed_feed_trust_store_head(
+        )
+        .bind(catalog_id)
+        .bind(digest('e'))
+        .bind(trust_policy_id)
+        .bind(digest('f'))
+        .bind(digest('1'))
+        .bind(digest('3'))
+        .bind(digest('4'))
+        .execute(&mut *tx)
+        .await
+        .expect("install raw current feed catalog head");
+        sqlx::query(
+            r#"INSERT INTO candidate_managed_feed_trust_store_head(
                singleton,trust_store_version,trust_store_hash,key_revocation_epoch,
                key_revocation_epoch_hash,head_version
            ) VALUES(TRUE,1,$1,0,$2,0)
@@ -556,13 +605,12 @@ async fn insert_raw_authority(
              trust_store_hash=EXCLUDED.trust_store_hash,
              key_revocation_epoch=EXCLUDED.key_revocation_epoch,
              key_revocation_epoch_hash=EXCLUDED.key_revocation_epoch_hash"#,
-    )
-    .bind(digest('2'))
-    .bind(digest('3'))
-    .execute(&mut *tx)
-    .await
-    .expect("install raw current feed trust head");
-    if options.feed_contract {
+        )
+        .bind(digest('2'))
+        .bind(digest('3'))
+        .execute(&mut *tx)
+        .await
+        .expect("install raw current feed trust head");
         sqlx::query(
             r#"INSERT INTO candidate_operation_managed_feed_contracts(
                    operation_id,catalog_id,catalog_version,catalog_hash,trust_policy_id,
@@ -610,46 +658,50 @@ async fn registry_read_rejects_each_missing_authority_census_component() {
     let (db, _data_dir) = fixture("exact-census").await;
     let scenarios = [
         (
-            "four-roots",
+            "three-roots",
             RawAuthorityOptions {
-                roots: 3,
+                roots: 2,
                 temporal_member: true,
                 target_head: true,
                 feed_contract: true,
                 feed_member_heads: 5,
+                unavailable_witness_members: 0,
                 expired: false,
             },
         ),
         (
             "current-epoch-head",
             RawAuthorityOptions {
-                roots: 4,
+                roots: 3,
                 temporal_member: true,
                 target_head: false,
                 feed_contract: true,
                 feed_member_heads: 5,
+                unavailable_witness_members: 0,
                 expired: false,
             },
         ),
         (
             "feed-contract",
             RawAuthorityOptions {
-                roots: 4,
+                roots: 3,
                 temporal_member: true,
                 target_head: true,
                 feed_contract: false,
                 feed_member_heads: 5,
+                unavailable_witness_members: 0,
                 expired: false,
             },
         ),
         (
             "feed-member-head",
             RawAuthorityOptions {
-                roots: 4,
+                roots: 3,
                 temporal_member: true,
                 target_head: true,
                 feed_contract: true,
                 feed_member_heads: 4,
+                unavailable_witness_members: 0,
                 expired: false,
             },
         ),
@@ -663,11 +715,12 @@ async fn registry_read_rejects_each_missing_authority_census_component() {
         complete_operation,
         complete_snapshot_id,
         RawAuthorityOptions {
-            roots: 4,
+            roots: 3,
             temporal_member: true,
             target_head: true,
             feed_contract: true,
             feed_member_heads: 5,
+            unavailable_witness_members: 0,
             expired: false,
         },
     )
@@ -722,6 +775,49 @@ async fn registry_read_rejects_each_missing_authority_census_component() {
 
 #[tokio::test]
 #[serial]
+async fn registry_read_accepts_only_the_exact_sealed_unavailable_feed_authority() {
+    let (db, _data_dir) = fixture("sealed-unavailable-feed").await;
+    for (label, unavailable_witness_members, expected_ok) in
+        [("complete", 5, true), ("missing-obligation", 4, false)]
+    {
+        let operation = seed_operation(db.pool(), label).await;
+        let snapshot_id = Uuid::new_v4();
+        project_generation(db.pool(), operation, snapshot_id).await;
+        insert_raw_authority(
+            db.pool(),
+            operation,
+            snapshot_id,
+            RawAuthorityOptions {
+                roots: 3,
+                temporal_member: true,
+                target_head: true,
+                feed_contract: false,
+                feed_member_heads: 0,
+                unavailable_witness_members,
+                expired: false,
+            },
+        )
+        .await;
+        let mut tx = db
+            .pool()
+            .begin()
+            .await
+            .expect("begin Registry contract switch");
+        force_registry_contract(&mut tx, operation.operation_id).await;
+        tx.commit().await.expect("commit Registry contract switch");
+        let result = capture_investigation_read_authority(db.pool(), operation.operation_id).await;
+        if expected_ok {
+            result.expect("exact sealed unavailable feed authority must remain readable");
+        } else {
+            assert_authority_corrupt(
+                result.expect_err("partial unavailable feed authority must fail closed"),
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn first_page_rejects_authority_that_is_already_expired() {
     let (db, _data_dir) = fixture("first-page-expired").await;
     let operation = seed_operation(db.pool(), "first-page-expired").await;
@@ -732,11 +828,12 @@ async fn first_page_rejects_authority_that_is_already_expired() {
         operation,
         snapshot_id,
         RawAuthorityOptions {
-            roots: 4,
+            roots: 3,
             temporal_member: false,
             target_head: false,
             feed_contract: true,
             feed_member_heads: 5,
+            unavailable_witness_members: 0,
             expired: true,
         },
     )

@@ -1,5 +1,7 @@
 # RAG-first 单阶段 Investigation 设计补遗
 
+> Superseded in part by `docs/design/2026-08-12-investigation-primary-led-verification-execution.md` for Primary ownership, Verification worker capabilities, continuous hypothesis refinement, and the host/Agent execution split. The unified stage, Registry, evidence, JIT, Oracle, FactDelta, Reporting and rollout boundaries remain authoritative.
+
 > **状态**：Approved for implementation planning（用户于 2026-08-02 确认RAG-first、单一ChatPanel阶段入口、现有全屏Agent工作区、自动验证调度、点击hypothesis只查看运行过程，以及复用PentAGI式Generator→Primary→dynamic/nested specialists→Refiner/Reflector多Agent逻辑）
 >
 > **日期**：2026-08-02

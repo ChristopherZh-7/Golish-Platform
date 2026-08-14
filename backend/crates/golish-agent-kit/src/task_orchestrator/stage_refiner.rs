@@ -790,7 +790,7 @@ fn command_hint_for(stage: StageKind, tool: &str, asset: &str, technique: &str) 
             "vuln_nuclei_fingerprint_targeted foreground call: resolve the work item's target_id and exact target_url={asset}, then pass techniques=[\"GOLISH-NDAY\"]; the backend freezes template ids from current-owner fingerprints and never falls back to a general scan"
         ),
         (StageKind::VulnTriage, "vuln_probe_anonymous_access", _) => format!(
-            "vuln_probe_anonymous_access foreground call: resolve the work item's server-side target_id and exact target_url={asset}, query_target_data sections=[\"endpoints\"], review the complete potentially-sensitive inventory, copy reviewed_endpoint_ids exactly from anonymous_access_review.eligible_endpoint_ids, then choose a bounded selected_probes=[{{endpoint_id, query_values, rationale}}] subset only from those eligible ids (maximum 16); for each selected endpoint copy query_values keys only from anonymous_access_review.eligible_endpoint_query_contracts[].persisted_url_query_names and use query_values={{}} when that list is empty (endpoint params that are not already URL-query names are not authorized overrides); never pass per-endpoint URL/method/header/cookie/token/body/redirect/CLI controls or blindly probe the full inventory"
+            "vuln_probe_anonymous_access foreground call: resolve the work item's server-side target_id and exact target_url={asset}, call query_target_data(target_id=..., sections=[\"endpoints\"], exact_origin={asset}), review the complete potentially-sensitive inventory, copy reviewed_endpoint_ids exactly from anonymous_access_review.eligible_endpoint_ids, then choose a bounded selected_probes=[{{endpoint_id, query_values, rationale}}] subset only from those eligible ids (maximum 16); for each selected endpoint copy query_values keys only from anonymous_access_review.eligible_endpoint_query_contracts[].persisted_url_query_names and use query_values={{}} when that list is empty (endpoint params that are not already URL-query names are not authorized overrides); never pass per-endpoint URL/method/header/cookie/token/body/redirect/CLI controls or blindly probe the full inventory"
         ),
         _ => format!("{tool} targeted at {asset} for {technique}"),
     }
@@ -1386,6 +1386,7 @@ mod tests {
             .expect("anonymous-access repair hint");
         assert!(anonymous_hint.contains("reviewed_endpoint_ids"));
         assert!(anonymous_hint.contains("anonymous_access_review.eligible_endpoint_ids"));
+        assert!(anonymous_hint.contains("exact_origin=https://api.example.com"));
         assert!(anonymous_hint.contains("selected_probes"));
         assert!(anonymous_hint.contains("query_values"));
         assert!(anonymous_hint.contains("eligible_endpoint_query_contracts"));

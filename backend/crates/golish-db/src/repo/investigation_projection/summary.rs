@@ -14,6 +14,40 @@ use super::types::{
 };
 use super::{apply_expected_page_authority, InvestigationProjectionReadSnapshot};
 
+const EXACT_MAIN_ACTOR_SQL: &str = r#"SELECT 'main'::TEXT AS actor_kind,item.organization_id,
+              NULL::UUID AS hypothesis_revision_id,NULL::UUID AS task_id,
+              NULL::UUID AS subtask_id,worker.id AS worker_run_id,
+              $3::TEXT AS owning_stage_run_request_id,
+              concat($3::TEXT,'::team:',item.organization_id::TEXT,
+                     '::lead:',worker.id::TEXT) AS transcript_request_id,
+              NULL::TEXT AS parent_actor_transcript_request_id,
+              NULL::TEXT AS parent_dispatch_tool_request_id,worker.status,
+              TRUE AS identity_valid
+         FROM operation_org_scope_snapshots scope
+         JOIN stage_work_items item
+           ON item.operation_id=scope.operation_id
+          AND item.stage_execution_id=$2
+          AND item.scope_snapshot_id=scope.id
+          AND item.organization_id=scope.root_organization_id
+          AND item.kind='investigation_primary'
+          AND item.stable_key='leader:primary'
+          AND item.role='investigation'
+          AND item.created_by='server_seed'
+         JOIN LATERAL (
+             SELECT run.id,run.parent_request_id,run.status
+               FROM stage_worker_runs run
+              WHERE run.work_item_id=item.id
+                AND run.operation_id=item.operation_id
+                AND run.stage_execution_id=item.stage_execution_id
+                AND run.stage_run_unit_id=item.stage_run_unit_id
+                AND run.organization_id=item.organization_id
+              ORDER BY run.worker_generation DESC
+              LIMIT 1
+         ) worker ON TRUE
+        WHERE scope.operation_id=$1 AND scope.id=$4
+        ORDER BY item.id
+        LIMIT 2"#;
+
 pub async fn read_investigation_summary(
     pool: &PgPool,
     operation_id: Uuid,
@@ -78,44 +112,13 @@ async fn load_exact_main_actor_on(
     operation_id: Uuid,
     selector: &InvestigationStageRunSelector,
 ) -> InvestigationProjectionResult<Option<InvestigationActorTopologyNode>> {
-    let rows = sqlx::query_as::<_, InvestigationActorTopologyNode>(
-        r#"SELECT 'main'::TEXT AS actor_kind,item.organization_id,
-                  NULL::UUID AS hypothesis_revision_id,NULL::UUID AS task_id,
-                  NULL::UUID AS subtask_id,worker.id AS worker_run_id,
-                  $3::TEXT AS owning_stage_run_request_id,
-                  concat($3::TEXT,'::team:',item.organization_id::TEXT,
-                         '::lead:',worker.id::TEXT) AS transcript_request_id,
-                  NULL::TEXT AS parent_actor_transcript_request_id,
-                  NULL::TEXT AS parent_dispatch_tool_request_id,worker.status,
-                  TRUE AS identity_valid
-             FROM operation_org_scope_snapshots scope
-             JOIN stage_work_items item
-               ON item.operation_id=scope.operation_id
-              AND item.stage_execution_id=$2
-              AND item.scope_snapshot_id=scope.id
-              AND item.organization_id=scope.root_organization_id
-              AND item.role='company_stage_controller'
-             JOIN LATERAL (
-                 SELECT run.id,run.parent_request_id,run.status
-                   FROM stage_worker_runs run
-                  WHERE run.work_item_id=item.id
-                    AND run.operation_id=item.operation_id
-                    AND run.stage_execution_id=item.stage_execution_id
-                    AND run.stage_run_unit_id=item.stage_run_unit_id
-                    AND run.organization_id=item.organization_id
-                  ORDER BY run.worker_generation DESC
-                  LIMIT 1
-             ) worker ON TRUE
-            WHERE scope.operation_id=$1 AND scope.id=$4
-            ORDER BY item.id
-            LIMIT 2"#,
-    )
-    .bind(operation_id)
-    .bind(selector.stage_execution_id)
-    .bind(&selector.stage_run_request_id)
-    .bind(selector.scope_snapshot_id)
-    .fetch_all(&mut **tx)
-    .await?;
+    let rows = sqlx::query_as::<_, InvestigationActorTopologyNode>(EXACT_MAIN_ACTOR_SQL)
+        .bind(operation_id)
+        .bind(selector.stage_execution_id)
+        .bind(&selector.stage_run_request_id)
+        .bind(selector.scope_snapshot_id)
+        .fetch_all(&mut **tx)
+        .await?;
     if rows.len() > 1 {
         return Err(invalid_payload(
             "exact Investigation Main actor identity is ambiguous",
@@ -616,4 +619,25 @@ async fn read_investigation_summary_inner(
         },
         stage_run,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EXACT_MAIN_ACTOR_SQL;
+
+    #[test]
+    fn exact_main_actor_uses_the_unified_investigation_primary_identity() {
+        for required in [
+            "item.kind='investigation_primary'",
+            "item.stable_key='leader:primary'",
+            "item.role='investigation'",
+            "item.created_by='server_seed'",
+        ] {
+            assert!(
+                EXACT_MAIN_ACTOR_SQL.contains(required),
+                "missing exact unified Main predicate: {required}"
+            );
+        }
+        assert!(!EXACT_MAIN_ACTOR_SQL.contains("company_stage_controller"));
+    }
 }

@@ -70,6 +70,7 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
     let scope_snapshot_id = Uuid::new_v4();
     let stage_run_unit_id = Uuid::new_v4();
     let authority_id = Uuid::new_v4();
+    let asset_lane_id = Uuid::new_v4();
     let owning_request_id = format!("investigation-binding-request-{label}");
 
     sqlx::query(
@@ -243,6 +244,42 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
     .execute(pool)
     .await
     .expect("insert Investigation authority");
+    let mut asset_tx = pool
+        .begin()
+        .await
+        .expect("begin analysis binding asset fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *asset_tx)
+        .await
+        .expect("isolate analysis binding asset fixture");
+    sqlx::query(
+        r#"INSERT INTO investigation_asset_lanes(
+               asset_lane_id,asset_queue_id,company_queue_id,company_member_id,authority_id,
+               operation_id,stage_execution_id,scope_snapshot_id,organization_id,target_id,
+               target_type_at_freeze,target_value_at_freeze,target_source_at_freeze,
+               target_created_at,target_identity_sha256,ordinal,state,evolution_epoch,
+               max_evolution_epochs)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'domain','binding.example','fixture',
+                  NOW(),$11,0,'analyzing',0,2)"#,
+    )
+    .bind(asset_lane_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(authority_id)
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .bind(scope_snapshot_id)
+    .bind(organization_id)
+    .bind(Uuid::new_v4())
+    .bind(digest('5'))
+    .execute(&mut *asset_tx)
+    .await
+    .expect("insert analysis binding asset lane");
+    asset_tx
+        .commit()
+        .await
+        .expect("commit analysis binding asset fixture");
 
     let identity = InvestigationUnitIdentity {
         stage: InvestigationStageIdentity {
@@ -269,6 +306,7 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
         .register_work(&RegisterInvestigationWorkInput {
             identity: identity.clone(),
             work_id,
+            asset_lane_id,
             stable_work_key_sha256: digest('4'),
             work_kind: InvestigationWorkKind::Analysis,
             external_identity_sha256: digest('5'),
@@ -310,9 +348,10 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
                    bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
                    freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
                    temporal_validity_policy_set_hash,target_state_epoch_set_hash,
-                   observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash
+                   observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash,
+                   asset_lane_id
                ) VALUES($1,$2,$3,0,$4,TRUE,$5,$6,$7,$8,'sealed_ready',$9,$10,4,$11,4,$12,
-                        $13,$14,$15,$16,$17,$18,NOW(),$19)"#,
+                        $13,$14,$15,$16,$17,$18,NOW(),$19,$20)"#,
         )
         .bind(snapshot_id)
         .bind(operation_id)
@@ -333,6 +372,7 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
         .bind(digest('1'))
         .bind(digest('2'))
         .bind(digest('3'))
+        .bind(asset_lane_id)
         .execute(&mut *candidate_tx)
         .await
         .expect("insert Candidate snapshot fixture");
@@ -342,8 +382,8 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
                    attempt_input_hash,attack_class_checklist_version,
                    attack_class_checklist_digest,trust_boundary_checklist_version,
                    trust_boundary_checklist_digest,coverage_sampling_contract_version,
-                   coverage_sampling_contract_digest,retry_limit
-               ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1)"#,
+                   coverage_sampling_contract_digest,retry_limit,asset_lane_id
+               ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1,$9)"#,
         )
         .bind(attempt_id)
         .bind(snapshot_id)
@@ -353,6 +393,7 @@ async fn seed_fixture(pool: &PgPool, label: &str) -> Fixture {
         .bind(digest('5'))
         .bind(digest('6'))
         .bind(digest('7'))
+        .bind(asset_lane_id)
         .execute(&mut *candidate_tx)
         .await
         .expect("insert Candidate attempt fixture");

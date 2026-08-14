@@ -41,7 +41,6 @@ use crate::{DbError, Result};
 const AUTHORITY_MISMATCH: &str = "INVESTIGATION_HYPOTHESIS_COMPILER_AUTHORITY_MISMATCH";
 const REPLAY_DRIFT: &str = "INVESTIGATION_HYPOTHESIS_COMPILER_REPLAY_DRIFT";
 const COMPILED_INVALID: &str = "INVESTIGATION_HYPOTHESIS_COMPILER_COMPILED_INVALID";
-const TYPED_RESIDUAL_REQUIRED: &str = "INVESTIGATION_HYPOTHESIS_COMPILER_TYPED_RESIDUAL_REQUIRED";
 
 fn conflict(code: &'static str) -> DbError {
     DbError::Other(anyhow::anyhow!(code))
@@ -62,6 +61,75 @@ pub struct InvestigationProposalInput {
     pub proof_refs: Vec<InvestigationProofRefInput>,
 }
 
+/// Project unresolved verification discoveries through the exact frozen
+/// Candidate snapshot input that carries them.  The caller cannot invent a
+/// proof selector or alter the server-derived canonical subject/key.
+pub async fn load_pending_discovery_compiler_proposals(
+    pool: &PgPool,
+    operation_id: Uuid,
+    asset_lane_id: Uuid,
+    candidate_snapshot_id: Uuid,
+) -> Result<Vec<InvestigationProposalInput>> {
+    let rows: Vec<(Uuid, Value, Uuid, Uuid, String)> = sqlx::query_as(
+        r#"SELECT discovery.discovery_authority_id,discovery.canonical_proposal,
+                  input.snapshot_input_id,chunk.chunk_id,input.source_content_hash
+             FROM investigation_pending_hypothesis_discovery_backlog discovery
+             JOIN investigation_asset_lanes lane
+               ON lane.asset_lane_id=discovery.asset_lane_id
+              AND lane.operation_id=$1
+             JOIN candidate_analysis_snapshots snapshot
+               ON snapshot.snapshot_id=$3
+              AND snapshot.operation_id=lane.operation_id
+              AND snapshot.organization_id=lane.organization_id
+              AND snapshot.asset_lane_id=lane.asset_lane_id
+             JOIN candidate_analysis_snapshot_inputs input
+               ON input.snapshot_id=snapshot.snapshot_id
+              AND input.source_kind='pending_hypothesis_discovery'
+              AND input.stable_input_key=
+                  'source-set:pending_hypothesis_discovery:'||
+                  discovery.discovery_authority_id::TEXT
+              AND input.server_chunking_disposition='complete'
+              AND input.source_content_hash=tool_truth_sha256(jsonb_build_object(
+                  'schema','investigation_pending_hypothesis_discovery_analysis_input.v1',
+                  'instruction_authority',FALSE,
+                  'discovery_authority_id',discovery.discovery_authority_id,
+                  'semantic_key_sha256',discovery.semantic_key_sha256,
+                  'canonical_proposal',discovery.canonical_proposal,
+                  'discovery_sha256',discovery.discovery_sha256,
+                  'rationale_redacted',discovery.rationale_redacted)::TEXT)
+             JOIN candidate_analysis_input_chunk_census_members chunk
+               ON chunk.snapshot_id=input.snapshot_id
+              AND chunk.snapshot_input_id=input.snapshot_input_id
+              AND chunk.ordinal=0
+            WHERE discovery.asset_lane_id=$2
+            ORDER BY discovery.created_at,discovery.discovery_ordinal,
+                     discovery.discovery_authority_id"#,
+    )
+    .bind(operation_id)
+    .bind(asset_lane_id)
+    .bind(candidate_snapshot_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(
+            |(proposal_id, mut canonical_proposal, input_id, chunk_id, source_hash)| {
+                let proof = InvestigationProofRefInput {
+                    input_id,
+                    chunk_id,
+                    source_hash,
+                    source_role: "support".to_owned(),
+                };
+                canonical_proposal["proof_refs"] = serde_json::to_value([&proof])?;
+                Ok(InvestigationProposalInput {
+                    proposal_id,
+                    canonical_proposal,
+                    proof_refs: vec![proof],
+                })
+            },
+        )
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct PrepareInvestigationCompilationInput {
     pub stable_compilation_request_id: Uuid,
@@ -78,6 +146,9 @@ pub struct PrepareInvestigationCompilationInput {
     pub task_plan_id: Uuid,
     pub delegation_census_seal_id: Uuid,
     pub primary_worker_run_id: Uuid,
+    /// Host-resolved material FactDelta hand-off for a successor Analysis.
+    /// Initial Analysis passes `None`; model output can never choose this ID.
+    pub pending_evolution_authority_id: Option<Uuid>,
     pub proposals: Vec<InvestigationProposalInput>,
     pub canonical_action_intents: Vec<Value>,
 }
@@ -97,6 +168,13 @@ pub struct PreparedInvestigationCompilation {
     pub input: PrepareInvestigationCompilationInput,
     pub delegation_census_sha256: String,
     pub candidate_snapshot_authority_sha256: String,
+    /// Server-frozen asset lane carried by the candidate snapshot. Historical
+    /// rows may remain nullable in storage, but a new compiler run must resolve
+    /// this exact authority or fail closed.
+    pub asset_lane_id: Uuid,
+    pub asset_target_id: Uuid,
+    pub asset_target_type_at_time: String,
+    pub asset_target_value_at_time: String,
     pub proposal_set_sha256: String,
     pub action_intent_set_sha256: String,
     pub proof_member_set_sha256: String,
@@ -112,6 +190,7 @@ pub struct ApplyInvestigationCompilationInput {
     pub prepared: PreparedInvestigationCompilation,
     pub stable_apply_request_id: Uuid,
     pub stable_admission_request_id: Uuid,
+    pub pending_evolution_authority_id: Option<Uuid>,
     pub mutations: Vec<CandidateMutationRow>,
     pub claim_components: Vec<HypothesisClaimComponentV1>,
     pub verification_contracts: Vec<VerificationContractV1>,
@@ -127,8 +206,11 @@ pub struct InvestigationCanonicalApplyView {
     pub generation_member_count: i64,
     pub admission_set_id: Uuid,
     pub verification_task_ids: Vec<Uuid>,
-    pub campaign_reservation_ids: Vec<Uuid>,
     pub projection_outbox_batch_id: Uuid,
+    /// True when a pending FactDelta authority reached a real fixed point and
+    /// no empty successor generation was created. Generation fields then
+    /// identify the closed source generation.
+    pub evolution_fixed_point: bool,
     pub replayed: bool,
 }
 
@@ -140,7 +222,7 @@ struct CanonicalProposal {
     subject_identity_hash: String,
     predicate_schema: String,
     predicate_version: u32,
-    predicate_arguments: Vec<(String, String)>,
+    predicate_arguments: BTreeMap<String, String>,
     trust_boundary: String,
     polarity: String,
     structured_claim: String,
@@ -167,6 +249,10 @@ struct PreparedRevision {
     generation_transition_sha256: String,
     state: CandidateMutationEpistemicState,
     member_sha256: String,
+    asset_lane_id: Uuid,
+    target_live_id: Uuid,
+    target_type_at_time: String,
+    target_value_at_time: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -190,6 +276,23 @@ struct ApplyReplayRow {
     admission_set_id: Uuid,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct PendingEvolutionAuthorityRow {
+    pending_evolution_authority_id: Uuid,
+    consolidation_batch_id: Uuid,
+    operation_id: Uuid,
+    project_scope_id: Uuid,
+    organization_id: Uuid,
+    source_generation_id: Uuid,
+    source_wave_denominator_id: Uuid,
+    wave_coverage_receipt_id: Uuid,
+    fact_delta_member_count: i64,
+    applied_fact_delta_set_hash: String,
+    residual_set_hash: String,
+    source_snapshot_hash: String,
+    asset_lane_id: Uuid,
+}
+
 async fn json_hash_on(tx: &mut Transaction<'_, Postgres>, value: &Value) -> Result<String> {
     Ok(
         sqlx::query_scalar("SELECT tool_truth_sha256(($1::JSONB)::TEXT)")
@@ -197,6 +300,31 @@ async fn json_hash_on(tx: &mut Transaction<'_, Postgres>, value: &Value) -> Resu
             .fetch_one(&mut **tx)
             .await?,
     )
+}
+
+async fn resolve_proposal_asset_lane_on(
+    tx: &mut Transaction<'_, Postgres>,
+    asset_lane_id: Uuid,
+    subject_kind: &str,
+    subject_identity_hash: &str,
+) -> Result<Uuid> {
+    sqlx::query_scalar("SELECT investigation_resolve_proposal_asset_lane($1,$2,$3)")
+        .bind(asset_lane_id)
+        .bind(subject_kind)
+        .bind(subject_identity_hash)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(Into::into)
+}
+
+fn asset_lane_initial_root_id(
+    operation_id: Uuid,
+    asset_lane_id: Uuid,
+    semantic_key: &HypothesisSemanticKeyV1,
+) -> Result<Uuid> {
+    let semantic_root = initial_root_id(operation_id, semantic_key)
+        .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
+    Ok(Uuid::new_v5(&asset_lane_id, semantic_root.as_bytes()))
 }
 
 async fn exact_set_hash_on(
@@ -314,9 +442,299 @@ fn event_kind(state: CandidateMutationEpistemicState) -> &'static str {
     }
 }
 
+async fn load_pending_evolution_authority_on(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &PrepareInvestigationCompilationInput,
+) -> Result<Option<PendingEvolutionAuthorityRow>> {
+    let rows = sqlx::query_as::<_, PendingEvolutionAuthorityRow>(
+        r#"SELECT pending.pending_evolution_authority_id,
+                  pending.consolidation_batch_id,pending.operation_id,
+                  pending.project_scope_id,pending.organization_id,
+                  pending.source_generation_id,pending.source_wave_denominator_id,
+                  pending.wave_coverage_receipt_id,pending.fact_delta_member_count,
+                  pending.applied_fact_delta_set_hash,pending.residual_set_hash,
+                  pending.source_snapshot_hash,pending.asset_lane_id
+             FROM candidate_analysis_snapshots snapshot
+             JOIN hypothesis_generation_seals source_seal
+               ON source_seal.seal_id=snapshot.previous_generation_seal_id
+             JOIN hypothesis_pending_evolution_authorities pending
+              ON pending.source_generation_id=source_seal.generation_id
+              AND pending.operation_id=snapshot.operation_id
+              AND pending.organization_id=snapshot.organization_id
+              AND pending.asset_lane_id=snapshot.asset_lane_id
+             JOIN operation_state operation
+               ON operation.operation_id=pending.operation_id
+              AND operation.project_scope_id=pending.project_scope_id
+             LEFT JOIN hypothesis_consolidation_receipts terminal
+               ON terminal.consolidation_batch_id=pending.consolidation_batch_id
+            WHERE snapshot.snapshot_id=$1 AND snapshot.operation_id=$2
+              AND snapshot.organization_id=$3 AND snapshot.scope_snapshot_id=$4
+              AND (
+                    terminal.consolidation_receipt_id IS NULL
+                    OR EXISTS(
+                        SELECT 1
+                          FROM investigation_hypothesis_compilation_decisions replay_decision
+                         WHERE replay_decision.stable_request_id=$5
+                           AND replay_decision.candidate_snapshot_id=snapshot.snapshot_id
+                           AND replay_decision.operation_id=pending.operation_id
+                           AND replay_decision.organization_id=pending.organization_id
+                    )
+              )
+            ORDER BY pending.pending_evolution_authority_id
+            FOR SHARE OF snapshot,source_seal,pending"#,
+    )
+    .bind(owner.candidate_snapshot_id)
+    .bind(owner.operation_id)
+    .bind(owner.organization_id)
+    .bind(owner.scope_snapshot_id)
+    .bind(owner.stable_compilation_request_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if rows.len() > 1 {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    let actual = rows.into_iter().next();
+    if actual
+        .as_ref()
+        .map(|row| row.pending_evolution_authority_id)
+        != owner.pending_evolution_authority_id
+        || actual
+            .as_ref()
+            .is_some_and(|row| row.asset_lane_id.is_nil())
+    {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    Ok(actual)
+}
+
+async fn finalize_pending_evolution_advanced_on(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &ApplyInvestigationCompilationInput,
+    previous_generation_id: Option<Uuid>,
+    successor_generation_id: Uuid,
+) -> Result<()> {
+    let Some(pending_id) = input.pending_evolution_authority_id else {
+        return Ok(());
+    };
+    let pending = load_pending_evolution_authority_on(tx, &input.prepared.input)
+        .await?
+        .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+    if pending.pending_evolution_authority_id != pending_id
+        || Some(pending.source_generation_id) != previous_generation_id
+        || pending.operation_id != input.prepared.input.operation_id
+        || pending.organization_id != input.prepared.input.organization_id
+        || pending.fact_delta_member_count <= 0
+        || !valid_sha256(&pending.source_snapshot_hash)
+    {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    let receipt_id = Uuid::new_v5(&pending_id, b"advanced_consolidation_receipt.v1");
+    let stable_request_id = Uuid::new_v5(&pending_id, b"advanced_consolidation_request.v1");
+    let receipt_hash = json_hash_on(
+        tx,
+        &json!({
+            "consolidation_batch_id":pending.consolidation_batch_id,
+            "successor_generation_id":successor_generation_id,
+            "disposition":"advanced",
+            "applied_fact_delta_set_hash":pending.applied_fact_delta_set_hash,
+            "residual_set_hash":pending.residual_set_hash,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO hypothesis_consolidation_receipts(
+               consolidation_receipt_id,stable_request_id,consolidation_batch_id,
+               successor_generation_id,disposition,applied_fact_delta_set_hash,
+               residual_set_hash,receipt_hash)
+           VALUES($1,$2,$3,$4,'advanced',$5,$6,$7)"#,
+    )
+    .bind(receipt_id)
+    .bind(stable_request_id)
+    .bind(pending.consolidation_batch_id)
+    .bind(successor_generation_id)
+    .bind(&pending.applied_fact_delta_set_hash)
+    .bind(&pending.residual_set_hash)
+    .bind(&receipt_hash)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn finalize_pending_evolution_fixed_point_on(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &ApplyInvestigationCompilationInput,
+    decision_id: Uuid,
+) -> Result<InvestigationCanonicalApplyView> {
+    let pending_id = input
+        .pending_evolution_authority_id
+        .ok_or_else(|| conflict(COMPILED_INVALID))?;
+    let pending = load_pending_evolution_authority_on(tx, &input.prepared.input)
+        .await?
+        .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+    if pending.pending_evolution_authority_id != pending_id
+        || pending.fact_delta_member_count <= 0
+        || !valid_sha256(&pending.source_snapshot_hash)
+    {
+        return Err(conflict(AUTHORITY_MISMATCH));
+    }
+    let source: (i32, Uuid, i64, Uuid, Uuid) = sqlx::query_as(
+        r#"SELECT generation.generation_ordinal,seal.seal_id,seal.member_count,
+                  admission.admission_set_id,apply.projection_outbox_batch_id
+             FROM hypothesis_generations generation
+             JOIN hypothesis_generation_seals seal
+               ON seal.generation_id=generation.generation_id
+             JOIN verification_admission_sets admission
+               ON admission.generation_id=generation.generation_id
+              AND admission.status='sealed'
+             JOIN investigation_hypothesis_canonical_apply_receipts apply
+               ON apply.generation_id=generation.generation_id
+            WHERE generation.generation_id=$1 AND generation.operation_id=$2
+              AND generation.organization_id=$3 FOR SHARE"#,
+    )
+    .bind(pending.source_generation_id)
+    .bind(pending.operation_id)
+    .bind(pending.organization_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+    let residual_hashes: Vec<String> = sqlx::query_scalar(
+        r#"SELECT DISTINCT residual.residual_hash
+             FROM verification_campaigns campaign
+             JOIN verification_campaign_coverage_denominators denominator
+               ON denominator.campaign_id=campaign.campaign_id
+              AND denominator.wave_denominator_id=$1
+             JOIN verification_campaign_coverage_receipts receipt
+               ON receipt.campaign_denominator_id=denominator.campaign_denominator_id
+             JOIN verification_campaign_coverage_results result
+               ON result.campaign_coverage_receipt_id=receipt.campaign_coverage_receipt_id
+             JOIN hypothesis_residual_risks residual ON residual.residual_id=result.residual_id
+            WHERE campaign.operation_id=$2 ORDER BY residual.residual_hash"#,
+    )
+    .bind(pending.source_wave_denominator_id)
+    .bind(pending.operation_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let open_obligation_set_hash = exact_set_hash_on(
+        tx,
+        "hypothesis_fixed_point_open_obligations.v1",
+        &residual_hashes,
+    )
+    .await?;
+    let consolidation_receipt_id =
+        Uuid::new_v5(&pending_id, b"fixed_point_consolidation_receipt.v1");
+    let consolidation_request_id =
+        Uuid::new_v5(&pending_id, b"fixed_point_consolidation_request.v1");
+    let consolidation_hash = json_hash_on(
+        tx,
+        &json!({
+            "consolidation_batch_id":pending.consolidation_batch_id,
+            "disposition":"fixed_point",
+            "applied_fact_delta_set_hash":pending.applied_fact_delta_set_hash,
+            "residual_set_hash":pending.residual_set_hash,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO hypothesis_consolidation_receipts(
+               consolidation_receipt_id,stable_request_id,consolidation_batch_id,
+               successor_generation_id,disposition,applied_fact_delta_set_hash,
+               residual_set_hash,receipt_hash)
+           VALUES($1,$2,$3,NULL,'fixed_point',$4,$5,$6)"#,
+    )
+    .bind(consolidation_receipt_id)
+    .bind(consolidation_request_id)
+    .bind(pending.consolidation_batch_id)
+    .bind(&pending.applied_fact_delta_set_hash)
+    .bind(&pending.residual_set_hash)
+    .bind(&consolidation_hash)
+    .execute(&mut **tx)
+    .await?;
+    let fixed_point_receipt_id = Uuid::new_v5(&pending_id, b"fixed_point_receipt.v1");
+    let fixed_point_request_id = Uuid::new_v5(&pending_id, b"fixed_point_request.v1");
+    let fixed_point_hash = json_hash_on(
+        tx,
+        &json!({
+            "consolidation_receipt_id":consolidation_receipt_id,
+            "generation_id":pending.source_generation_id,
+            "open_obligation_set_hash":open_obligation_set_hash,
+            "residual_set_hash":pending.residual_set_hash,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO hypothesis_fixed_point_receipts(
+               fixed_point_receipt_id,stable_request_id,consolidation_receipt_id,
+               generation_id,open_obligation_set_hash,residual_set_hash,fixed_point_hash,
+               asset_lane_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8)"#,
+    )
+    .bind(fixed_point_receipt_id)
+    .bind(fixed_point_request_id)
+    .bind(consolidation_receipt_id)
+    .bind(pending.source_generation_id)
+    .bind(&open_obligation_set_hash)
+    .bind(&pending.residual_set_hash)
+    .bind(&fixed_point_hash)
+    .bind(input.prepared.asset_lane_id)
+    .execute(&mut **tx)
+    .await?;
+    let apply_receipt_id = Uuid::new_v5(
+        &input.stable_apply_request_id,
+        b"investigation_evolution_fixed_point_apply_receipt.v1",
+    );
+    let apply_receipt_hash = json_hash_on(
+        tx,
+        &json!({
+            "decision_id":decision_id,
+            "pending_evolution_authority_id":pending_id,
+            "consolidation_receipt_id":consolidation_receipt_id,
+            "fixed_point_receipt_id":fixed_point_receipt_id,
+            "source_generation_id":pending.source_generation_id,
+        }),
+    )
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO investigation_evolution_fixed_point_apply_receipts(
+               evolution_fixed_point_apply_receipt_id,stable_request_id,decision_id,
+               pending_evolution_authority_id,consolidation_batch_id,
+               consolidation_receipt_id,fixed_point_receipt_id,source_generation_id,
+               source_wave_denominator_id,wave_coverage_receipt_id,operation_id,
+               project_scope_id,organization_id,receipt_sha256)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)"#,
+    )
+    .bind(apply_receipt_id)
+    .bind(input.stable_apply_request_id)
+    .bind(decision_id)
+    .bind(pending_id)
+    .bind(pending.consolidation_batch_id)
+    .bind(consolidation_receipt_id)
+    .bind(fixed_point_receipt_id)
+    .bind(pending.source_generation_id)
+    .bind(pending.source_wave_denominator_id)
+    .bind(pending.wave_coverage_receipt_id)
+    .bind(pending.operation_id)
+    .bind(pending.project_scope_id)
+    .bind(pending.organization_id)
+    .bind(&apply_receipt_hash)
+    .execute(&mut **tx)
+    .await?;
+    Ok(InvestigationCanonicalApplyView {
+        compilation_decision_id: decision_id,
+        generation_id: pending.source_generation_id,
+        generation_ordinal: source.0,
+        generation_seal_id: source.1,
+        generation_member_count: source.2,
+        admission_set_id: source.3,
+        verification_task_ids: Vec::new(),
+        projection_outbox_batch_id: source.4,
+        evolution_fixed_point: true,
+        replayed: false,
+    })
+}
+
 pub async fn prepare_investigation_compilation(
     pool: &PgPool,
-    input: PrepareInvestigationCompilationInput,
+    mut input: PrepareInvestigationCompilationInput,
 ) -> Result<PreparedInvestigationCompilation> {
     let ids = [
         input.stable_compilation_request_id,
@@ -337,15 +755,14 @@ pub async fn prepare_investigation_compilation(
     if ids.iter().any(Uuid::is_nil) {
         return Err(conflict(AUTHORITY_MISMATCH));
     }
-    if input.proposals.is_empty() {
-        return Err(conflict(TYPED_RESIDUAL_REQUIRED));
-    }
     let mut tx = pool.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         .execute(&mut *tx)
         .await?;
-    let authority: Option<(String, String)> = sqlx::query_as(
-        r#"SELECT census.seal_sha256,snapshot.candidate_snapshot_authority_hash
+    let authority: Option<(String, String, Uuid, Uuid, String, String)> = sqlx::query_as(
+        r#"SELECT census.seal_sha256,snapshot.candidate_snapshot_authority_hash,
+                  snapshot.asset_lane_id,lane.target_id,lane.target_type_at_freeze,
+                  lane.target_value_at_freeze
              FROM investigation_analysis_attempt_bindings binding
              JOIN candidate_analysis_snapshots snapshot
                ON snapshot.snapshot_id=binding.candidate_snapshot_id
@@ -355,6 +772,13 @@ pub async fn prepare_investigation_compilation(
               AND snapshot.snapshot_status IN (
                   'sealed_ready','sealed_analysis_ready_with_residuals'
               )
+             JOIN investigation_asset_lanes lane
+               ON lane.asset_lane_id=snapshot.asset_lane_id
+              AND lane.authority_id=binding.authority_id
+              AND lane.operation_id=binding.operation_id
+              AND lane.stage_execution_id=binding.stage_execution_id
+              AND lane.scope_snapshot_id=binding.scope_snapshot_id
+              AND lane.organization_id=binding.organization_id
              JOIN investigation_pentagi_task_plans plan
                ON plan.task_plan_id=$11 AND plan.authority_id=binding.authority_id
               AND plan.operation_id=binding.operation_id
@@ -395,15 +819,25 @@ pub async fn prepare_investigation_compilation(
     .bind(input.primary_worker_run_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((delegation_census_sha256, candidate_snapshot_authority_sha256)) = authority else {
+    let Some((
+        delegation_census_sha256,
+        candidate_snapshot_authority_sha256,
+        asset_lane_id,
+        asset_target_id,
+        asset_target_type_at_time,
+        asset_target_value_at_time,
+    )) = authority
+    else {
         return Err(conflict(AUTHORITY_MISMATCH));
     };
+    load_pending_evolution_authority_on(&mut tx, &input).await?;
 
     let mut proposal_ids = BTreeSet::new();
     let mut proposal_hashes = Vec::with_capacity(input.proposals.len());
     let mut proof_hashes = Vec::new();
     let mut resolved_proofs = Vec::new();
     let mut recipe_items = Vec::with_capacity(input.proposals.len());
+    let mut terminal_duplicate_proposal_ids = BTreeSet::new();
     for (proposal_ordinal, proposal_input) in input.proposals.iter().enumerate() {
         if proposal_input.proposal_id.is_nil() || !proposal_ids.insert(proposal_input.proposal_id) {
             return Err(conflict(COMPILED_INVALID));
@@ -419,6 +853,16 @@ pub async fn prepare_investigation_compilation(
             || proposal.structured_claim.trim().is_empty()
         {
             return Err(conflict(COMPILED_INVALID));
+        }
+        let resolved_target_id = resolve_proposal_asset_lane_on(
+            &mut tx,
+            asset_lane_id,
+            &proposal.subject_kind,
+            &proposal.subject_identity_hash,
+        )
+        .await?;
+        if resolved_target_id != asset_target_id {
+            return Err(conflict(AUTHORITY_MISMATCH));
         }
         let mut arguments = serde_json::Map::new();
         for (key, value) in &proposal.predicate_arguments {
@@ -453,22 +897,37 @@ pub async fn prepare_investigation_compilation(
         let semantic_key_sha256 = semantic_key
             .hash()
             .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
-        let current: Option<(Uuid, Uuid, String)> = sqlx::query_as(
-            r#"SELECT head.root_id,head.head_revision_id,revision.revision_hash
+        let existing: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+            r#"SELECT head.root_id,head.head_revision_id,revision.revision_hash,
+                      head.head_lifecycle_state
                  FROM attack_hypothesis_heads head
                  JOIN attack_hypothesis_revisions revision
                    ON revision.revision_id=head.head_revision_id
+                 JOIN attack_hypotheses root ON root.root_id=head.root_id
                 WHERE head.operation_id=$1 AND head.organization_id=$2
                   AND head.head_semantic_key_hash=$3
-                  AND head.head_lifecycle_state='current' FOR SHARE OF head,revision"#,
+                  AND root.asset_lane_id=$4
+                  AND revision.asset_lane_id=$4
+                FOR SHARE OF head,revision,root"#,
         )
         .bind(input.operation_id)
         .bind(input.organization_id)
         .bind(&semantic_key_sha256)
+        .bind(asset_lane_id)
         .fetch_optional(&mut *tx)
         .await?;
+        if existing
+            .as_ref()
+            .is_some_and(|(_, _, _, lifecycle)| lifecycle == "closed")
+        {
+            terminal_duplicate_proposal_ids.insert(proposal.proposal_id);
+            continue;
+        }
         let (route_kind, root_id, current_revision_id, current_revision_hash) =
-            if let Some((root_id, revision_id, revision_hash)) = current {
+            if let Some((root_id, revision_id, revision_hash, lifecycle)) = existing {
+                if lifecycle != "current" {
+                    return Err(conflict(AUTHORITY_MISMATCH));
+                }
                 (
                     "attach_current",
                     root_id,
@@ -478,8 +937,7 @@ pub async fn prepare_investigation_compilation(
             } else {
                 (
                     "create_initial",
-                    initial_root_id(input.operation_id, &semantic_key)
-                        .map_err(|error| DbError::Other(anyhow::Error::new(error)))?,
+                    asset_lane_initial_root_id(input.operation_id, asset_lane_id, &semantic_key)?,
                     None,
                     None,
                 )
@@ -669,6 +1127,18 @@ pub async fn prepare_investigation_compilation(
     for (ordinal, item) in recipe_items.iter_mut().enumerate() {
         item["ordinal"] = json!(ordinal);
     }
+    if !terminal_duplicate_proposal_ids.is_empty() {
+        input
+            .proposals
+            .retain(|proposal| !terminal_duplicate_proposal_ids.contains(&proposal.proposal_id));
+        input.canonical_action_intents.retain(|intent| {
+            intent
+                .get("proposal_id")
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .is_none_or(|proposal_id| !terminal_duplicate_proposal_ids.contains(&proposal_id))
+        });
+    }
     resolved_proofs.sort_by_key(|proof| {
         (
             proof.member_sha256.clone(),
@@ -708,6 +1178,10 @@ pub async fn prepare_investigation_compilation(
     let server_recipe = json!({
         "schema":"investigation_server_compiler_recipe.v1",
         "organization_id":input.organization_id,
+        "asset_lane_id":asset_lane_id,
+        "asset_target_id":asset_target_id,
+        "asset_target_type_at_time":asset_target_type_at_time,
+        "asset_target_value_at_time":asset_target_value_at_time,
         "items":recipe_items,
     });
     let preparation_sha256 = json_hash_on(
@@ -718,6 +1192,11 @@ pub async fn prepare_investigation_compilation(
             "task_plan_id":input.task_plan_id,
             "delegation_census_seal_id":input.delegation_census_seal_id,
             "primary_worker_run_id":input.primary_worker_run_id,
+            "pending_evolution_authority_id":input.pending_evolution_authority_id,
+            "asset_lane_id":asset_lane_id,
+            "asset_target_id":asset_target_id,
+            "asset_target_type_at_time":asset_target_type_at_time,
+            "asset_target_value_at_time":asset_target_value_at_time,
             "proposal_set_sha256":proposal_set_sha256,
             "action_intent_set_sha256":action_intent_set_sha256,
             "proof_member_set_sha256":proof_member_set_sha256,
@@ -730,6 +1209,10 @@ pub async fn prepare_investigation_compilation(
         input,
         delegation_census_sha256,
         candidate_snapshot_authority_sha256,
+        asset_lane_id,
+        asset_target_id,
+        asset_target_type_at_time,
+        asset_target_value_at_time,
         proposal_set_sha256,
         action_intent_set_sha256,
         proof_member_set_sha256,
@@ -745,7 +1228,8 @@ pub async fn apply_investigation_compilation(
 ) -> Result<InvestigationCanonicalApplyView> {
     if input.stable_apply_request_id.is_nil()
         || input.stable_admission_request_id.is_nil()
-        || input.mutations.is_empty()
+        || input.pending_evolution_authority_id
+            != input.prepared.input.pending_evolution_authority_id
         || input.prepared.input.proposals.len() != input.mutations.len()
     {
         return Err(conflict(COMPILED_INVALID));
@@ -764,6 +1248,10 @@ pub async fn apply_investigation_compilation(
 
     validate_prepared_authority_on(&mut tx, p).await?;
     if let Some(replay) = load_apply_replay_on(&mut tx, &input).await? {
+        tx.commit().await?;
+        return Ok(replay);
+    }
+    if let Some(replay) = load_evolution_fixed_point_replay_on(&mut tx, &input).await? {
         tx.commit().await?;
         return Ok(replay);
     }
@@ -801,17 +1289,19 @@ pub async fn apply_investigation_compilation(
         b"investigation_hypothesis_compilation_decision.v1",
     );
     let generation_ordinal: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(generation_ordinal)+1,0) FROM hypothesis_generations WHERE operation_id=$1 AND organization_id=$2",
+        "SELECT COALESCE(MAX(generation_ordinal)+1,0) FROM hypothesis_generations WHERE operation_id=$1 AND organization_id=$2 AND asset_lane_id=$3",
     )
     .bind(owner.operation_id)
     .bind(owner.organization_id)
+    .bind(p.asset_lane_id)
     .fetch_one(&mut *tx)
     .await?;
     let previous_generation_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT generation_id FROM hypothesis_generations WHERE operation_id=$1 AND organization_id=$2 ORDER BY generation_ordinal DESC LIMIT 1 FOR SHARE",
+        "SELECT generation_id FROM hypothesis_generations WHERE operation_id=$1 AND organization_id=$2 AND asset_lane_id=$3 ORDER BY generation_ordinal DESC LIMIT 1 FOR SHARE",
     )
     .bind(owner.operation_id)
     .bind(owner.organization_id)
+    .bind(p.asset_lane_id)
     .fetch_optional(&mut *tx)
     .await?;
     let generation_id = Uuid::new_v5(
@@ -824,7 +1314,7 @@ pub async fn apply_investigation_compilation(
     let mut transition_hashes = Vec::new();
     for proposal_input in &owner.proposals {
         let mutation = mutation_by_proposal[&proposal_input.proposal_id];
-        let prepared = prepare_revision_on(&mut tx, owner, proposal_input, mutation).await?;
+        let prepared = prepare_revision_on(&mut tx, p, proposal_input, mutation).await?;
         compilation_member_hashes.push(mutation.mutation_hash.clone());
         transition_hashes.push(mutation.generation_transition_hash.clone());
         prepared_revisions.push(prepared);
@@ -963,7 +1453,7 @@ pub async fn apply_investigation_compilation(
         ) {
             persist_new_revision_on(
                 &mut tx,
-                owner,
+                p,
                 revision,
                 &input.claim_components,
                 &input.verification_contracts,
@@ -1052,6 +1542,20 @@ pub async fn apply_investigation_compilation(
     )
     .await?;
 
+    if input.pending_evolution_authority_id.is_some() && new_revision_ids.is_empty() {
+        if !input.claim_components.is_empty()
+            || !input.verification_contracts.is_empty()
+            || !input.verification_plans.is_empty()
+            || !owner.canonical_action_intents.is_empty()
+        {
+            return Err(conflict(COMPILED_INVALID));
+        }
+        let closed =
+            finalize_pending_evolution_fixed_point_on(&mut tx, &input, decision_id).await?;
+        tx.commit().await?;
+        return Ok(closed);
+    }
+
     let previous_members: Vec<(Uuid, Uuid)> = if let Some(previous) = previous_generation_id {
         sqlx::query_as(
             "SELECT generation_member_id,revision_id FROM hypothesis_generation_members WHERE generation_id=$1 ORDER BY ordinal FOR SHARE",
@@ -1073,8 +1577,8 @@ pub async fn apply_investigation_compilation(
                generation_id,operation_id,organization_id,generation_ordinal,
                candidate_snapshot_id,candidate_gate_decision_id,
                investigation_compilation_decision_id,candidate_snapshot_authority_hash,
-               previous_generation_id)
-           VALUES($1,$2,$3,$4,$5,NULL,$6,$7,$8)"#,
+               previous_generation_id,asset_lane_id)
+           VALUES($1,$2,$3,$4,$5,NULL,$6,$7,$8,$9)"#,
     )
     .bind(generation_id)
     .bind(owner.operation_id)
@@ -1084,6 +1588,7 @@ pub async fn apply_investigation_compilation(
     .bind(decision_id)
     .bind(&p.candidate_snapshot_authority_sha256)
     .bind(previous_generation_id)
+    .bind(p.asset_lane_id)
     .execute(&mut *tx)
     .await?;
     let mut generation_member_hashes = Vec::new();
@@ -1098,8 +1603,8 @@ pub async fn apply_investigation_compilation(
         sqlx::query(
             r#"INSERT INTO hypothesis_generation_members(
                    generation_member_id,generation_id,operation_id,organization_id,
-                   revision_id,ordinal,member_hash)
-               VALUES($1,$2,$3,$4,$5,$6,$7)"#,
+                   revision_id,ordinal,member_hash,asset_lane_id)
+               VALUES($1,$2,$3,$4,$5,$6,$7,$8)"#,
         )
         .bind(member_id)
         .bind(generation_id)
@@ -1108,6 +1613,7 @@ pub async fn apply_investigation_compilation(
         .bind(revision_id)
         .bind(i32::try_from(ordinal).map_err(|_| conflict(COMPILED_INVALID))?)
         .bind(&member_sha256)
+        .bind(p.asset_lane_id)
         .execute(&mut *tx)
         .await?;
         generation_member_hashes.push(member_sha256);
@@ -1175,16 +1681,15 @@ pub async fn apply_investigation_compilation(
     .execute(&mut *tx)
     .await?;
 
-    let (admission_set_id, verification_task_ids, campaign_reservation_ids) =
-        persist_tasks_and_admission_on(
-            &mut tx,
-            &input,
-            generation_id,
-            &generation_members,
-            &new_revision_ids,
-            &open_obligation_set_sha256,
-        )
-        .await?;
+    let (admission_set_id, verification_task_ids) = persist_tasks_and_admission_on(
+        &mut tx,
+        &input,
+        generation_id,
+        &generation_members,
+        &new_revision_ids,
+        &open_obligation_set_sha256,
+    )
+    .await?;
     let occurred_at: DateTime<Utc> = sqlx::query_scalar("SELECT statement_timestamp()")
         .fetch_one(&mut *tx)
         .await?;
@@ -1223,7 +1728,6 @@ pub async fn apply_investigation_compilation(
             "generation_seal_id":generation_seal_id,
             "admission_set_id":admission_set_id,
             "verification_task_ids":verification_task_ids,
-            "campaign_reservation_ids":campaign_reservation_ids,
         }),
     )
     .await?;
@@ -1247,6 +1751,8 @@ pub async fn apply_investigation_compilation(
     .bind(&apply_receipt_sha256)
     .execute(&mut *tx)
     .await?;
+    finalize_pending_evolution_advanced_on(&mut tx, &input, previous_generation_id, generation_id)
+        .await?;
     tx.commit().await?;
     Ok(InvestigationCanonicalApplyView {
         compilation_decision_id: decision_id,
@@ -1257,8 +1763,8 @@ pub async fn apply_investigation_compilation(
             .map_err(|_| conflict(COMPILED_INVALID))?,
         admission_set_id,
         verification_task_ids,
-        campaign_reservation_ids,
         projection_outbox_batch_id: outbox_batch_id,
+        evolution_fixed_point: false,
         replayed: false,
     })
 }
@@ -1268,8 +1774,10 @@ async fn validate_prepared_authority_on(
     prepared: &PreparedInvestigationCompilation,
 ) -> Result<()> {
     let owner = &prepared.input;
-    let current: Option<(String, String)> = sqlx::query_as(
-        r#"SELECT census.seal_sha256,snapshot.candidate_snapshot_authority_hash
+    let current: Option<(String, String, Uuid, Uuid, String, String)> = sqlx::query_as(
+        r#"SELECT census.seal_sha256,snapshot.candidate_snapshot_authority_hash,
+                  snapshot.asset_lane_id,lane.target_id,lane.target_type_at_freeze,
+                  lane.target_value_at_freeze
              FROM investigation_analysis_attempt_bindings binding
              JOIN candidate_analysis_snapshots snapshot
                ON snapshot.snapshot_id=binding.candidate_snapshot_id
@@ -1279,6 +1787,13 @@ async fn validate_prepared_authority_on(
               AND snapshot.snapshot_status IN (
                   'sealed_ready','sealed_analysis_ready_with_residuals'
               )
+             JOIN investigation_asset_lanes lane
+               ON lane.asset_lane_id=snapshot.asset_lane_id
+              AND lane.authority_id=binding.authority_id
+              AND lane.operation_id=binding.operation_id
+              AND lane.stage_execution_id=binding.stage_execution_id
+              AND lane.scope_snapshot_id=binding.scope_snapshot_id
+              AND lane.organization_id=binding.organization_id
              JOIN investigation_pentagi_task_plans plan
                ON plan.task_plan_id=$11 AND plan.authority_id=binding.authority_id
               AND plan.operation_id=binding.operation_id
@@ -1320,6 +1835,10 @@ async fn validate_prepared_authority_on(
         != Some((
             prepared.delegation_census_sha256.clone(),
             prepared.candidate_snapshot_authority_sha256.clone(),
+            prepared.asset_lane_id,
+            prepared.asset_target_id,
+            prepared.asset_target_type_at_time.clone(),
+            prepared.asset_target_value_at_time.clone(),
         ))
     {
         return Err(conflict(AUTHORITY_MISMATCH));
@@ -1397,6 +1916,11 @@ async fn validate_prepared_authority_on(
             "task_plan_id":owner.task_plan_id,
             "delegation_census_seal_id":owner.delegation_census_seal_id,
             "primary_worker_run_id":owner.primary_worker_run_id,
+            "pending_evolution_authority_id":owner.pending_evolution_authority_id,
+            "asset_lane_id":prepared.asset_lane_id,
+            "asset_target_id":prepared.asset_target_id,
+            "asset_target_type_at_time":prepared.asset_target_type_at_time,
+            "asset_target_value_at_time":prepared.asset_target_value_at_time,
             "proposal_set_sha256":expected_proposals,
             "action_intent_set_sha256":expected_actions,
             "proof_member_set_sha256":expected_proofs,
@@ -1417,10 +1941,11 @@ async fn validate_prepared_authority_on(
 
 async fn prepare_revision_on(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &PrepareInvestigationCompilationInput,
+    prepared: &PreparedInvestigationCompilation,
     proposal_input: &InvestigationProposalInput,
     mutation: &CandidateMutationRow,
 ) -> Result<PreparedRevision> {
+    let owner = &prepared.input;
     let proposal: CanonicalProposal =
         serde_json::from_value(proposal_input.canonical_proposal.clone())?;
     let mut arguments = serde_json::Map::new();
@@ -1458,8 +1983,11 @@ async fn prepare_revision_on(
     }
     let (route_kind, root_id, revision_id, revision_sha256) = match mutation.route {
         CandidateMutationRouteRow::CreateInitial { root_id } => {
-            let expected_root = initial_root_id(owner.operation_id, &semantic_key)
-                .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
+            let expected_root = asset_lane_initial_root_id(
+                owner.operation_id,
+                prepared.asset_lane_id,
+                &semantic_key,
+            )?;
             if root_id != expected_root
                 || sqlx::query_scalar::<_, bool>(
                     "SELECT EXISTS(SELECT 1 FROM attack_hypotheses WHERE root_id=$1)",
@@ -1481,16 +2009,21 @@ async fn prepare_revision_on(
                      FROM attack_hypothesis_heads head
                      JOIN attack_hypothesis_revisions revision
                        ON revision.revision_id=head.head_revision_id
+                     JOIN attack_hypotheses root ON root.root_id=head.root_id
                     WHERE head.root_id=$1 AND head.head_revision_id=$2
                       AND head.operation_id=$3 AND head.organization_id=$4
                       AND head.head_semantic_key_hash=$5
-                      AND head.head_lifecycle_state='current' FOR SHARE OF head,revision"#,
+                      AND root.asset_lane_id=$6
+                      AND revision.asset_lane_id=$6
+                      AND head.head_lifecycle_state='current'
+                    FOR SHARE OF head,revision,root"#,
             )
             .bind(root_id)
             .bind(revision_id)
             .bind(owner.operation_id)
             .bind(owner.organization_id)
             .bind(&semantic_key_sha256)
+            .bind(prepared.asset_lane_id)
             .fetch_optional(&mut **tx)
             .await?;
             (
@@ -1564,6 +2097,10 @@ async fn prepare_revision_on(
         generation_transition_sha256: expected_transition,
         state: mutation.state,
         member_sha256: mutation.mutation_hash.clone(),
+        asset_lane_id: prepared.asset_lane_id,
+        target_live_id: prepared.asset_target_id,
+        target_type_at_time: prepared.asset_target_type_at_time.clone(),
+        target_value_at_time: prepared.asset_target_value_at_time.clone(),
     })
 }
 
@@ -1612,12 +2149,13 @@ fn validate_compiled_authority_exact_sets(
 
 async fn persist_new_revision_on(
     tx: &mut Transaction<'_, Postgres>,
-    owner: &PrepareInvestigationCompilationInput,
+    prepared: &PreparedInvestigationCompilation,
     revision: &PreparedRevision,
     claim_components: &[HypothesisClaimComponentV1],
     verification_contracts: &[VerificationContractV1],
     verification_plans: &[HypothesisVerificationPlanV1],
 ) -> Result<()> {
+    let owner = &prepared.input;
     let proposal: CanonicalProposal = serde_json::from_value(revision.canonical_proposal.clone())?;
     let identity_ingredients = json!({
         "root_kind":"initial",
@@ -1628,14 +2166,15 @@ async fn persist_new_revision_on(
     sqlx::query(
         r#"INSERT INTO attack_hypotheses(
                root_id,operation_id,organization_id,root_kind,
-               identity_ingredients,identity_ingredients_hash)
-           VALUES($1,$2,$3,'initial',$4,$5)"#,
+               identity_ingredients,identity_ingredients_hash,asset_lane_id)
+           VALUES($1,$2,$3,'initial',$4,$5,$6)"#,
     )
     .bind(revision.root_id)
     .bind(owner.operation_id)
     .bind(owner.organization_id)
     .bind(identity_ingredients)
     .bind(identity_sha256)
+    .bind(revision.asset_lane_id)
     .execute(&mut **tx)
     .await?;
     let normalized_arguments = Value::Object(
@@ -1649,13 +2188,14 @@ async fn persist_new_revision_on(
         r#"INSERT INTO attack_hypothesis_revisions(
                revision_id,root_id,operation_id,organization_id,predecessor_revision_id,
                revision_ordinal,semantic_key,semantic_key_hash,subject_kind,
-               subject_identity_hash,target_type_at_time,target_value_at_time,
+               subject_identity_hash,target_live_id,target_type_at_time,target_value_at_time,
                predicate_schema,predicate_version,normalized_arguments,trust_boundary,
                polarity,epistemic_state,lifecycle_state,planning_readiness,structured_claim,
                assumptions,missing_facts,priority,risk_impact,origin_decision_hash,
-               revision_ingredients_hash,revision_hash)
-           VALUES($1,$2,$3,$4,NULL,0,$5,$6,$7,$8,'subject_identity_hash',$8,$9,$10,
-                  $11,$12,$13,$14,'current','ready_for_strategy',$15,'[]','[]',0,$16,$17,$18,$19)"#,
+               revision_ingredients_hash,revision_hash,asset_lane_id)
+           VALUES($1,$2,$3,$4,NULL,0,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                  'current','ready_for_strategy',
+                  $18,'[]','[]',0,$19,$20,$21,$22,$23)"#,
     )
     .bind(revision.revision_id)
     .bind(revision.root_id)
@@ -1665,6 +2205,9 @@ async fn persist_new_revision_on(
     .bind(&revision.semantic_key_sha256)
     .bind(&proposal.subject_kind)
     .bind(&proposal.subject_identity_hash)
+    .bind(revision.target_live_id)
+    .bind(&revision.target_type_at_time)
+    .bind(&revision.target_value_at_time)
     .bind(&proposal.predicate_schema)
     .bind(i32::try_from(proposal.predicate_version).map_err(|_| conflict(COMPILED_INVALID))?)
     .bind(normalized_arguments)
@@ -1682,6 +2225,7 @@ async fn persist_new_revision_on(
     .bind(&revision.origin_decision_sha256)
     .bind(&revision.revision_ingredients_sha256)
     .bind(&revision.revision_sha256)
+    .bind(revision.asset_lane_id)
     .execute(&mut **tx)
     .await?;
     super::hypothesis_registry::persist_compiled_authorities_for_revision_on(
@@ -1811,7 +2355,7 @@ async fn persist_tasks_and_admission_on(
     generation_members: &[(Uuid, Uuid)],
     new_revision_ids: &BTreeSet<Uuid>,
     open_obligation_set_sha256: &str,
-) -> Result<(Uuid, Vec<Uuid>, Vec<Uuid>)> {
+) -> Result<(Uuid, Vec<Uuid>)> {
     let owner = &input.prepared.input;
     let project_scope_id: Uuid =
         sqlx::query_scalar("SELECT project_scope_id FROM operation_state WHERE operation_id=$1")
@@ -1891,19 +2435,24 @@ async fn persist_tasks_and_admission_on(
     )
     .await?;
     let mut task_ids = Vec::with_capacity(generation_members.len());
-    let mut campaign_ids = Vec::new();
     for (generation_member_id, revision_id) in generation_members {
         let (revision_sha256, plan_id, plan_sha256): (String, Uuid, String) = sqlx::query_as(
             r#"SELECT revision.revision_hash,plan.plan_id,plan.plan_hash
                  FROM attack_hypothesis_revisions revision
                  JOIN attack_hypothesis_verification_plans plan
                    ON plan.revision_id=revision.revision_id AND plan.sealed_at IS NOT NULL
+                 JOIN hypothesis_generations generation ON generation.generation_id=$4
                 WHERE revision.revision_id=$1 AND revision.operation_id=$2
-                  AND revision.organization_id=$3 FOR SHARE OF revision,plan"#,
+                  AND revision.organization_id=$3
+                  AND revision.asset_lane_id=$5
+                  AND generation.asset_lane_id=$5
+                FOR SHARE OF revision,plan,generation"#,
         )
         .bind(revision_id)
         .bind(owner.operation_id)
         .bind(owner.organization_id)
+        .bind(generation_id)
+        .bind(input.prepared.asset_lane_id)
         .fetch_one(&mut **tx)
         .await?;
         let semantic_evidence_sha256 = proof_hashes_by_revision
@@ -1958,8 +2507,8 @@ async fn persist_tasks_and_admission_on(
             .await?;
             continue;
         }
-        let header =
-            HypothesisVerificationTaskHeaderV1::host_create(NewHypothesisVerificationTaskV1 {
+        let header = HypothesisVerificationTaskHeaderV1::host_create_dynamic(
+            NewHypothesisVerificationTaskV1 {
                 operation_id: owner.operation_id,
                 stage_execution_id: owner.stage_execution_id,
                 stage_run_unit_id: owner.stage_run_unit_id,
@@ -1976,8 +2525,9 @@ async fn persist_tasks_and_admission_on(
                 host_rerun_receipt_id: None,
                 host_rerun_receipt_sha256: None,
                 rerun_contract_version: None,
-            })
-            .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
+            },
+        )
+        .map_err(|error| DbError::Other(anyhow::Error::new(error)))?;
         sqlx::query(
             r#"INSERT INTO hypothesis_verification_tasks(
                    task_id,stable_task_key_sha256,operation_id,project_scope_id,
@@ -1986,8 +2536,8 @@ async fn persist_tasks_and_admission_on(
                    verification_plan_sha256,relevant_evidence_snapshot_id,
                    semantic_evidence_set_sha256,open_obligation_set_sha256,
                    semantic_attempt_fingerprint,task_contract_version,
-                   first_admission_generation_id)
-               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)"#,
+                   first_admission_generation_id,asset_lane_id)
+               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)"#,
         )
         .bind(header.task_id)
         .bind(&header.stable_task_key_sha256)
@@ -2007,6 +2557,7 @@ async fn persist_tasks_and_admission_on(
         .bind(&header.semantic_attempt_fingerprint)
         .bind(&header.task_contract_version)
         .bind(header.first_admission_generation_id)
+        .bind(input.prepared.asset_lane_id)
         .execute(&mut **tx)
         .await?;
         let task_event_id = Uuid::new_v5(&header.task_id, b"state:admitted:event");
@@ -2024,108 +2575,6 @@ async fn persist_tasks_and_admission_on(
         .bind(Uuid::new_v5(&header.task_id, b"state:admitted:request"))
         .bind(header.task_id)
         .bind(task_event_sha256)
-        .execute(&mut **tx)
-        .await?;
-        let assignment_set_id = Uuid::new_v5(&header.task_id, b"objective_assignments.v1");
-        sqlx::query(
-            r#"INSERT INTO hypothesis_verification_task_assignment_sets(
-                   assignment_set_id,stable_request_id,task_id,hypothesis_revision_id,
-                   verification_plan_id)
-               VALUES($1,$2,$3,$4,$5)"#,
-        )
-        .bind(assignment_set_id)
-        .bind(Uuid::new_v5(
-            &input.stable_admission_request_id,
-            format!("assignment:{revision_id}").as_bytes(),
-        ))
-        .bind(header.task_id)
-        .bind(revision_id)
-        .bind(plan_id)
-        .execute(&mut **tx)
-        .await?;
-        let objectives: Vec<(Uuid, Uuid)> = sqlx::query_as(
-            r#"SELECT plan_objective_id,objective_id
-                 FROM attack_hypothesis_verification_plan_objectives
-                WHERE plan_id=$1 ORDER BY ordinal,plan_objective_id"#,
-        )
-        .bind(plan_id)
-        .fetch_all(&mut **tx)
-        .await?;
-        if objectives.is_empty() {
-            return Err(conflict(COMPILED_INVALID));
-        }
-        let mut assignment_hashes = Vec::new();
-        for (ordinal, (plan_objective_id, objective_id)) in objectives.iter().enumerate() {
-            let campaign_id = Uuid::new_v5(
-                &header.task_id,
-                format!("campaign:{plan_objective_id}").as_bytes(),
-            );
-            let reservation_sha256 = sha256_json(&json!({
-                "assignment_set_id":assignment_set_id,"task_id":header.task_id,
-                "plan_objective_id":plan_objective_id,"objective_id":objective_id,
-                "contract":"task_campaign_reservation.v1",
-            }));
-            sqlx::query(
-                r#"INSERT INTO hypothesis_verification_task_campaigns(
-                       campaign_id,assignment_set_id,task_id,hypothesis_revision_id,
-                       verification_plan_id,plan_objective_id,verification_objective_id,
-                       reservation_sha256)
-                   VALUES($1,$2,$3,$4,$5,$6,$7,$8)"#,
-            )
-            .bind(campaign_id)
-            .bind(assignment_set_id)
-            .bind(header.task_id)
-            .bind(revision_id)
-            .bind(plan_id)
-            .bind(plan_objective_id)
-            .bind(objective_id)
-            .bind(&reservation_sha256)
-            .execute(&mut **tx)
-            .await?;
-            let assignment_sha256 = sha256_json(&json!({
-                "assignment_set_id":assignment_set_id,"task_id":header.task_id,
-                "plan_objective_id":plan_objective_id,"objective_id":objective_id,
-                "assignment_kind":"campaign","campaign_id":campaign_id,
-            }));
-            sqlx::query(
-                r#"INSERT INTO hypothesis_verification_task_assignment_members(
-                       assignment_member_id,assignment_set_id,task_id,hypothesis_revision_id,
-                       verification_plan_id,plan_objective_id,verification_objective_id,
-                       assignment_kind,campaign_id,member_sha256)
-                   VALUES($1,$2,$3,$4,$5,$6,$7,'campaign',$8,$9)"#,
-            )
-            .bind(Uuid::new_v5(
-                &assignment_set_id,
-                format!("member:{ordinal}:{plan_objective_id}").as_bytes(),
-            ))
-            .bind(assignment_set_id)
-            .bind(header.task_id)
-            .bind(revision_id)
-            .bind(plan_id)
-            .bind(plan_objective_id)
-            .bind(objective_id)
-            .bind(campaign_id)
-            .bind(&assignment_sha256)
-            .execute(&mut **tx)
-            .await?;
-            assignment_hashes.push(assignment_sha256);
-            campaign_ids.push(campaign_id);
-        }
-        let assignment_set_sha256 = exact_set_hash_on(
-            tx,
-            "hypothesis_verification_task_assignments.v1",
-            &assignment_hashes,
-        )
-        .await?;
-        sqlx::query(
-            r#"UPDATE hypothesis_verification_task_assignment_sets
-                  SET status='sealed',member_count=$2,member_set_sha256=$3,
-                      row_version=1,sealed_at=statement_timestamp()
-                WHERE assignment_set_id=$1 AND status='open' AND row_version=0"#,
-        )
-        .bind(assignment_set_id)
-        .bind(i64::try_from(assignment_hashes.len()).map_err(|_| conflict(COMPILED_INVALID))?)
-        .bind(assignment_set_sha256)
         .execute(&mut **tx)
         .await?;
         let admission_member_sha256 = sha256_json(&json!({
@@ -2192,7 +2641,7 @@ async fn persist_tasks_and_admission_on(
     .bind(admission_set_sha256)
     .execute(&mut **tx)
     .await?;
-    Ok((admission_set_id, task_ids, campaign_ids))
+    Ok((admission_set_id, task_ids))
 }
 
 async fn persist_projection_on(
@@ -2474,18 +2923,54 @@ async fn load_apply_replay_on(
     {
         return Err(conflict(REPLAY_DRIFT));
     }
+    if let Some(pending_id) = input.pending_evolution_authority_id {
+        let exact_advanced: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1
+                     FROM hypothesis_pending_evolution_authorities pending
+                     JOIN hypothesis_consolidation_receipts consolidation
+                       ON consolidation.consolidation_batch_id=pending.consolidation_batch_id
+                      AND consolidation.disposition='advanced'
+                      AND consolidation.successor_generation_id=$2
+                    WHERE pending.pending_evolution_authority_id=$1
+                      AND pending.operation_id=$3 AND pending.organization_id=$4
+               )"#,
+        )
+        .bind(pending_id)
+        .bind(row.generation_id)
+        .bind(input.prepared.input.operation_id)
+        .bind(input.prepared.input.organization_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !exact_advanced {
+            return Err(conflict(REPLAY_DRIFT));
+        }
+    }
     let task_ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT task_id FROM verification_admission_members WHERE admission_set_id=$1 AND disposition='scheduled' ORDER BY hypothesis_revision_id",
     )
     .bind(row.admission_set_id)
     .fetch_all(&mut **tx)
     .await?;
-    let campaign_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT reservation.campaign_id FROM hypothesis_verification_task_campaigns reservation WHERE reservation.task_id=ANY($1) ORDER BY reservation.task_id,reservation.plan_objective_id",
+    let task_only_dynamic_authority: bool = sqlx::query_scalar(
+        r#"SELECT NOT EXISTS(
+               SELECT 1
+                 FROM verification_admission_members member
+                 JOIN hypothesis_verification_tasks task ON task.task_id=member.task_id
+                 LEFT JOIN hypothesis_verification_task_assignment_sets assignment
+                   ON assignment.task_id=task.task_id
+                WHERE member.admission_set_id=$1
+                  AND member.disposition='scheduled'
+                  AND (task.task_contract_version<>'hypothesis_verification_task.dynamic_v2'
+                       OR assignment.assignment_set_id IS NOT NULL)
+           )"#,
     )
-    .bind(&task_ids)
-    .fetch_all(&mut **tx)
+    .bind(row.admission_set_id)
+    .fetch_one(&mut **tx)
     .await?;
+    if !task_only_dynamic_authority {
+        return Err(conflict(REPLAY_DRIFT));
+    }
     Ok(Some(InvestigationCanonicalApplyView {
         compilation_decision_id: row.decision_id,
         generation_id: row.generation_id,
@@ -2494,8 +2979,70 @@ async fn load_apply_replay_on(
         generation_member_count: row.member_count,
         admission_set_id: row.admission_set_id,
         verification_task_ids: task_ids,
-        campaign_reservation_ids: campaign_ids,
         projection_outbox_batch_id: row.outbox_id,
+        evolution_fixed_point: false,
+        replayed: true,
+    }))
+}
+
+async fn load_evolution_fixed_point_replay_on(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &ApplyInvestigationCompilationInput,
+) -> Result<Option<InvestigationCanonicalApplyView>> {
+    type EvolutionFixedPointReplayRow = (Uuid, Uuid, Uuid, i32, Uuid, i64, Uuid, Uuid);
+    let row: Option<EvolutionFixedPointReplayRow> = sqlx::query_as(
+        r#"SELECT receipt.decision_id,receipt.pending_evolution_authority_id,
+                  receipt.source_generation_id,generation.generation_ordinal,
+                  seal.seal_id,seal.member_count,admission.admission_set_id,
+                  source_apply.projection_outbox_batch_id
+             FROM investigation_evolution_fixed_point_apply_receipts receipt
+             JOIN hypothesis_generations generation
+               ON generation.generation_id=receipt.source_generation_id
+              AND generation.operation_id=receipt.operation_id
+              AND generation.organization_id=receipt.organization_id
+             JOIN hypothesis_generation_seals seal
+               ON seal.generation_id=generation.generation_id
+             JOIN verification_admission_sets admission
+               ON admission.generation_id=generation.generation_id
+              AND admission.status='sealed'
+             JOIN investigation_hypothesis_canonical_apply_receipts source_apply
+               ON source_apply.generation_id=generation.generation_id
+            WHERE receipt.stable_request_id=$1 FOR SHARE"#,
+    )
+    .bind(input.stable_apply_request_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let expected_decision_id = Uuid::new_v5(
+        &input.prepared.input.stable_compilation_request_id,
+        b"investigation_hypothesis_compilation_decision.v1",
+    );
+    if row.0 != expected_decision_id
+        || Some(row.1) != input.pending_evolution_authority_id
+        || input.prepared.input.pending_evolution_authority_id
+            != input.pending_evolution_authority_id
+        || input.prepared.input.operation_id == Uuid::nil()
+        || input.prepared.input.organization_id == Uuid::nil()
+        || !input.prepared.input.proposals.is_empty()
+        || !input.mutations.is_empty()
+        || !input.claim_components.is_empty()
+        || !input.verification_contracts.is_empty()
+        || !input.verification_plans.is_empty()
+    {
+        return Err(conflict(REPLAY_DRIFT));
+    }
+    Ok(Some(InvestigationCanonicalApplyView {
+        compilation_decision_id: row.0,
+        generation_id: row.2,
+        generation_ordinal: row.3,
+        generation_seal_id: row.4,
+        generation_member_count: row.5,
+        admission_set_id: row.6,
+        verification_task_ids: Vec::new(),
+        projection_outbox_batch_id: row.7,
+        evolution_fixed_point: true,
         replayed: true,
     }))
 }

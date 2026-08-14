@@ -4,49 +4,39 @@
 //! This adapter then resolves the repository-created ordinal-zero attempt and
 //! binds it to the exact registered unified Investigation analysis work item.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use golish_agent_kit::db_traits::{
-    AdmitCampaignRequest, ApplyInvestigationVerificationTaskAdvisory,
     CandidateAnalysisSnapshotDispositionV1, CandidateRegistryMutationDecisionV1,
-    CapabilityAssessmentDispositionV1, CompileSealAndAdmitInvestigationGeneration,
-    FinalizeInvestigationVerificationTasks, FinalizedInvestigationVerificationTasksView,
-    FreezeCandidateAnalysisSnapshot, HypothesisRegistryError, HypothesisRegistryRepository,
-    InvestigationAnalysisAuthorityChunkV1, InvestigationAnalysisAuthorityInputV1,
-    InvestigationAnalysisHostError, InvestigationAnalysisHostRepository,
-    InvestigationAnalysisHostResult, InvestigationAnalysisSubjectAuthorityV1,
-    InvestigationBoundedContextRefV1, InvestigationGenerationAdmissionView,
-    InvestigationVerificationApplyView, InvestigationVerificationCampaignSubjectV1,
+    CompileSealAndAdmitInvestigationGeneration, FreezeCandidateAnalysisSnapshot,
+    HypothesisRegistryError, HypothesisRegistryRepository, InvestigationAnalysisAuthorityChunkV1,
+    InvestigationAnalysisAuthorityInputV1, InvestigationAnalysisHostError,
+    InvestigationAnalysisHostRepository, InvestigationAnalysisHostResult,
+    InvestigationAnalysisSubjectAuthorityV1, InvestigationGenerationAdmissionView,
     LoadCommittedInvestigationAnalysisPostSynthesisAdmission,
     LoadCommittedInvestigationAnalysisPrimaryPostSynthesisAdmission,
-    PrepareInvestigationAnalysisSubject, PrepareInvestigationVerificationTaskSubject,
-    PreparedInvestigationAnalysisSubject, PreparedInvestigationVerificationTaskSubject,
-    RecordCapabilityAssessment, ResumeInvestigationAnalysisPostSynthesis,
-    ResumeInvestigationAnalysisPrimaryPostSynthesis, ResumeInvestigationVerificationTaskAdvisory,
-    ResumedInvestigationAnalysisPostSynthesisView, SealCapabilityAssessmentSet, SealWaveCoverage,
-    UnifiedInvestigationSubjectKind, VerificationCampaignRepository,
-    VerificationCampaignRepositoryError,
+    PrepareInvestigationAnalysisSubject, PreparedInvestigationAnalysisSubject,
+    ResumeInvestigationAnalysisPostSynthesis, ResumeInvestigationAnalysisPrimaryPostSynthesis,
+    ResumedInvestigationAnalysisPostSynthesisView, UnifiedInvestigationSubjectKind,
 };
 use golish_agent_kit::harness::hypothesis_registry::RevisionSourceRef;
 use golish_agent_kit::task_orchestrator::hypothesis_analysis::{
     CandidateHypothesisProposal, CandidateProofReferenceRole, CandidateProposalReadiness,
 };
+use golish_db::repo::investigation_asset_verification as asset_verification;
 use golish_db::repo::{
     hypothesis_registry::{
         CandidateMutationRouteRow, CandidateMutationRow, CandidateRevisionSourceRefRow,
-    },
-    hypothesis_verification_tasks::{
-        advance_task_to_running, finalize_task_from_campaign_truth, AdvanceTaskToRunningInput,
-        FinalizeTaskFromCampaignTruthInput, HypothesisVerificationTaskStoreError,
     },
     investigation_analysis_bindings::{
         BindInvestigationAnalysisAttemptInput, InvestigationAnalysisBindingStoreError,
         PgInvestigationAnalysisBindingRepository,
     },
     investigation_hypothesis_compiler::{
-        apply_investigation_compilation, prepare_investigation_compilation,
-        ApplyInvestigationCompilationInput, InvestigationProofRefInput, InvestigationProposalInput,
+        apply_investigation_compilation, load_pending_discovery_compiler_proposals,
+        prepare_investigation_compilation, ApplyInvestigationCompilationInput,
+        InvestigationProofRefInput, InvestigationProposalInput,
         PrepareInvestigationCompilationInput,
     },
     unified_investigation_runtime::{InvestigationStageIdentity, InvestigationUnitIdentity},
@@ -57,47 +47,12 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::hypothesis_registry::PgHypothesisRegistryRepository;
-use super::verification_campaign::PgVerificationCampaignRepository;
 
 #[derive(Clone)]
 pub struct PgInvestigationAnalysisHostRepository {
     pool: Arc<PgPool>,
     registry: Arc<dyn HypothesisRegistryRepository>,
     bindings: PgInvestigationAnalysisBindingRepository,
-}
-
-#[derive(sqlx::FromRow)]
-struct VerificationSubjectRow {
-    hypothesis_revision_id: Uuid,
-    hypothesis_revision_sha256: String,
-    verification_plan_id: Uuid,
-    verification_plan_sha256: String,
-    assignment_set_id: Uuid,
-    assignment_set_sha256: String,
-    relevant_evidence_snapshot_id: Uuid,
-    semantic_evidence_set_sha256: String,
-    semantic_attempt_fingerprint: String,
-}
-
-#[derive(sqlx::FromRow)]
-struct VerificationCampaignSubjectRow {
-    campaign_id: Uuid,
-    plan_objective_id: Uuid,
-    objective_id: Uuid,
-    reservation_sha256: String,
-    capability_assessment_set_sha256: String,
-    campaign_authority_sha256: String,
-    available_capability_ids: Vec<String>,
-}
-
-#[derive(sqlx::FromRow)]
-struct VerificationCampaignMaterializationRow {
-    campaign_id: Uuid,
-    generation_seal_id: Uuid,
-    scope_snapshot_id: Uuid,
-    organization_id: Uuid,
-    verification_plan_id: Uuid,
-    objective_id: Uuid,
 }
 
 #[derive(sqlx::FromRow)]
@@ -130,7 +85,6 @@ struct AnalysisPostSynthesisCommittedAdmissionRow {
     generation_member_count: i64,
     admission_set_id: Uuid,
     verification_task_ids: Vec<Uuid>,
-    campaign_ids: Vec<Uuid>,
 }
 
 fn complete_committed_artifact_set(
@@ -143,6 +97,134 @@ fn complete_committed_artifact_set(
         (1, 1, 1) => Ok(true),
         _ => Err("post-synthesis committed admission artifacts are partial or collide"),
     }
+}
+
+struct CommittedEvolutionFixedPointAuthority<'a> {
+    stable_compilation_request_id: Uuid,
+    stable_apply_request_id: Uuid,
+    identity: &'a golish_agent_kit::db_traits::UnifiedInvestigationUnitIdentity,
+    work_id: Uuid,
+    prepared_subject: &'a PreparedInvestigationAnalysisSubject,
+    task_plan_id: Uuid,
+    delegation_census_seal_id: Uuid,
+    primary_worker_run_id: Uuid,
+}
+
+async fn load_committed_evolution_fixed_point_on(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    authority: CommittedEvolutionFixedPointAuthority<'_>,
+) -> InvestigationAnalysisHostResult<Option<InvestigationGenerationAdmissionView>> {
+    let Some(pending_evolution_authority_id) =
+        authority.prepared_subject.pending_evolution_authority_id
+    else {
+        return Ok(None);
+    };
+    let expected_decision_id = Uuid::new_v5(
+        &authority.stable_compilation_request_id,
+        b"investigation_hypothesis_compilation_decision.v1",
+    );
+    let row = sqlx::query_as::<_, (Uuid, Uuid, i32, Uuid, i64, Uuid)>(
+        r#"SELECT decision.decision_id,generation.generation_id,
+                  generation.generation_ordinal,seal.seal_id,seal.member_count,
+                  admission.admission_set_id
+             FROM investigation_evolution_fixed_point_apply_receipts fixed_apply
+             JOIN investigation_hypothesis_compilation_decisions decision
+               ON decision.decision_id=fixed_apply.decision_id
+              AND decision.operation_id=fixed_apply.operation_id
+              AND decision.organization_id=fixed_apply.organization_id
+             JOIN hypothesis_pending_evolution_authorities pending
+               ON pending.pending_evolution_authority_id=fixed_apply.pending_evolution_authority_id
+              AND pending.consolidation_batch_id=fixed_apply.consolidation_batch_id
+              AND pending.source_generation_id=fixed_apply.source_generation_id
+              AND pending.operation_id=fixed_apply.operation_id
+              AND pending.project_scope_id=fixed_apply.project_scope_id
+              AND pending.organization_id=fixed_apply.organization_id
+             JOIN candidate_analysis_snapshots snapshot
+               ON snapshot.snapshot_id=decision.candidate_snapshot_id
+              AND snapshot.operation_id=decision.operation_id
+              AND snapshot.organization_id=decision.organization_id
+             JOIN hypothesis_generation_seals source_snapshot_seal
+               ON source_snapshot_seal.seal_id=snapshot.previous_generation_seal_id
+              AND source_snapshot_seal.generation_id=pending.source_generation_id
+             JOIN hypothesis_generations generation
+               ON generation.generation_id=pending.source_generation_id
+              AND generation.operation_id=pending.operation_id
+              AND generation.organization_id=pending.organization_id
+             JOIN hypothesis_generation_seals seal
+               ON seal.generation_id=generation.generation_id
+             JOIN verification_admission_sets admission
+               ON admission.generation_id=generation.generation_id
+              AND admission.status='sealed'
+             JOIN investigation_hypothesis_canonical_apply_receipts source_apply
+               ON source_apply.generation_id=generation.generation_id
+            WHERE fixed_apply.stable_request_id=$1
+              AND fixed_apply.pending_evolution_authority_id=$2
+              AND decision.decision_id=$3 AND decision.stable_request_id=$4
+              AND decision.binding_id=$5 AND decision.authority_id=$6
+              AND decision.operation_id=$7 AND decision.stage_execution_id=$8
+              AND decision.stage_run_unit_id=$9 AND decision.organization_id=$10
+              AND decision.work_id=$11 AND decision.candidate_snapshot_id=$12
+              AND decision.analysis_attempt_id=$13 AND decision.task_plan_id=$14
+              AND decision.delegation_census_seal_id=$15
+              AND decision.primary_worker_run_id=$16
+              AND snapshot.scope_snapshot_id=$17
+              AND decision.cognitive_output_schema='investigation_cognitive_output.v1'
+              AND decision.mutation_count=(SELECT COUNT(*)
+                    FROM investigation_hypothesis_compilation_members member
+                   WHERE member.decision_id=decision.decision_id)
+              AND decision.proof_member_count=(SELECT COUNT(*)
+                    FROM investigation_hypothesis_compilation_proof_members proof
+                   WHERE proof.decision_id=decision.decision_id)
+              AND NOT EXISTS(SELECT 1
+                    FROM investigation_hypothesis_compilation_members member
+                   WHERE member.decision_id=decision.decision_id
+                     AND member.route_kind='create_initial')
+              AND NOT EXISTS(SELECT 1
+                    FROM investigation_hypothesis_canonical_apply_receipts current_apply
+                   WHERE current_apply.decision_id=decision.decision_id)
+            FOR SHARE OF fixed_apply,decision,pending,snapshot,generation,seal,admission"#,
+    )
+    .bind(authority.stable_apply_request_id)
+    .bind(pending_evolution_authority_id)
+    .bind(expected_decision_id)
+    .bind(authority.stable_compilation_request_id)
+    .bind(authority.prepared_subject.binding_id)
+    .bind(authority.identity.stage.authority_id)
+    .bind(authority.identity.stage.operation_id)
+    .bind(authority.identity.stage.stage_execution_id)
+    .bind(authority.identity.stage_run_unit_id)
+    .bind(authority.identity.organization_id)
+    .bind(authority.work_id)
+    .bind(authority.prepared_subject.candidate_snapshot_id)
+    .bind(authority.prepared_subject.analysis_attempt_id)
+    .bind(authority.task_plan_id)
+    .bind(authority.delegation_census_seal_id)
+    .bind(authority.primary_worker_run_id)
+    .bind(authority.identity.stage.scope_snapshot_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_sqlx_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    Ok(Some(InvestigationGenerationAdmissionView {
+        compilation_decision_id: row.0,
+        generation_id: row.1,
+        generation_ordinal: u32::try_from(row.2).map_err(|_| {
+            InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "fixed-point source generation ordinal is negative".to_owned(),
+            }
+        })?,
+        generation_seal_id: row.3,
+        generation_member_count: u32::try_from(row.4).map_err(|_| {
+            InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "fixed-point source generation member count overflowed".to_owned(),
+            }
+        })?,
+        verification_task_ids: Vec::new(),
+        evolution_fixed_point: true,
+        replayed: true,
+    }))
 }
 
 fn canonical_json(value: &Value) -> String {
@@ -192,186 +274,6 @@ fn valid_sha256(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     })
-}
-
-async fn materialize_verification_task_campaigns(
-    pool: Arc<PgPool>,
-    request: &PrepareInvestigationVerificationTaskSubject,
-) -> InvestigationAnalysisHostResult<()> {
-    let generation_id: Uuid = sqlx::query_scalar(
-        r#"SELECT first_admission_generation_id
-             FROM hypothesis_verification_tasks
-            WHERE task_id=$1 AND operation_id=$2 AND stage_execution_id=$3
-              AND stage_run_unit_id=$4 AND scope_snapshot_id=$5 AND organization_id=$6"#,
-    )
-    .bind(request.verification_task_id)
-    .bind(request.identity.stage.operation_id)
-    .bind(request.identity.stage.stage_execution_id)
-    .bind(request.identity.stage_run_unit_id)
-    .bind(request.identity.stage.scope_snapshot_id)
-    .bind(request.identity.organization_id)
-    .fetch_optional(pool.as_ref())
-    .await
-    .map_err(map_sqlx_error)?
-    .ok_or_else(|| InvestigationAnalysisHostError::NotFound {
-        detail: "VerificationTask generation authority is absent".to_owned(),
-    })?;
-    let subjects = sqlx::query_as::<_, VerificationCampaignMaterializationRow>(
-        r#"SELECT reservation.campaign_id,seal.seal_id AS generation_seal_id,
-                  task.scope_snapshot_id,task.organization_id,
-                  task.verification_plan_id,reservation.verification_objective_id AS objective_id
-             FROM hypothesis_verification_tasks task
-             JOIN hypothesis_verification_task_campaigns reservation
-               ON reservation.task_id=task.task_id
-             JOIN hypothesis_generation_seals seal
-               ON seal.generation_id=task.first_admission_generation_id
-            WHERE task.first_admission_generation_id=$1 AND task.operation_id=$2
-              AND task.stage_execution_id=$3 AND task.stage_run_unit_id=$4
-              AND task.scope_snapshot_id=$5 AND task.organization_id=$6
-            ORDER BY task.task_id,reservation.plan_objective_id"#,
-    )
-    .bind(generation_id)
-    .bind(request.identity.stage.operation_id)
-    .bind(request.identity.stage.stage_execution_id)
-    .bind(request.identity.stage_run_unit_id)
-    .bind(request.identity.stage.scope_snapshot_id)
-    .bind(request.identity.organization_id)
-    .fetch_all(pool.as_ref())
-    .await
-    .map_err(map_sqlx_error)?;
-    if subjects.is_empty()
-        || subjects.iter().any(|subject| {
-            subject.campaign_id.is_nil()
-                || subject.generation_seal_id.is_nil()
-                || subject.scope_snapshot_id != request.identity.stage.scope_snapshot_id
-                || subject.organization_id != request.identity.organization_id
-        })
-    {
-        return Err(InvestigationAnalysisHostError::SnapshotBlocked {
-            detail: "VerificationTask Campaign reservation generation is incomplete".to_owned(),
-        });
-    }
-    let generation_seal_id = subjects[0].generation_seal_id;
-    if subjects
-        .iter()
-        .any(|subject| subject.generation_seal_id != generation_seal_id)
-    {
-        return Err(InvestigationAnalysisHostError::AuthorityMismatch {
-            detail: "VerificationTask Campaign reservations span generation seals".to_owned(),
-        });
-    }
-    let stable_base = Uuid::new_v5(
-        &generation_seal_id,
-        b"unified-investigation-campaign-materialization.v1",
-    );
-    let repository = PgVerificationCampaignRepository::new(pool);
-    let registry =
-        golish_pentest_app::pentest_bridge::VerificationCapabilityRegistry::authoritative_v1();
-    let capability_ids = registry
-        .capability_ids()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    if capability_ids.len() != 4 {
-        return Err(InvestigationAnalysisHostError::AuthorityMismatch {
-            detail: "Verification capability registry census drifted".to_owned(),
-        });
-    }
-    let mut assessment_seals = std::collections::BTreeMap::new();
-    for subject in &subjects {
-        if assessment_seals.contains_key(&subject.objective_id) {
-            continue;
-        }
-        for capability_id in &capability_ids {
-            let assessment = registry.assessment(capability_id).ok_or_else(|| {
-                InvestigationAnalysisHostError::AuthorityMismatch {
-                    detail: "Verification capability registry member disappeared".to_owned(),
-                }
-            })?;
-            repository
-                .record_capability_assessment(RecordCapabilityAssessment {
-                    stable_request_id: Uuid::new_v5(
-                        &stable_base,
-                        format!("capability:{}:{capability_id}", subject.objective_id).as_bytes(),
-                    ),
-                    operation_id: request.identity.stage.operation_id,
-                    scope_snapshot_id: subject.scope_snapshot_id,
-                    organization_id: subject.organization_id,
-                    wave_coverage_seal_id: Uuid::nil(),
-                    objective_id: subject.objective_id,
-                    capability_id: capability_id.clone(),
-                    disposition: super::verification_campaign::compiler_disposition_to_repository(
-                        assessment.disposition,
-                    ),
-                    adapter_contract_version: assessment.adapter_contract_version.clone(),
-                    adapter_contract_digest: assessment.adapter_contract_digest.clone(),
-                    residual_reason_code:
-                        (super::verification_campaign::compiler_disposition_to_repository(
-                            assessment.disposition,
-                        ) != CapabilityAssessmentDispositionV1::Available)
-                            .then(|| assessment.reason_code.clone()),
-                })
-                .await
-                .map_err(map_campaign_error)?;
-        }
-        let seal = repository
-            .seal_capability_assessment_set(SealCapabilityAssessmentSet {
-                stable_request_id: Uuid::new_v5(
-                    &stable_base,
-                    format!("capability-set:{}", subject.objective_id).as_bytes(),
-                ),
-                operation_id: request.identity.stage.operation_id,
-                scope_snapshot_id: subject.scope_snapshot_id,
-                organization_id: subject.organization_id,
-                wave_coverage_seal_id: Uuid::nil(),
-                objective_id: subject.objective_id,
-            })
-            .await
-            .map_err(map_campaign_error)?;
-        assessment_seals.insert(subject.objective_id, seal.seal_id);
-    }
-    let wave = repository
-        .seal_wave_coverage_denominator(SealWaveCoverage {
-            stable_request_id: Uuid::new_v5(&stable_base, b"wave-coverage"),
-            operation_id: request.identity.stage.operation_id,
-            scope_snapshot_id: request.identity.stage.scope_snapshot_id,
-            organization_id: request.identity.organization_id,
-            generation_seal_id,
-            verification_plan_id: subjects[0].verification_plan_id,
-        })
-        .await
-        .map_err(map_campaign_error)?;
-    if wave.member_count == 0 {
-        return Err(InvestigationAnalysisHostError::SnapshotBlocked {
-            detail: "Verification Campaign Wave denominator is empty".to_owned(),
-        });
-    }
-    for subject in &subjects {
-        let campaign = repository
-            .admit_campaign_with_fresh_tool_truth(AdmitCampaignRequest {
-                stable_consumer_request_id: Uuid::new_v5(
-                    &stable_base,
-                    format!("campaign:{}", subject.campaign_id).as_bytes(),
-                ),
-                operation_id: request.identity.stage.operation_id,
-                scope_snapshot_id: subject.scope_snapshot_id,
-                organization_id: subject.organization_id,
-                generation_seal_id,
-                verification_plan_id: subject.verification_plan_id,
-                objective_id: subject.objective_id,
-                wave_coverage_seal_id: wave.seal_id,
-                capability_assessment_set_seal_id: assessment_seals[&subject.objective_id],
-                expected_campaign_id: Some(subject.campaign_id),
-            })
-            .await
-            .map_err(map_campaign_error)?;
-        if campaign.campaign_id != subject.campaign_id {
-            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
-                detail: "materialized Campaign id differs from its canonical reservation"
-                    .to_owned(),
-            });
-        }
-    }
-    Ok(())
 }
 
 impl PgInvestigationAnalysisHostRepository {
@@ -552,15 +454,154 @@ fn decode_lower_hex(value: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FrozenToolTruthPrerequisiteMember {
+    root_family: String,
+    member_status: String,
+    root_operation_id: Uuid,
+    fork_source_operation_id: Option<Uuid>,
+    revalidation_obligation_ids: Vec<Uuid>,
+}
+
+fn stage_rank(stage: &str) -> Option<u8> {
+    match stage {
+        "target_intel" => Some(0),
+        "external_attack_surface" => Some(1),
+        "enumeration" => Some(2),
+        "vuln_triage" => Some(3),
+        _ => None,
+    }
+}
+
+fn root_family_stage(root_family: &str) -> Option<&'static str> {
+    match root_family {
+        "ti" => Some("target_intel"),
+        "eas" => Some("external_attack_surface"),
+        "enum" => Some("enumeration"),
+        "vuln" => Some("vuln_triage"),
+        _ => None,
+    }
+}
+
+/// Adopted fork predecessors are immutable historical Analysis context. They
+/// never authorize a dynamic verification tool invocation: that later path
+/// has its own exact lane/target/JIT/budget authority. Consequently an expired
+/// adopted root must remain visible to the roles as potentially stale evidence,
+/// but must not force the CLI to rerun already sealed predecessor stages.
+/// Same-operation stale roots still require their exact frozen revalidation
+/// obligations because they represent mutable work in the current operation.
+fn stale_tool_truth_prerequisite(
+    operation_id: Uuid,
+    members: &[FrozenToolTruthPrerequisiteMember],
+) -> InvestigationAnalysisHostResult<Option<InvestigationAnalysisHostError>> {
+    let stale_predecessors = members
+        .iter()
+        .filter(|member| {
+            member.root_operation_id != operation_id && member.member_status != "consistent_fresh"
+        })
+        .collect::<Vec<_>>();
+    if stale_predecessors.is_empty() {
+        let mut same_operation_stale = members
+            .iter()
+            .filter(|member| {
+                member.root_operation_id == operation_id
+                    && member.member_status != "consistent_fresh"
+            })
+            .collect::<Vec<_>>();
+        if same_operation_stale.is_empty() {
+            return Ok(None);
+        }
+        same_operation_stale.sort_by_key(|member| {
+            root_family_stage(&member.root_family)
+                .and_then(stage_rank)
+                .unwrap_or(u8::MAX)
+        });
+        let mut stale_roots = Vec::with_capacity(same_operation_stale.len());
+        let mut revalidation_obligation_ids = Vec::new();
+        for member in same_operation_stale {
+            let stage = root_family_stage(&member.root_family).ok_or_else(|| {
+                InvestigationAnalysisHostError::AuthorityMismatch {
+                    detail: format!(
+                        "stale same-operation root family is outside the closed catalog: {}",
+                        member.root_family
+                    ),
+                }
+            })?;
+            if !matches!(
+                member.member_status.as_str(),
+                "expired" | "semantic_invalid" | "mixed_epoch" | "skew_exceeded"
+            ) {
+                return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                    detail: format!(
+                        "stale same-operation member status is outside the closed catalog: {}",
+                        member.member_status
+                    ),
+                });
+            }
+            stale_roots.push(format!("{stage}:{}", member.member_status));
+            revalidation_obligation_ids.extend_from_slice(&member.revalidation_obligation_ids);
+        }
+        stale_roots.sort();
+        stale_roots.dedup();
+        revalidation_obligation_ids.sort_unstable();
+        revalidation_obligation_ids.dedup();
+        if revalidation_obligation_ids.is_empty() {
+            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "stale same-operation roots have no frozen Tool Truth revalidation obligation authority"
+                    .to_owned(),
+            });
+        }
+        return Ok(Some(InvestigationAnalysisHostError::RevalidationRequired {
+            operation_id,
+            revalidation_obligation_ids,
+            stale_roots,
+        }));
+    }
+    let source_operation_id = stale_predecessors[0].root_operation_id;
+    if source_operation_id.is_nil()
+        || stale_predecessors.iter().any(|member| {
+            member.root_operation_id != source_operation_id
+                || member.fork_source_operation_id != Some(source_operation_id)
+        })
+    {
+        return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+            detail: "stale predecessor roots do not share the exact stage-fork source authority"
+                .to_owned(),
+        });
+    }
+    for member in stale_predecessors {
+        root_family_stage(&member.root_family).ok_or_else(|| {
+            InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: format!(
+                    "stale predecessor root family is outside the closed catalog: {}",
+                    member.root_family
+                ),
+            }
+        })?;
+        if member.member_status != "expired" {
+            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: format!(
+                    "adopted predecessor is not valid immutable historical context: {}",
+                    member.member_status
+                ),
+            });
+        }
+    }
+    Ok(None)
+}
+
 #[async_trait]
 impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostRepository {
     async fn prepare_analysis_subject(
         &self,
         request: PrepareInvestigationAnalysisSubject,
     ) -> InvestigationAnalysisHostResult<PreparedInvestigationAnalysisSubject> {
-        if request.stable_request_id.is_nil() || request.work_id.is_nil() {
+        if request.stable_request_id.is_nil()
+            || request.work_id.is_nil()
+            || request.asset_lane_id.is_nil()
+        {
             return Err(InvestigationAnalysisHostError::InvalidRequest {
-                detail: "stable_request_id and work_id must be non-nil".to_owned(),
+                detail: "stable_request_id, work_id, and asset_lane_id must be non-nil".to_owned(),
             });
         }
         let snapshot = self
@@ -570,9 +611,15 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                 operation_id: request.identity.stage.operation_id,
                 scope_snapshot_id: request.identity.stage.scope_snapshot_id,
                 organization_id: request.identity.organization_id,
+                asset_lane_id: request.asset_lane_id,
             })
             .await
             .map_err(map_registry_error)?;
+        if snapshot.asset_lane_id != Some(request.asset_lane_id) {
+            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "Candidate snapshot escaped the active asset lane".to_owned(),
+            });
+        }
         if !matches!(
             snapshot.disposition,
             CandidateAnalysisSnapshotDispositionV1::SealedReady
@@ -583,6 +630,118 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                     "Candidate snapshot {} is not authorized for unified analysis",
                     snapshot.snapshot_id
                 ),
+            });
+        }
+        let prerequisite_members =
+            sqlx::query_as::<_, (String, String, Uuid, Option<Uuid>, Vec<Uuid>)>(
+                r#"SELECT member.root_family,member.member_status,root.operation_id,
+                      fork.source_operation_id,
+                      COALESCE(ARRAY(
+                          SELECT obligation.tool_truth_revalidation_obligation_id
+                            FROM candidate_analysis_revalidation_obligations obligation
+                           WHERE obligation.snapshot_id=$2
+                             AND obligation.root_family=member.root_family
+                             AND obligation.tool_truth_revalidation_obligation_id IS NOT NULL
+                           ORDER BY obligation.tool_truth_revalidation_obligation_id
+                      ),ARRAY[]::UUID[]) AS revalidation_obligation_ids
+                 FROM tool_truth_authority_bundle_members member
+                 JOIN coverage_denominators root
+                   ON root.id=member.root_denominator_id
+                  AND root.execution_authority_id=member.root_execution_authority_id
+                 LEFT JOIN operation_stage_forks fork
+                   ON fork.operation_id=member.operation_id
+                WHERE member.bundle_seal_id=$1
+                ORDER BY member.ordinal"#,
+            )
+            .bind(snapshot.tool_truth_authority_bundle_seal_id)
+            .bind(snapshot.snapshot_id)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|error| InvestigationAnalysisHostError::Infrastructure {
+                detail: error.to_string(),
+            })?
+            .into_iter()
+            .map(
+                |(
+                    root_family,
+                    member_status,
+                    root_operation_id,
+                    fork_source_operation_id,
+                    revalidation_obligation_ids,
+                )| {
+                    FrozenToolTruthPrerequisiteMember {
+                        root_family,
+                        member_status,
+                        root_operation_id,
+                        fork_source_operation_id,
+                        revalidation_obligation_ids,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        if prerequisite_members.len()
+            != golish_pentest_domain::tool_truth::ToolTruthRootFamilyV1::EXECUTION_RECEIPT_ROOTS
+                .len()
+        {
+            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "Candidate Tool Truth prerequisite census is incomplete".to_owned(),
+            });
+        }
+        if let Some(blocked) = stale_tool_truth_prerequisite(
+            request.identity.stage.operation_id,
+            &prerequisite_members,
+        )? {
+            return Err(blocked);
+        }
+        let open_pending_evolution_ids: Vec<Uuid> = sqlx::query_scalar(
+            r#"SELECT pending.pending_evolution_authority_id
+                 FROM candidate_analysis_snapshots candidate_snapshot
+                 JOIN hypothesis_generation_seals source_seal
+                   ON source_seal.seal_id=candidate_snapshot.previous_generation_seal_id
+                 JOIN hypothesis_pending_evolution_authorities pending
+                   ON pending.source_generation_id=source_seal.generation_id
+                  AND pending.operation_id=candidate_snapshot.operation_id
+                  AND pending.organization_id=candidate_snapshot.organization_id
+                  AND pending.asset_lane_id=candidate_snapshot.asset_lane_id
+                 JOIN operation_state operation
+                   ON operation.operation_id=pending.operation_id
+                  AND operation.project_scope_id=pending.project_scope_id
+                 LEFT JOIN hypothesis_consolidation_receipts terminal
+                   ON terminal.consolidation_batch_id=pending.consolidation_batch_id
+                WHERE candidate_snapshot.snapshot_id=$1
+                  AND candidate_snapshot.operation_id=$2
+                  AND candidate_snapshot.organization_id=$3
+                  AND candidate_snapshot.scope_snapshot_id=$4
+                  AND candidate_snapshot.asset_lane_id=$5
+                  AND (
+                        terminal.consolidation_receipt_id IS NULL
+                        OR EXISTS(
+                            SELECT 1
+                              FROM investigation_analysis_attempt_bindings replay_binding
+                             WHERE replay_binding.stable_request_id=$6
+                               AND replay_binding.candidate_snapshot_id=candidate_snapshot.snapshot_id
+                               AND replay_binding.operation_id=pending.operation_id
+                               AND replay_binding.organization_id=pending.organization_id
+                        )
+                  )
+                ORDER BY pending.pending_evolution_authority_id"#,
+        )
+        .bind(snapshot.snapshot_id)
+        .bind(request.identity.stage.operation_id)
+        .bind(request.identity.organization_id)
+        .bind(request.identity.stage.scope_snapshot_id)
+        .bind(request.asset_lane_id)
+        .bind(request.stable_request_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|error| InvestigationAnalysisHostError::Infrastructure {
+            detail: error.to_string(),
+        })?;
+        if open_pending_evolution_ids.len() > 1
+            || open_pending_evolution_ids.first().copied() != request.pending_evolution_authority_id
+        {
+            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "Candidate snapshot pending evolution authority drifted".to_owned(),
             });
         }
         let attempt = self
@@ -634,7 +793,17 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
             });
         }
         let subject_authorities = sqlx::query_as::<_, (String, Uuid, String, String)>(
-            r#"SELECT subject_kind,subject_id,display_value,
+            r#"WITH lane AS (
+                   SELECT lane.asset_lane_id,lane.target_id,lane.organization_id
+                     FROM investigation_asset_lanes lane
+                    WHERE lane.asset_lane_id=$1
+                      AND lane.operation_id=$2
+                      AND lane.stage_execution_id=$3
+                      AND lane.scope_snapshot_id=$4
+                      AND lane.organization_id=$5
+                      AND lane.state IN('analyzing','evolving')
+               )
+               SELECT subject_kind,subject_id,display_value,
                       tool_truth_sha256(jsonb_build_object(
                           'domain','investigation_subject_identity.v1',
                           'subject_kind',subject_kind,
@@ -642,21 +811,31 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                           'display_value',display_value
                       )::TEXT) AS subject_identity_hash
                  FROM (
-                     SELECT 'web_origin'::TEXT AS subject_kind,id AS subject_id,
-                            origin AS display_value
-                       FROM web_origins WHERE organization_id=$1
+                     SELECT 'asset'::TEXT AS subject_kind,target.id AS subject_id,
+                            target.value AS display_value
+                       FROM lane
+                       JOIN targets target ON target.id=lane.target_id
                      UNION ALL
-                     SELECT 'endpoint'::TEXT,endpoint.id,endpoint.url
-                       FROM api_endpoints endpoint
-                       JOIN targets target ON target.id=endpoint.target_id
-                      WHERE target.organization_id=$1
+                     SELECT 'endpoint'::TEXT AS subject_kind,endpoint.id,endpoint.url
+                       FROM lane
+                       JOIN api_endpoints endpoint ON endpoint.target_id=lane.target_id
+                      WHERE endpoint.target_id=lane.target_id
                      UNION ALL
-                     SELECT 'asset'::TEXT,id,value
-                       FROM targets WHERE organization_id=$1
+                     SELECT 'web_origin'::TEXT,origin.id,origin.origin
+                       FROM lane
+                       JOIN fingerprint_origin_observations observation
+                         ON observation.target_id=lane.target_id
+                       JOIN web_origins origin
+                         ON origin.id=observation.web_origin_id
+                        AND origin.organization_id=lane.organization_id
                  ) subjects
                 ORDER BY subject_kind,subject_id
                 LIMIT 256"#,
         )
+        .bind(request.asset_lane_id)
+        .bind(request.identity.stage.operation_id)
+        .bind(request.identity.stage.stage_execution_id)
+        .bind(request.identity.stage.scope_snapshot_id)
         .bind(request.identity.organization_id)
         .fetch_all(self.pool.as_ref())
         .await
@@ -682,13 +861,31 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
             });
         }
 
+        let subject_fingerprint_sha256 = if let Some(pending_evolution_authority_id) =
+            request.pending_evolution_authority_id
+        {
+            sqlx::query_scalar(
+                r#"SELECT investigation_evolution_analysis_subject_fingerprint($1,$2)"#,
+            )
+            .bind(pending_evolution_authority_id)
+            .bind(&attempt.attempt_input_hash)
+            .fetch_one(self.pool.as_ref())
+            .await
+            .map_err(|error| InvestigationAnalysisHostError::Infrastructure {
+                detail: error.to_string(),
+            })?
+        } else {
+            attempt.attempt_input_hash
+        };
         Ok(PreparedInvestigationAnalysisSubject {
             subject_kind: UnifiedInvestigationSubjectKind::AnalysisAttempt,
             analysis_attempt_id: attempt.analysis_attempt_id,
             candidate_snapshot_id: snapshot.snapshot_id,
             candidate_snapshot_sha256: snapshot.snapshot_hash,
-            subject_fingerprint_sha256: attempt.attempt_input_hash,
+            subject_fingerprint_sha256,
             binding_id: binding.binding.binding_id,
+            asset_lane_id: request.asset_lane_id,
+            pending_evolution_authority_id: request.pending_evolution_authority_id,
             authority_inputs,
             subject_authorities,
             replayed: binding.replayed,
@@ -710,7 +907,13 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
         ]
         .into_iter()
         .any(|id| id.is_nil())
-            || request.advisory.candidate_proposals.is_empty()
+            || if request.advisory.candidate_proposals.is_empty() {
+                !request.advisory.action_intents.is_empty()
+                    || request.advisory.residuals.len() != 1
+                    || !request.advisory.residuals[0].is_valid_no_hypothesis_residual()
+            } else {
+                !request.advisory.residuals.is_empty()
+            }
             || request.advisory.candidate_proposals.iter().any(|proposal| {
                 proposal.proof_refs.is_empty()
                     || proposal
@@ -752,6 +955,7 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
         if binding.binding_id != request.prepared_subject.binding_id
             || binding.analysis_attempt_id != request.prepared_subject.analysis_attempt_id
             || binding.candidate_snapshot_id != request.prepared_subject.candidate_snapshot_id
+            || request.prepared_subject.asset_lane_id.is_nil()
             || request.advisory.subject_id != request.prepared_subject.analysis_attempt_id
             || request.advisory.candidate_snapshot_id
                 != request.prepared_subject.candidate_snapshot_id
@@ -762,12 +966,33 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                 detail: "canonical compiler subject/binding authority drifted".to_owned(),
             });
         }
-        let proposals = request
+        let mut proposals = request
             .advisory
             .candidate_proposals
             .iter()
             .map(compiler_proposal_input)
-            .collect::<Vec<_>>();
+            .collect::<InvestigationAnalysisHostResult<Vec<_>>>()?;
+        let pending_discovery_proposals = load_pending_discovery_compiler_proposals(
+            self.pool.as_ref(),
+            request.identity.stage.operation_id,
+            request.prepared_subject.asset_lane_id,
+            request.prepared_subject.candidate_snapshot_id,
+        )
+        .await
+        .map_err(map_compiler_db_error)?;
+        let mut proposal_ids = proposals
+            .iter()
+            .map(|proposal| proposal.proposal_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        for proposal in pending_discovery_proposals {
+            if !proposal_ids.insert(proposal.proposal_id) {
+                return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                    detail: "pending discovery proposal duplicated the cognitive proposal set"
+                        .to_owned(),
+                });
+            }
+            proposals.push(proposal);
+        }
         let canonical_action_intents = request
             .advisory
             .action_intents
@@ -799,12 +1024,20 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                 task_plan_id: request.task_plan_id,
                 delegation_census_seal_id: request.delegation_census_seal_id,
                 primary_worker_run_id: request.primary_worker_run_id,
+                pending_evolution_authority_id: request
+                    .prepared_subject
+                    .pending_evolution_authority_id,
                 proposals,
                 canonical_action_intents,
             },
         )
         .await
         .map_err(map_compiler_db_error)?;
+        if prepared.asset_lane_id != request.prepared_subject.asset_lane_id {
+            return Err(InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "canonical compiler escaped the prepared asset lane".to_owned(),
+            });
+        }
         let compiled = crate::ai::candidate_analysis_gate::compile_candidate_host_recipe(
             &prepared.server_recipe,
         )
@@ -828,6 +1061,9 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                 prepared,
                 stable_apply_request_id: request.stable_apply_request_id,
                 stable_admission_request_id: request.stable_admission_request_id,
+                pending_evolution_authority_id: request
+                    .prepared_subject
+                    .pending_evolution_authority_id,
                 mutations,
                 claim_components: compiled.claim_components,
                 verification_contracts: compiled.verification_contracts,
@@ -836,6 +1072,29 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
         )
         .await
         .map_err(map_compiler_db_error)?;
+        for discovery in asset_verification::list_pending_hypothesis_discoveries(
+            self.pool.as_ref(),
+            request.identity.stage.operation_id,
+            request.prepared_subject.asset_lane_id,
+        )
+        .await
+        .map_err(map_compiler_db_error)?
+        {
+            asset_verification::admit_or_dismiss_pending_hypothesis_discovery(
+                self.pool.as_ref(),
+                &asset_verification::AdmitOrDismissPendingHypothesisDiscoveryInput {
+                    stable_request_id: Uuid::new_v5(
+                        &discovery.discovery_authority_id,
+                        b"investigation-pending-discovery-post-compiler-consumption.v1",
+                    ),
+                    discovery_authority_id: discovery.discovery_authority_id,
+                    expected_asset_lane_id: request.prepared_subject.asset_lane_id,
+                    expected_session_id: discovery.session_id,
+                },
+            )
+            .await
+            .map_err(map_compiler_db_error)?;
+        }
         Ok(InvestigationGenerationAdmissionView {
             compilation_decision_id: applied.compilation_decision_id,
             generation_id: applied.generation_id,
@@ -850,12 +1109,8 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                     detail: "canonical generation member count overflow".to_owned(),
                 },
             )?,
-            admission_objective_count: u32::try_from(applied.campaign_reservation_ids.len())
-                .map_err(|_| InvestigationAnalysisHostError::AuthorityMismatch {
-                    detail: "admission objective count overflow".to_owned(),
-                })?,
             verification_task_ids: applied.verification_task_ids,
-            campaign_ids: applied.campaign_reservation_ids,
+            evolution_fixed_point: applied.evolution_fixed_point,
             replayed: applied.replayed,
         })
     }
@@ -1030,6 +1285,33 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                 detail: "normal Primary checkpoint hash drifted".to_owned(),
             });
         }
+        if (
+            counts.decision_count,
+            counts.apply_receipt_count,
+            counts.admission_count,
+        ) == (1, 0, 0)
+        {
+            let fixed_point = load_committed_evolution_fixed_point_on(
+                &mut tx,
+                CommittedEvolutionFixedPointAuthority {
+                    stable_compilation_request_id: request.stable_compilation_request_id,
+                    stable_apply_request_id: request.stable_apply_request_id,
+                    identity: &request.identity,
+                    work_id: request.work_id,
+                    prepared_subject: &request.prepared_subject,
+                    task_plan_id: request.task_plan_id,
+                    delegation_census_seal_id: request.delegation_census_seal_id,
+                    primary_worker_run_id: request.primary_worker_run_id,
+                },
+            )
+            .await?
+            .ok_or_else(|| InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "normal Primary fixed-point replay authority is partial or foreign"
+                    .to_owned(),
+            })?;
+            tx.commit().await.map_err(map_sqlx_error)?;
+            return Ok(Some(fixed_point));
+        }
         if !complete_committed_artifact_set(
             counts.decision_count,
             counts.apply_receipt_count,
@@ -1049,14 +1331,7 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                       ARRAY(SELECT member.task_id FROM verification_admission_members member
                              WHERE member.admission_set_id=admission.admission_set_id
                                AND member.disposition='scheduled'
-                             ORDER BY member.hypothesis_revision_id) AS verification_task_ids,
-                      ARRAY(SELECT reservation.campaign_id
-                              FROM verification_admission_members member
-                              JOIN hypothesis_verification_task_campaigns reservation
-                                ON reservation.task_id=member.task_id
-                             WHERE member.admission_set_id=admission.admission_set_id
-                               AND member.disposition='scheduled'
-                             ORDER BY reservation.task_id,reservation.plan_objective_id) AS campaign_ids
+                             ORDER BY member.hypothesis_revision_id) AS verification_task_ids
                  FROM investigation_hypothesis_compilation_decisions decision
                  JOIN investigation_hypothesis_canonical_apply_receipts receipt
                    ON receipt.apply_receipt_id=$12 AND receipt.stable_request_id=$2
@@ -1103,7 +1378,18 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                   AND admission.member_count=seal.member_count
                   AND admission.member_count=(SELECT COUNT(*)
                         FROM verification_admission_members member
-                       WHERE member.admission_set_id=admission.admission_set_id)"#,
+                       WHERE member.admission_set_id=admission.admission_set_id)
+                  AND NOT EXISTS(
+                        SELECT 1
+                          FROM verification_admission_members member
+                          JOIN hypothesis_verification_tasks task
+                            ON task.task_id=member.task_id
+                          LEFT JOIN hypothesis_verification_task_assignment_sets assignment
+                            ON assignment.task_id=task.task_id
+                         WHERE member.admission_set_id=admission.admission_set_id
+                           AND member.disposition='scheduled'
+                           AND (task.task_contract_version<>'hypothesis_verification_task.dynamic_v2'
+                                OR assignment.assignment_set_id IS NOT NULL))"#,
         )
         .bind(request.stable_compilation_request_id)
         .bind(request.stable_apply_request_id)
@@ -1162,13 +1448,8 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
             generation_ordinal,
             generation_seal_id: row.generation_seal_id,
             generation_member_count,
-            admission_objective_count: u32::try_from(row.campaign_ids.len()).map_err(|_| {
-                InvestigationAnalysisHostError::AuthorityMismatch {
-                    detail: "normal Primary committed objective count overflowed".to_owned(),
-                }
-            })?,
             verification_task_ids: row.verification_task_ids,
-            campaign_ids: row.campaign_ids,
+            evolution_fixed_point: false,
             replayed: true,
         }))
     }
@@ -1404,6 +1685,32 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                 detail: "committed post-synthesis recovery state/checkpoint drifted".to_owned(),
             });
         }
+        if (
+            counts.decision_count,
+            counts.apply_receipt_count,
+            counts.admission_count,
+        ) == (1, 0, 0)
+        {
+            let fixed_point = load_committed_evolution_fixed_point_on(
+                &mut tx,
+                CommittedEvolutionFixedPointAuthority {
+                    stable_compilation_request_id: request.stable_compilation_request_id,
+                    stable_apply_request_id: request.stable_apply_request_id,
+                    identity: &request.identity,
+                    work_id: request.work_id,
+                    prepared_subject: &request.prepared_subject,
+                    task_plan_id: request.task_plan_id,
+                    delegation_census_seal_id: request.delegation_census_seal_id,
+                    primary_worker_run_id: request.primary_worker_run_id,
+                },
+            )
+            .await?
+            .ok_or_else(|| InvestigationAnalysisHostError::AuthorityMismatch {
+                detail: "recovery fixed-point replay authority is partial or foreign".to_owned(),
+            })?;
+            tx.commit().await.map_err(map_sqlx_error)?;
+            return Ok(Some(fixed_point));
+        }
         let committed = complete_committed_artifact_set(
             counts.decision_count,
             counts.apply_receipt_count,
@@ -1429,16 +1736,7 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                            WHERE member.admission_set_id=admission.admission_set_id
                              AND member.disposition='scheduled'
                            ORDER BY member.hypothesis_revision_id
-                      ) AS verification_task_ids,
-                      ARRAY(
-                          SELECT reservation.campaign_id
-                            FROM verification_admission_members member
-                            JOIN hypothesis_verification_task_campaigns reservation
-                              ON reservation.task_id=member.task_id
-                           WHERE member.admission_set_id=admission.admission_set_id
-                             AND member.disposition='scheduled'
-                           ORDER BY reservation.task_id,reservation.plan_objective_id
-                      ) AS campaign_ids
+                      ) AS verification_task_ids
                  FROM investigation_hypothesis_compilation_decisions decision
                  JOIN investigation_pentagi_delegation_census_seals census
                    ON census.census_seal_id=decision.delegation_census_seal_id
@@ -1508,6 +1806,18 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
                   AND admission.member_count=(
                       SELECT COUNT(*) FROM verification_admission_members member
                        WHERE member.admission_set_id=admission.admission_set_id
+                  )
+                  AND NOT EXISTS(
+                      SELECT 1
+                        FROM verification_admission_members member
+                        JOIN hypothesis_verification_tasks task
+                          ON task.task_id=member.task_id
+                        LEFT JOIN hypothesis_verification_task_assignment_sets assignment
+                          ON assignment.task_id=task.task_id
+                       WHERE member.admission_set_id=admission.admission_set_id
+                         AND member.disposition='scheduled'
+                         AND (task.task_contract_version<>'hypothesis_verification_task.dynamic_v2'
+                              OR assignment.assignment_set_id IS NOT NULL)
                   )"#,
         )
         .bind(request.stable_compilation_request_id)
@@ -1568,13 +1878,8 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
             generation_ordinal,
             generation_seal_id: row.generation_seal_id,
             generation_member_count,
-            admission_objective_count: u32::try_from(row.campaign_ids.len()).map_err(|_| {
-                InvestigationAnalysisHostError::AuthorityMismatch {
-                    detail: "committed post-synthesis objective count overflowed".to_owned(),
-                }
-            })?,
             verification_task_ids: row.verification_task_ids,
-            campaign_ids: row.campaign_ids,
+            evolution_fixed_point: false,
             replayed: true,
         }))
     }
@@ -2051,304 +2356,133 @@ impl InvestigationAnalysisHostRepository for PgInvestigationAnalysisHostReposito
             replayed: false,
         })
     }
+}
 
-    async fn prepare_verification_task_subject(
-        &self,
-        request: PrepareInvestigationVerificationTaskSubject,
-    ) -> InvestigationAnalysisHostResult<PreparedInvestigationVerificationTaskSubject> {
-        if request.stable_request_id.is_nil() || request.verification_task_id.is_nil() {
-            return Err(InvestigationAnalysisHostError::InvalidRequest {
-                detail: "verification subject request ids must be non-nil".to_owned(),
-            });
+#[cfg(test)]
+mod stale_prerequisite_tests {
+    use super::*;
+
+    fn member(
+        root_family: &str,
+        member_status: &str,
+        root_operation_id: Uuid,
+        fork_source_operation_id: Option<Uuid>,
+        revalidation_obligation_ids: Vec<Uuid>,
+    ) -> FrozenToolTruthPrerequisiteMember {
+        FrozenToolTruthPrerequisiteMember {
+            root_family: root_family.to_owned(),
+            member_status: member_status.to_owned(),
+            root_operation_id,
+            fork_source_operation_id,
+            revalidation_obligation_ids,
         }
-        materialize_verification_task_campaigns(self.pool.clone(), &request).await?;
-        let row = sqlx::query_as::<_, VerificationSubjectRow>(
-            r#"SELECT task.hypothesis_revision_id,task.hypothesis_revision_sha256,
-                      task.verification_plan_id,task.verification_plan_sha256,
-                      assignment.assignment_set_id,assignment.member_set_sha256 AS assignment_set_sha256,
-                      task.relevant_evidence_snapshot_id,task.semantic_evidence_set_sha256,
-                      task.semantic_attempt_fingerprint
-                 FROM hypothesis_verification_tasks task
-                 JOIN hypothesis_verification_task_assignment_sets assignment
-                   ON assignment.task_id=task.task_id AND assignment.status='sealed'
-                WHERE task.task_id=$1 AND task.operation_id=$2
-                  AND task.stage_execution_id=$3 AND task.stage_run_unit_id=$4
-                  AND task.scope_snapshot_id=$5 AND task.organization_id=$6"#,
-        )
-        .bind(request.verification_task_id)
-        .bind(request.identity.stage.operation_id)
-        .bind(request.identity.stage.stage_execution_id)
-        .bind(request.identity.stage_run_unit_id)
-        .bind(request.identity.stage.scope_snapshot_id)
-        .bind(request.identity.organization_id)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .map_err(map_sqlx_error)?
-        .ok_or_else(|| InvestigationAnalysisHostError::NotFound {
-            detail: "exact sealed VerificationTask assignment is absent".to_owned(),
-        })?;
-        let campaign_rows = sqlx::query_as::<_, VerificationCampaignSubjectRow>(
-            r#"SELECT reservation.campaign_id,reservation.plan_objective_id,
-                      reservation.verification_objective_id AS objective_id,
-                      reservation.reservation_sha256,
-                      assessment_set.member_set_hash AS capability_assessment_set_sha256,
-                      unified_investigation_campaign_authority_sha256_v4(
-                          reservation.campaign_id,reservation.reservation_sha256
-                      ) AS campaign_authority_sha256,
-                      ARRAY(
-                          SELECT assessment.capability_key
-                            FROM verification_capability_assessment_set_members member
-                            JOIN verification_capability_assessments assessment
-                              ON assessment.assessment_id=member.assessment_id
-                           WHERE member.assessment_set_seal_id=campaign.capability_assessment_set_seal_id
-                             AND assessment.status='available'
-                           ORDER BY assessment.capability_key
-                      ) AS available_capability_ids
-                  FROM hypothesis_verification_task_campaigns reservation
-                  JOIN verification_campaigns campaign
-                    ON campaign.campaign_id=reservation.campaign_id AND campaign.operation_id=$3
-                   AND campaign.organization_id=$4
-                   AND campaign.state IN ('admitted','running')
-                   AND campaign.terminal_at IS NULL
-                   AND campaign.superseded_at IS NULL
-                   AND campaign.effective_valid_until>statement_timestamp()
-                  JOIN verification_capability_assessment_set_seals assessment_set
-                    ON assessment_set.assessment_set_seal_id=campaign.capability_assessment_set_seal_id
-                   AND assessment_set.sealed_at IS NOT NULL
-                WHERE task_id=$1 AND assignment_set_id=$2 ORDER BY campaign_id"#,
-        )
-        .bind(request.verification_task_id)
-        .bind(row.assignment_set_id)
-        .bind(request.identity.stage.operation_id)
-        .bind(request.identity.organization_id)
-        .fetch_all(self.pool.as_ref())
-        .await
-        .map_err(map_sqlx_error)?;
-        let reservation_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM hypothesis_verification_task_campaigns
-              WHERE task_id=$1 AND assignment_set_id=$2",
-        )
-        .bind(request.verification_task_id)
-        .bind(row.assignment_set_id)
-        .fetch_one(self.pool.as_ref())
-        .await
-        .map_err(map_sqlx_error)?;
-        if campaign_rows.is_empty()
-            || i64::try_from(campaign_rows.len()).ok() != Some(reservation_count)
-            || campaign_rows.iter().any(|campaign| {
-                campaign.campaign_id.is_nil()
-                    || campaign.plan_objective_id.is_nil()
-                    || campaign.objective_id.is_nil()
-                    || !is_canonical_sha256(&campaign.reservation_sha256)
-                    || !is_canonical_sha256(&campaign.capability_assessment_set_sha256)
-                    || !is_canonical_sha256(&campaign.campaign_authority_sha256)
-                    || campaign.available_capability_ids.is_empty()
-            })
-        {
-            return Err(InvestigationAnalysisHostError::SnapshotBlocked {
-                detail: "VerificationTask Campaign authority is absent or malformed".to_owned(),
-            });
-        }
-        let campaign_authority_hashes = campaign_rows
-            .iter()
-            .map(|campaign| campaign.campaign_authority_sha256.clone())
-            .collect::<Vec<_>>();
-        let campaign_denominator_sha256: String = sqlx::query_scalar(
-            "SELECT unified_investigation_exact_set_hash('verification_task_campaigns.v4',$1::TEXT[])",
-        )
-        .bind(campaign_authority_hashes)
-        .fetch_one(self.pool.as_ref())
-        .await
-        .map_err(map_sqlx_error)?;
-        let subject_fingerprint_sha256: String = sqlx::query_scalar(
-            r#"SELECT tool_truth_sha256(jsonb_build_object(
-                   'task_id',$1,'revision_sha256',$2,'plan_sha256',$3,
-                   'assignment_sha256',$4,'campaign_denominator_sha256',$5,
-                   'semantic_attempt_fingerprint',$6
-               )::TEXT)"#,
-        )
-        .bind(request.verification_task_id)
-        .bind(&row.hypothesis_revision_sha256)
-        .bind(&row.verification_plan_sha256)
-        .bind(&row.assignment_set_sha256)
-        .bind(&campaign_denominator_sha256)
-        .bind(&row.semantic_attempt_fingerprint)
-        .fetch_one(self.pool.as_ref())
-        .await
-        .map_err(map_sqlx_error)?;
-        let running = advance_task_to_running(
-            self.pool.as_ref(),
-            &AdvanceTaskToRunningInput {
-                task_id: request.verification_task_id,
-                operation_id: request.identity.stage.operation_id,
-                stage_execution_id: request.identity.stage.stage_execution_id,
-                stage_run_unit_id: request.identity.stage_run_unit_id,
-                scope_snapshot_id: request.identity.stage.scope_snapshot_id,
-                organization_id: request.identity.organization_id,
-            },
-        )
-        .await
-        .map_err(map_verification_task_error)?;
-        if running.current_state != "running" {
-            return Err(InvestigationAnalysisHostError::Conflict {
-                detail: "VerificationTask is not runnable before Primary planning".to_owned(),
-            });
-        }
-        let campaigns = campaign_rows
-            .into_iter()
-            .map(|campaign| InvestigationVerificationCampaignSubjectV1 {
-                campaign_id: campaign.campaign_id,
-                plan_objective_id: campaign.plan_objective_id,
-                objective_id: campaign.objective_id,
-                reservation_sha256: campaign.reservation_sha256,
-                capability_assessment_set_sha256: campaign.capability_assessment_set_sha256,
-                available_capability_ids: campaign.available_capability_ids,
-            })
-            .collect::<Vec<_>>();
-        let campaign_ids = campaigns
-            .iter()
-            .map(|campaign| campaign.campaign_id)
-            .collect();
-        Ok(PreparedInvestigationVerificationTaskSubject {
-            subject_kind: UnifiedInvestigationSubjectKind::VerificationTask,
-            verification_task_id: request.verification_task_id,
-            hypothesis_revision_id: row.hypothesis_revision_id,
-            hypothesis_revision_sha256: row.hypothesis_revision_sha256.clone(),
-            verification_plan_id: row.verification_plan_id,
-            verification_plan_sha256: row.verification_plan_sha256.clone(),
-            assignment_set_id: row.assignment_set_id,
-            assignment_set_sha256: row.assignment_set_sha256,
-            campaign_ids,
-            campaigns,
-            campaign_denominator_sha256,
-            subject_fingerprint_sha256,
-            bounded_context: vec![
-                InvestigationBoundedContextRefV1 {
-                    kind: "hypothesis_revision".to_owned(),
-                    id: row.hypothesis_revision_id,
-                    authority_sha256: row.hypothesis_revision_sha256,
-                },
-                InvestigationBoundedContextRefV1 {
-                    kind: "verification_plan".to_owned(),
-                    id: row.verification_plan_id,
-                    authority_sha256: row.verification_plan_sha256,
-                },
-                InvestigationBoundedContextRefV1 {
-                    kind: "relevant_evidence_snapshot".to_owned(),
-                    id: row.relevant_evidence_snapshot_id,
-                    authority_sha256: row.semantic_evidence_set_sha256,
-                },
+    }
+
+    #[test]
+    fn expired_adopted_predecessor_remains_historical_analysis_context() {
+        let operation_id = Uuid::new_v4();
+        let source_operation_id = Uuid::new_v4();
+        let result = stale_tool_truth_prerequisite(
+            operation_id,
+            &[
+                member(
+                    "eas",
+                    "expired",
+                    source_operation_id,
+                    Some(source_operation_id),
+                    Vec::new(),
+                ),
+                member(
+                    "enum",
+                    "consistent_fresh",
+                    source_operation_id,
+                    Some(source_operation_id),
+                    Vec::new(),
+                ),
+                member(
+                    "vuln",
+                    "consistent_fresh",
+                    source_operation_id,
+                    Some(source_operation_id),
+                    Vec::new(),
+                ),
             ],
-            replayed: false,
-        })
-    }
-
-    async fn apply_verification_task_advisory(
-        &self,
-        request: ApplyInvestigationVerificationTaskAdvisory,
-    ) -> InvestigationAnalysisHostResult<InvestigationVerificationApplyView> {
-        if request.stable_request_id.is_nil()
-            || request.task_plan_id.is_nil()
-            || request.delegation_census_seal_id.is_nil()
-            || request.primary_worker_run_id.is_nil()
-            || request.accepted_output_sha256.is_empty()
-            || request.strategies.is_empty()
-        {
-            return Err(InvestigationAnalysisHostError::InvalidRequest {
-                detail: "VerificationTask advisory authority/strategy set is invalid".to_owned(),
-            });
-        }
-        super::investigation_verification_advisory::apply(self.pool.clone(), request).await
-    }
-
-    async fn resume_verification_task_advisory(
-        &self,
-        request: ResumeInvestigationVerificationTaskAdvisory,
-    ) -> InvestigationAnalysisHostResult<Option<InvestigationVerificationApplyView>> {
-        if request.stable_request_id.is_nil()
-            || request.task_plan_id.is_nil()
-            || request.primary_worker_run_id.is_nil()
-        {
-            return Err(InvestigationAnalysisHostError::InvalidRequest {
-                detail: "VerificationTask advisory resume authority is invalid".to_owned(),
-            });
-        }
-        super::investigation_verification_advisory::resume(self.pool.clone(), request).await
-    }
-
-    async fn finalize_verification_tasks_from_campaign_truth(
-        &self,
-        request: FinalizeInvestigationVerificationTasks,
-    ) -> InvestigationAnalysisHostResult<FinalizedInvestigationVerificationTasksView> {
-        let identity = request.identity;
-        if identity.authority_id.is_nil()
-            || identity.operation_id.is_nil()
-            || identity.stage_execution_id.is_nil()
-            || identity.scope_snapshot_id.is_nil()
-        {
-            return Err(InvestigationAnalysisHostError::InvalidRequest {
-                detail: "VerificationTask finalizer identity is invalid".to_owned(),
-            });
-        }
-        let tasks = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
-            r#"SELECT task_id,stage_run_unit_id,organization_id
-                 FROM hypothesis_verification_tasks
-                WHERE operation_id=$1 AND stage_execution_id=$2 AND scope_snapshot_id=$3
-                ORDER BY task_id"#,
         )
-        .bind(identity.operation_id)
-        .bind(identity.stage_execution_id)
-        .bind(identity.scope_snapshot_id)
-        .fetch_all(self.pool.as_ref())
-        .await
-        .map_err(map_sqlx_error)?;
-        if tasks.is_empty() {
-            return Err(InvestigationAnalysisHostError::SnapshotBlocked {
-                detail: "Investigation has no admitted VerificationTasks to finalize".to_owned(),
-            });
-        }
-        let mut outcome_set_ids = Vec::with_capacity(tasks.len());
-        let mut terminal_count = 0_u32;
-        let mut blocked_count = 0_u32;
-        let mut replayed = true;
-        for (task_id, stage_run_unit_id, organization_id) in &tasks {
-            let finalized = finalize_task_from_campaign_truth(
-                self.pool.as_ref(),
-                &FinalizeTaskFromCampaignTruthInput {
-                    task_id: *task_id,
-                    operation_id: identity.operation_id,
-                    stage_execution_id: identity.stage_execution_id,
-                    stage_run_unit_id: *stage_run_unit_id,
-                    scope_snapshot_id: identity.scope_snapshot_id,
-                    organization_id: *organization_id,
-                },
-            )
-            .await
-            .map_err(map_verification_task_error)?;
-            match finalized.terminal_state.as_str() {
-                "terminal" => terminal_count = terminal_count.saturating_add(1),
-                "blocked" => blocked_count = blocked_count.saturating_add(1),
-                _ => {
-                    return Err(InvestigationAnalysisHostError::Conflict {
-                        detail: "VerificationTask finalizer did not reach a terminal state"
-                            .to_owned(),
-                    });
-                }
-            }
-            replayed &= finalized.replayed;
-            outcome_set_ids.push(finalized.outcome_set_id);
-        }
-        Ok(FinalizedInvestigationVerificationTasksView {
-            task_count: u32::try_from(tasks.len()).map_err(|_| {
-                InvestigationAnalysisHostError::AuthorityMismatch {
-                    detail: "VerificationTask finalizer census overflow".to_owned(),
-                }
-            })?,
-            terminal_count,
-            blocked_count,
-            outcome_set_ids,
-            replayed,
-        })
+        .expect("classify exact predecessor");
+        assert!(
+            result.is_none(),
+            "adopted sealed context must not rerun EAS"
+        );
+    }
+
+    #[test]
+    fn several_expired_adopted_predecessors_do_not_restart_the_stage_chain() {
+        let operation_id = Uuid::new_v4();
+        let source_operation_id = Uuid::new_v4();
+        let result = stale_tool_truth_prerequisite(
+            operation_id,
+            &[
+                member(
+                    "eas",
+                    "consistent_fresh",
+                    source_operation_id,
+                    Some(source_operation_id),
+                    Vec::new(),
+                ),
+                member(
+                    "enum",
+                    "expired",
+                    source_operation_id,
+                    Some(source_operation_id),
+                    Vec::new(),
+                ),
+                member(
+                    "vuln",
+                    "expired",
+                    source_operation_id,
+                    Some(source_operation_id),
+                    Vec::new(),
+                ),
+            ],
+        )
+        .expect("classify exact predecessor");
+        assert!(
+            result.is_none(),
+            "adopted sealed context must not restart Enumeration or Vuln"
+        );
+    }
+
+    #[test]
+    fn same_operation_stale_root_remains_on_revalidation_path() {
+        let operation_id = Uuid::new_v4();
+        let obligation_id = Uuid::new_v4();
+        let error = stale_tool_truth_prerequisite(
+            operation_id,
+            &[
+                member("eas", "expired", operation_id, None, vec![obligation_id]),
+                member("enum", "consistent_fresh", operation_id, None, Vec::new()),
+                member("vuln", "consistent_fresh", operation_id, None, Vec::new()),
+            ],
+        )
+        .expect("classify same-operation root")
+        .expect("stale same-operation root requires revalidation");
+        assert!(matches!(
+            error,
+            InvestigationAnalysisHostError::RevalidationRequired {
+                operation_id: actual_operation_id,
+                ref revalidation_obligation_ids,
+                ref stale_roots,
+            } if actual_operation_id == operation_id
+                && revalidation_obligation_ids == &[obligation_id]
+                && stale_roots == &["external_attack_surface:expired"]
+        ));
+        assert_eq!(
+            error.code(),
+            "investigation_analysis_host_revalidation_required"
+        );
+        assert!(error
+            .to_string()
+            .contains("retry_mode=tool_truth_revalidation"));
     }
 }
 
@@ -2373,7 +2507,9 @@ fn map_registry_error(error: HypothesisRegistryError) -> InvestigationAnalysisHo
     }
 }
 
-fn compiler_proposal_input(proposal: &CandidateHypothesisProposal) -> InvestigationProposalInput {
+fn compiler_proposal_input(
+    proposal: &CandidateHypothesisProposal,
+) -> InvestigationAnalysisHostResult<InvestigationProposalInput> {
     let proof_refs = proposal
         .proof_refs
         .iter()
@@ -2390,7 +2526,17 @@ fn compiler_proposal_input(proposal: &CandidateHypothesisProposal) -> Investigat
             .to_owned(),
         })
         .collect::<Vec<_>>();
-    InvestigationProposalInput {
+    let predicate_arguments = proposal
+        .predicate_arguments
+        .iter()
+        .cloned()
+        .collect::<BTreeMap<_, _>>();
+    if predicate_arguments.len() != proposal.predicate_arguments.len() {
+        return Err(InvestigationAnalysisHostError::InvalidRequest {
+            detail: "canonical proposal predicate argument keys must be unique".to_owned(),
+        });
+    }
+    Ok(InvestigationProposalInput {
         proposal_id: proposal.proposal_id,
         canonical_proposal: serde_json::json!({
             "proposal_id":proposal.proposal_id,
@@ -2398,7 +2544,7 @@ fn compiler_proposal_input(proposal: &CandidateHypothesisProposal) -> Investigat
             "subject_identity_hash":proposal.subject_identity_hash,
             "predicate_schema":proposal.predicate_schema,
             "predicate_version":proposal.predicate_version,
-            "predicate_arguments":proposal.predicate_arguments,
+            "predicate_arguments":predicate_arguments,
             "trust_boundary":proposal.trust_boundary,
             "polarity":proposal.polarity,
             "structured_claim":proposal.structured_claim,
@@ -2409,7 +2555,7 @@ fn compiler_proposal_input(proposal: &CandidateHypothesisProposal) -> Investigat
             "readiness":proposal.readiness,
         }),
         proof_refs,
-    }
+    })
 }
 
 fn map_binding_error(
@@ -2444,54 +2590,6 @@ fn map_compiler_db_error(error: golish_db::DbError) -> InvestigationAnalysisHost
     }
 }
 
-fn map_campaign_error(
-    error: VerificationCampaignRepositoryError,
-) -> InvestigationAnalysisHostError {
-    let detail = error.to_string();
-    match error {
-        VerificationCampaignRepositoryError::Unavailable { .. } => {
-            InvestigationAnalysisHostError::Unavailable {
-                operation: "materialize_verification_task_campaigns",
-            }
-        }
-        VerificationCampaignRepositoryError::InvalidRequest { .. } => {
-            InvestigationAnalysisHostError::InvalidRequest { detail }
-        }
-        VerificationCampaignRepositoryError::NotFound { .. } => {
-            InvestigationAnalysisHostError::NotFound { detail }
-        }
-        VerificationCampaignRepositoryError::Conflict { .. } => {
-            InvestigationAnalysisHostError::Conflict { detail }
-        }
-        VerificationCampaignRepositoryError::AuthorityMismatch { .. } => {
-            InvestigationAnalysisHostError::AuthorityMismatch { detail }
-        }
-        VerificationCampaignRepositoryError::Infrastructure { .. } => {
-            InvestigationAnalysisHostError::Infrastructure { detail }
-        }
-    }
-}
-
-fn map_verification_task_error(
-    error: HypothesisVerificationTaskStoreError,
-) -> InvestigationAnalysisHostError {
-    let detail = error.to_string();
-    match error {
-        HypothesisVerificationTaskStoreError::InvalidInput(_) => {
-            InvestigationAnalysisHostError::InvalidRequest { detail }
-        }
-        HypothesisVerificationTaskStoreError::IdentityConflict(_) => {
-            InvestigationAnalysisHostError::AuthorityMismatch { detail }
-        }
-        HypothesisVerificationTaskStoreError::CasConflict(_) => {
-            InvestigationAnalysisHostError::Conflict { detail }
-        }
-        HypothesisVerificationTaskStoreError::Sqlx(_) => {
-            InvestigationAnalysisHostError::Infrastructure { detail }
-        }
-    }
-}
-
 pub(super) fn advisory_capability_name(
     capability: golish_agent_kit::db_traits::InvestigationAdvisoryCapabilityV1,
 ) -> &'static str {
@@ -2501,24 +2599,6 @@ pub(super) fn advisory_capability_name(
         InvestigationAdvisoryCapabilityV1::BrowserObservation => "browser_observation",
         InvestigationAdvisoryCapabilityV1::CliObservation => "cli_observation",
         InvestigationAdvisoryCapabilityV1::CredentialedObservation => "credentialed_observation",
-    }
-}
-
-pub(super) fn verification_capability_name(
-    capability: golish_agent_kit::db_traits::InvestigationVerificationCapabilityV1,
-) -> &'static str {
-    use golish_agent_kit::db_traits::InvestigationVerificationCapabilityV1;
-    match capability {
-        InvestigationVerificationCapabilityV1::AnonymousAuthenticatedDifferential => {
-            "verify.anonymous_authenticated_differential.v1"
-        }
-        InvestigationVerificationCapabilityV1::DirectoryFingerprint => {
-            "verify.directory_fingerprint.v1"
-        }
-        InvestigationVerificationCapabilityV1::NucleiExactReplay => "verify.nuclei_exact_replay.v1",
-        InvestigationVerificationCapabilityV1::ConcurrentRaceDifferential => {
-            "verify.concurrent_race_differential.v1"
-        }
     }
 }
 
@@ -2539,14 +2619,6 @@ fn db_source_ref(source: RevisionSourceRef) -> CandidateRevisionSourceRefRow {
         }
         RevisionSourceRef::Gap(value) => CandidateRevisionSourceRefRow::Gap(value),
     }
-}
-
-fn is_canonical_sha256(value: &str) -> bool {
-    value.len() == 71
-        && value.starts_with("sha256:")
-        && value[7..]
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn db_mutation(
@@ -2634,7 +2706,7 @@ mod tests {
             knowledge_signals: Vec::new(),
             readiness: CandidateProposalReadiness::ReadyForStrategy,
         };
-        let input = compiler_proposal_input(&proposal);
+        let input = compiler_proposal_input(&proposal).expect("canonical proposal");
         assert_eq!(input.proof_refs[0].source_role, "authorization_use");
         assert_eq!(
             input.canonical_proposal["proof_refs"][0]["source_role"],
@@ -2643,5 +2715,9 @@ mod tests {
         assert!(input.canonical_proposal["proof_refs"][0]
             .get("role")
             .is_none());
+        assert_eq!(
+            input.canonical_proposal["predicate_arguments"],
+            serde_json::json!({"origin":"redacted"})
+        );
     }
 }

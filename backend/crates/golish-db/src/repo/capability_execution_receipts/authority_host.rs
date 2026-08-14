@@ -268,7 +268,7 @@ struct ReceiptRow {
     temporal_validity_policy_hash: String,
     temporal_census_id: Option<Uuid>,
     finalized_at: Option<DateTime<Utc>>,
-    raw_witness_artifact_id: Option<Uuid>,
+    snapshot_authority_id: Option<Uuid>,
     vault_object_ref_token_hash: Option<String>,
     snapshot_sha256: Option<String>,
     snapshot_byte_count: Option<i64>,
@@ -488,10 +488,10 @@ async fn attest_receipt(
     consumer_kind: &str,
     receipt: &ReceiptRow,
 ) -> Result<Option<ReceiptMember>> {
-    let (Some(reconciliation_id), Some(semantic_hash), Some(raw_artifact_id)) = (
+    let (Some(reconciliation_id), Some(semantic_hash), Some(snapshot_authority_id)) = (
         receipt.current_semantic_reconciliation_id,
         receipt.current_semantic_reconciliation_hash.as_ref(),
-        receipt.raw_witness_artifact_id,
+        receipt.snapshot_authority_id,
     ) else {
         return Ok(None);
     };
@@ -541,7 +541,7 @@ async fn attest_receipt(
             "semantic_authority_version": receipt.current_semantic_authority_version,
             "semantic_hash": semantic_hash,
             "stable_consumer_request_id": stable_request_id,
-            "artifact_id": raw_artifact_id,
+            "artifact_id": snapshot_authority_id,
             "artifact_object_identity_hash": object_identity_hash,
             "snapshot_sha256": snapshot_sha256,
             "snapshot_byte_count": snapshot_byte_count,
@@ -742,11 +742,31 @@ async fn derive_root_state(
                 WHERE r.denominator_id=ANY($1)
                 ORDER BY r.denominator_id,r.capability,r.attempt_ordinal DESC,r.id DESC
            )
-           SELECT latest.*,a.vault_object_ref_token_hash,
-                  a.sha256 AS snapshot_sha256,a.stored_byte_count AS snapshot_byte_count
+           SELECT latest.id,latest.denominator_id,latest.execution_authority_id,
+                  latest.capability,latest.reconciliation_state,
+                  latest.current_semantic_authority_version,
+                  latest.current_semantic_reconciliation_id,
+                  latest.current_semantic_reconciliation_hash,
+                  latest.temporal_validity_policy_id,
+                  latest.temporal_validity_policy_hash,
+                  latest.temporal_census_id,latest.finalized_at,
+                  COALESCE(a.id,fingerprint.finalization_id) AS snapshot_authority_id,
+                  COALESCE(a.vault_object_ref_token_hash,fingerprint.finalization_hash)
+                      AS vault_object_ref_token_hash,
+                  COALESCE(a.sha256,fingerprint.observation_hash) AS snapshot_sha256,
+                  COALESCE(a.stored_byte_count,reconciliation.observed_artifact_byte_count)
+                      AS snapshot_byte_count
              FROM latest
              LEFT JOIN capability_raw_witness_artifacts a
                ON a.id=latest.raw_witness_artifact_id AND a.receipt_id=latest.id
+             LEFT JOIN verification_action_capability_receipt_finalizations fingerprint
+               ON fingerprint.capability_execution_receipt_id=latest.id
+              AND fingerprint.witness_completeness='complete_fingerprint_v1'
+             LEFT JOIN capability_execution_reconciliations reconciliation
+               ON reconciliation.id=latest.current_semantic_reconciliation_id
+              AND reconciliation.receipt_id=latest.id
+              AND reconciliation.reconciliation_state='consistent'
+              AND reconciliation.sealed_at IS NOT NULL
             ORDER BY latest.denominator_id,latest.capability,latest.id"#,
     )
     .bind(&graph_ids)

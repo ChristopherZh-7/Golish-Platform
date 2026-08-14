@@ -22,6 +22,8 @@ import type { InvestigationSummaryView } from "@/lib/generated/InvestigationSumm
 import type { InvestigationTimelinePageResponse } from "@/lib/generated/InvestigationTimelinePageResponse";
 import type { ActiveSubAgent } from "@/store";
 import { useStore } from "@/store";
+import { AgentPlanCard, resolveLatestVisibleAgentPlanRequest } from "./AgentPlanCard";
+import { AgentTranscriptMessage, isLiveAgentThinkingEntry } from "./AgentTranscriptMessage";
 import {
   type InvestigationActorKind,
   type InvestigationActorNode,
@@ -35,10 +37,12 @@ import {
   type InvestigationWorkspaceState,
   InvestigationWorkspaceView,
 } from "./InvestigationWorkspaceView";
-import { PendingPreparedActionPanel } from "./PendingPreparedActionPanel";
 import type { StageRunRow } from "./StageRunOrgRows";
+import { ToolActivityGroup } from "./ToolActivityDisclosure";
 
 const PAGE_SIZE = 100;
+const TRANSCRIPT_RENDER_LIMIT = 200;
+const EMPTY_ACTIVE_SUB_AGENTS: ActiveSubAgent[] = [];
 const STALE_CODES = new Set([
   "INVESTIGATION_PROJECTION_STALE",
   "INVESTIGATION_TEMPORAL_SNAPSHOT_STALE",
@@ -66,8 +70,12 @@ const productionApi: InvestigationWorkspaceRouteApi = {
 };
 
 export interface InvestigationWorkspaceRouteProps {
+  /** Canonical AI session used by every authorized backend read and mutation. */
   sessionId: string;
+  /** Pane session that owns live transcript projections and refresh hints. */
+  presentationSessionId?: string;
   identity: InvestigationStageIdentity & { stageExecutionId: string };
+  displayStageRunRequestId?: string | null;
   liveRows: readonly StageRunRow[];
   deepLinkTranscriptRequestId?: string | null;
   onBack?: () => void;
@@ -154,8 +162,7 @@ function assertSummaryIdentity(
   if (
     control.operationId !== identity.operationId ||
     control.stageExecutionId !== identity.stageExecutionId ||
-    control.stageRunRequestId !== identity.stageRunRequestId ||
-    control.changeSeq !== summary.envelope.changeSeq
+    control.stageRunRequestId !== identity.stageRunRequestId
   ) {
     throw new Error("Investigation summary returned a conflicting exact stage identity.");
   }
@@ -233,27 +240,74 @@ function subtaskNodes(primary: InvestigationActorNode): InvestigationSubtaskNode
     workers.push(worker);
     grouped.set(subtaskId, workers);
   }
-  return [...grouped.entries()].map(([subtaskId, workers], index) => ({
-    subtaskId,
-    ordinal: index + 1,
-    label: `Subtask ${index + 1}`,
-    status: workers.every((worker) => worker.status === "completed") ? "completed" : "running",
-    workers,
-  }));
+  return [...grouped.entries()].map(([subtaskId, workers], index) => {
+    const statuses = workers.map((worker) => worker.status);
+    const status = statuses.every((value) => value === "completed" || value === "passed")
+      ? "passed"
+      : statuses.some(
+            (value) =>
+              value.includes("blocked") ||
+              value === "failed" ||
+              value === "error" ||
+              value === "interrupted" ||
+              value === "exhausted"
+          )
+        ? "blocked"
+        : "running";
+    return {
+      subtaskId,
+      ordinal: index + 1,
+      label: `Subtask ${index + 1}`,
+      status,
+      workers,
+    };
+  });
 }
 
 function taskFromPrimary(
   primary: InvestigationActorNode,
-  taskLabel: "Analysis Task" | "Verification Task"
+  taskLabel: "Analysis Task" | "Verification Task",
+  primaryAliasLabel: string | null = null
 ): InvestigationTaskNode {
   const subtasks = subtaskNodes(primary);
   return {
     taskId: primary.taskId ?? primary.workerRunId ?? primary.transcriptRequestId ?? primary.actorId,
     label: taskLabel,
     status: primary.status,
-    primary: { ...primary, children: [] },
+    primary: primaryAliasLabel ? null : { ...primary, children: [] },
+    primaryAliasLabel,
     subtasks,
   };
+}
+
+function exactMainAlias(main: InvestigationActorNode, primary: InvestigationActorNode): boolean {
+  return (
+    primary.actorKind === "primary" &&
+    primary.hypothesisRevisionId === null &&
+    primary.workerRunId === main.workerRunId &&
+    primary.transcriptRequestId === main.transcriptRequestId &&
+    primary.organizationId === main.organizationId &&
+    primary.owningStageRunRequestId === main.owningStageRunRequestId
+  );
+}
+
+function hypothesisLabel(predicateSummary: string, predicateSchema: string): string {
+  const canonicalBoundary = predicateSummary.indexOf(":");
+  if (
+    canonicalBoundary < 0 ||
+    !predicateSummary
+      .slice(canonicalBoundary + 1)
+      .trimStart()
+      .startsWith("{")
+  ) {
+    return predicateSummary;
+  }
+  const stableSchema = predicateSchema.trim() || predicateSummary.slice(0, canonicalBoundary);
+  return stableSchema
+    .replace(/^typed(?:[._-]+verification)?[._-]*/i, "")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function readSessionForOrganization(
@@ -289,6 +343,7 @@ function controlProjection(control: InvestigationControlProjectionV1) {
     stageTopologyContract: control.stageTopologyContract,
     investigationRunState: control.investigationRunState,
     investigationRunStateHead: control.investigationRunStateHead,
+    changeSeq: control.changeSeq,
     stopEpoch: control.stopEpoch,
     stopAllowed: control.stopAllowed,
     stopReason: control.stopUnavailableReason,
@@ -307,6 +362,7 @@ function workspaceModel(
   loaded: LoadedProjection
 ): InvestigationWorkspaceModel {
   const roots = actorForest(loaded.summary.actorTopology);
+  const main = actorNode(loaded.summary.mainActor);
   const organizations: InvestigationOrganizationNode[] = loaded.summary.sourceCensus.map(
     (source) => {
       const analysisPrimaries = roots.filter(
@@ -322,7 +378,11 @@ function workspaceModel(
           `Organization ${source.organizationId}`,
         readSession: readSessionForOrganization(source.organizationId, identity, liveRows),
         analysisTasks: analysisPrimaries.map((primary) =>
-          taskFromPrimary(primary, "Analysis Task")
+          taskFromPrimary(
+            primary,
+            "Analysis Task",
+            exactMainAlias(main, primary) ? "Handled by Main" : null
+          )
         ),
       };
     }
@@ -368,7 +428,8 @@ function workspaceModel(
     return {
       revisionId: hypothesis.revisionId,
       organizationId: hypothesis.organizationId,
-      claim: hypothesis.predicateSummary,
+      claim: hypothesisLabel(hypothesis.predicateSummary, hypothesis.predicateSchema),
+      exactPredicate: hypothesis.predicateSummary,
       epistemicState: hypothesis.epistemicState,
       admissionDisposition: hypothesis.planningReadiness,
       task,
@@ -389,8 +450,7 @@ function workspaceModel(
     changeSeq: loaded.summary.envelope.changeSeq,
     stale: false,
     stageStatus: loaded.summary.controlProjection.investigationRunState,
-    allowPreparedActionJit: loaded.summary.envelope.modePolicy.allowPreparedActionJit,
-    main: actorNode(loaded.summary.mainActor),
+    main,
     organizations,
     hypotheses,
     control: controlProjection(loaded.summary.controlProjection),
@@ -408,22 +468,63 @@ function TranscriptProjection({ agents }: { agents: readonly ActiveSubAgent[] })
     );
   }
   const agent = agents[0];
+  const currentPlanId = resolveLatestVisibleAgentPlanRequest(agent.toolCalls, {
+    entries: agent.entries,
+  })?.id;
+  const toolsById = new Map(agent.toolCalls.map((tool) => [tool.id, tool]));
+  const omittedEntryCount = Math.max(0, agent.entries.length - TRANSCRIPT_RENDER_LIMIT);
+  const visibleEntries = agent.entries.slice(-TRANSCRIPT_RENDER_LIMIT);
+  const visibleResponse = agent.response?.trim();
+  const hasTerminalSubmit = agent.toolCalls.some(
+    (tool) =>
+      tool.name === "submit_result" &&
+      (tool.status === "completed" || tool.status === "error" || tool.status === "interrupted")
+  );
+  const responseIsMachinePayload =
+    hasTerminalSubmit && (visibleResponse?.startsWith("{") || visibleResponse?.startsWith("["));
   return (
-    <div className="space-y-2 rounded border border-border/30 p-3 text-xs">
-      <div className="font-medium">{agent.agentName}</div>
-      {agent.entries.map((entry, index) =>
-        entry.kind === "text" && entry.text ? (
-          <p key={`${entry.kind}-${index}`} className="whitespace-pre-wrap text-foreground/80">
-            {entry.text}
-          </p>
-        ) : null
-      )}
-      {agent.toolCalls.map((tool) => (
-        <div key={tool.id} className="rounded bg-muted/25 px-2 py-1 font-mono text-[10px]">
-          {tool.name} · {tool.status}
+    <div className="overflow-hidden rounded border border-border/30 bg-card/35 text-xs">
+      {omittedEntryCount > 0 && (
+        <div role="status" className="border-b border-border/20 px-4 py-2 text-muted-foreground">
+          {omittedEntryCount} older transcript entries are hidden for performance.
         </div>
-      ))}
-      {agent.response && <p className="whitespace-pre-wrap">{agent.response}</p>}
+      )}
+      {visibleEntries.map((entry, index) => {
+        if (entry.kind === "tool_call") {
+          if (!entry.toolCallId) return null;
+          const tool = toolsById.get(entry.toolCallId);
+          if (!tool) return null;
+          if (tool.name === "update_plan") {
+            return tool.id === currentPlanId ? (
+              <AgentPlanCard
+                key={tool.id}
+                tool={tool}
+                parentStagePassed={agent.status === "completed"}
+              />
+            ) : null;
+          }
+          return <ToolActivityGroup key={tool.id} tools={[tool]} actorLabel={agent.agentName} />;
+        }
+        if (!entry.text?.trim()) return null;
+        return (
+          <AgentTranscriptMessage
+            key={`${entry.kind}-${index}`}
+            kind={entry.kind}
+            actorLabel={agent.agentName}
+            text={entry.text}
+            startedAt={entry.startedAt}
+            endedAt={entry.endedAt}
+            thinkingActive={isLiveAgentThinkingEntry(agent, entry)}
+          />
+        );
+      })}
+      {visibleResponse &&
+        !responseIsMachinePayload &&
+        !agent.entries.some(
+          (entry) => entry.kind === "text" && entry.text?.trim() === visibleResponse
+        ) && (
+          <AgentTranscriptMessage kind="text" actorLabel={agent.agentName} text={visibleResponse} />
+        )}
     </div>
   );
 }
@@ -489,7 +590,9 @@ async function loadExactProjection(
 
 export function InvestigationWorkspaceRoute({
   sessionId,
+  presentationSessionId = sessionId,
   identity,
+  displayStageRunRequestId = null,
   liveRows,
   deepLinkTranscriptRequestId = null,
   onBack,
@@ -499,8 +602,12 @@ export function InvestigationWorkspaceRoute({
   const generation = useRef(0);
   const stopKeys = useRef(new Map<string, string>());
   const consumedRefreshHint = useRef<string | null>(null);
-  const refreshHint = useStore((store) => store.sessions[sessionId]?.investigationRefreshHint);
-  const activeSubAgents = useStore((store) => store.activeSubAgents[sessionId] ?? []);
+  const refreshHint = useStore(
+    (store) => store.sessions[presentationSessionId]?.investigationRefreshHint
+  );
+  const activeSubAgents = useStore(
+    (store) => store.activeSubAgents[presentationSessionId] ?? EMPTY_ACTIVE_SUB_AGENTS
+  );
 
   const bootstrap = useCallback(async () => {
     const requestGeneration = ++generation.current;
@@ -631,10 +738,10 @@ export function InvestigationWorkspaceRoute({
     return byRequest;
   }, [activeSubAgents]);
 
-  const model = state.status === "ready" || state.status === "stale" ? state.model : null;
   return (
     <InvestigationWorkspaceView
       identity={identity}
+      displayStageRunRequestId={displayStageRunRequestId}
       state={state}
       deepLinkTranscriptRequestId={deepLinkTranscriptRequestId}
       onBack={onBack}
@@ -643,17 +750,6 @@ export function InvestigationWorkspaceRoute({
       renderTranscript={({ transcriptRequestId }) => (
         <TranscriptProjection agents={transcriptByRequest.get(transcriptRequestId) ?? []} />
       )}
-      renderPreparedActions={
-        model?.allowPreparedActionJit
-          ? ({ operationId, campaignId }) => (
-              <PendingPreparedActionPanel
-                operationId={operationId}
-                campaignId={campaignId}
-                refreshVersion={model.changeSeq}
-              />
-            )
-          : undefined
-      }
     />
   );
 }

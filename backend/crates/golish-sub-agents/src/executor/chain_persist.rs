@@ -1022,6 +1022,7 @@ mod tests {
             target_intel_review: None,
             stage_team_output_schema: None,
             terminal_execution: None,
+            investigation_actor_contract: None,
             chain_id,
             session_id: Uuid::new_v4(),
             agent_type: "enumerator".to_string(),

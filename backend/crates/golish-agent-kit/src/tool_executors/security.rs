@@ -490,8 +490,14 @@ pub async fn execute_security_analysis_tool(
                         .collect()
                 })
                 .unwrap_or_else(|| vec!["all".to_string()]);
+            let exact_origin = extract_string_param(args, &["exact_origin"]);
             let data = match repo
-                .query_target_data_for_operation(harness_operation_id, target_id, &sections)
+                .query_target_data_for_operation_origin(
+                    harness_operation_id,
+                    target_id,
+                    &sections,
+                    exact_origin.as_deref(),
+                )
                 .await
             {
                 Ok(d) => d,
@@ -3998,9 +4004,9 @@ mod tests {
     #[test]
     fn query_target_data_forwards_the_bound_operation_to_the_planning_projection() {
         let source = include_str!("security.rs");
-        assert!(source.contains(
-            "query_target_data_for_operation(harness_operation_id, target_id, &sections)"
-        ));
+        assert!(source.contains("query_target_data_for_operation_origin("));
+        assert!(source.contains("harness_operation_id,"));
+        assert!(source.contains("exact_origin.as_deref(),"));
     }
 
     #[test]

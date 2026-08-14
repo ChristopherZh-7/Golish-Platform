@@ -10,18 +10,7 @@ use thiserror::Error;
 use golish_pentest_domain::tool_truth::ToolTruthRootFamilyV1;
 
 use super::types::{AgentContinuity, FindingSeverity, RiskLevel, StageKind};
-use super::{
-    StageRuntimeContract, INVESTIGATION_OPERATOR_TOOL_CATALOG_RESOURCE_V1,
-    INVESTIGATION_OPERATOR_TOOL_CONTRACT_V1,
-};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct InvestigationOperatorToolCatalogRefV1 {
-    pub contract_version: String,
-    pub resource: String,
-    pub canonical_sha256: String,
-}
+use super::StageRuntimeContract;
 
 /// P2 · per-stage "trustworthy conclusion" rule (verification gate).
 ///
@@ -348,12 +337,6 @@ pub struct StageSpec {
     #[serde(default)]
     pub candidate_analysis_team: Option<CandidateAnalysisTeamPolicy>,
 
-    /// Content-addressed host-only operator inventory for unified
-    /// Investigation. This reference grants no tool, scope or execution
-    /// authority and is legal only on the Investigation stage.
-    #[serde(default)]
-    pub operator_tool_catalog: Option<InvestigationOperatorToolCatalogRefV1>,
-
     /// Display-only coverage technique columns the `stage_run` view renders per
     /// org (intel → `["DNS","WHOIS","ASN","CT","SUBDOMAIN","OSINT"]`). Distinct
     /// from `expected_techniques` (the gate's registered ids): this is the
@@ -480,27 +463,6 @@ pub fn load_stage_spec_from_json(raw: &str) -> Result<StageSpec, StageSpecLoadEr
         policy
             .validate()
             .map_err(StageSpecLoadError::InvalidContract)?;
-    }
-    if let Some(reference) = spec.operator_tool_catalog.as_ref() {
-        if spec.kind != StageKind::Investigation
-            || reference.contract_version != INVESTIGATION_OPERATOR_TOOL_CONTRACT_V1
-            || reference.resource != INVESTIGATION_OPERATOR_TOOL_CATALOG_RESOURCE_V1
-            || reference.canonical_sha256.len() != 64
-            || !reference
-                .canonical_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(StageSpecLoadError::InvalidContract(
-                "operator_tool_catalog must be the exact Investigation v1 content-addressed resource"
-                    .to_string(),
-            ));
-        }
-    } else if spec.kind == StageKind::Investigation {
-        return Err(StageSpecLoadError::InvalidContract(
-            "Investigation stage is missing its host-owned operator tool catalog reference"
-                .to_string(),
-        ));
     }
     Ok(spec)
 }

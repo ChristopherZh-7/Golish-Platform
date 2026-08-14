@@ -686,6 +686,12 @@ fn storage(error: anyhow::Error) -> RuntimeMemoryError {
     RuntimeMemoryError::Storage(error.to_string())
 }
 
+fn count(value: i64) -> Result<usize, RuntimeMemoryError> {
+    usize::try_from(value).map_err(|_| RuntimeMemoryError::Conflict {
+        code: "TARGET_INTEL_GOAL_FINALIZER_COUNT_INVALID",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,10 +761,4 @@ mod tests {
         );
         assert_eq!(manifest["source"], "intel_goal_v1_semantic_search_contract");
     }
-}
-
-fn count(value: i64) -> Result<usize, RuntimeMemoryError> {
-    usize::try_from(value).map_err(|_| RuntimeMemoryError::Conflict {
-        code: "TARGET_INTEL_GOAL_FINALIZER_COUNT_INVALID",
-    })
 }

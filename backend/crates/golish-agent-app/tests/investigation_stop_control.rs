@@ -261,6 +261,7 @@ async fn stop_fixture(db: &GolishDb, workspace: &Path) -> StopFixture {
             entry_stage: "target_intel".to_owned(),
             project_scope_id: project.project_scope_id,
             cli_scope: None,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
         },
     )
     .await

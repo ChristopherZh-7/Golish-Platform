@@ -17,21 +17,15 @@ use crate::definition::{SubAgentContext, SubAgentDefinition};
 use crate::executor_types::{
     BoundTerminalExecutionContract, StageTeamLeaderBinding, SubAgentExecutorContext, ToolProvider,
     BARRIER_TOOL_NAME, ENUMERATION_REDUCE_PARAMETERS_TOOL_NAME,
-    ENUMERATION_REVIEW_COVERAGE_TOOL_NAME, INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA,
-    INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA, INVESTIGATION_TASK_PLAN_RESULT_SCHEMA,
-    STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME, STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME,
-    STAGE_TEAM_UPDATE_PLAN_TOOL_NAME,
+    ENUMERATION_REVIEW_COVERAGE_TOOL_NAME,
+    INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA,
+    INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA,
+    INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA,
+    INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA, INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA,
+    INVESTIGATION_TASK_PLAN_RESULT_SCHEMA, STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME,
+    STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME, STAGE_TEAM_UPDATE_PLAN_TOOL_NAME,
 };
 use crate::MAX_AGENT_DEPTH;
-
-pub(super) fn is_closed_candidate_analysis_role(agent_id: &str) -> bool {
-    matches!(
-        agent_id,
-        "candidate_hypothesis_controller"
-            | "candidate_hypothesis_analyst"
-            | "merge_conflict_critic"
-    ) || super::verification_campaign::is_verification_campaign_role(agent_id)
-}
 
 fn is_target_intel_reviewer_role(agent_id: &str) -> bool {
     agent_id == "target_intel_reviewer"
@@ -42,9 +36,9 @@ fn final_submission_only_tool_definitions(mut tools: Vec<ToolDefinition>) -> Vec
     tools
 }
 
-/// Fail closed if a mutable/custom definition attempts to widen one of the
-/// three built-in Candidate reasoning roles.
-pub(super) fn validate_closed_candidate_analysis_definition(
+/// Fail closed if a mutable/custom definition attempts to widen a static,
+/// host-reviewed specialist role.
+pub(super) fn validate_static_specialist_definition(
     agent_def: &SubAgentDefinition,
 ) -> anyhow::Result<()> {
     if is_target_intel_reviewer_role(&agent_def.id) {
@@ -79,21 +73,6 @@ pub(super) fn validate_closed_candidate_analysis_definition(
         }
         return Ok(());
     }
-    if !is_closed_candidate_analysis_role(&agent_def.id) {
-        return Ok(());
-    }
-    if !agent_def.readonly
-        || agent_def.allowed_tools.as_slice() != [BARRIER_TOOL_NAME]
-        || !agent_def.delegatable_agents.is_empty()
-        || agent_def.prompt_template.is_some()
-    {
-        anyhow::bail!(
-            "closed Candidate/Campaign reasoning role {} must be read-only, static-prompt, non-delegating, and expose only {}",
-            agent_def.id,
-            BARRIER_TOOL_NAME
-        );
-    }
-
     Ok(())
 }
 
@@ -117,12 +96,47 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
         return terminal_only_tool_definitions(contract);
     }
 
-    // This hard boundary deliberately bypasses static catalogues, mutable MCP
-    // registries, stage leader controls and nested delegation. Even if another
-    // layer is misconfigured, a closed Candidate reasoner sees one barrier.
-    if is_closed_candidate_analysis_role(agent_id) {
-        return vec![barrier_tool_definition(None)];
+    // A Verification Primary delegates through its closed turn output; it
+    // never inherits Analysis cognition tools or the actor's target-I/O
+    // wrappers. The host performs durable dispatch/resolution after validating
+    // the exact session-bound payload.
+    if let Some(crate::InvestigationActorContract::AssetVerificationPrimary(binding)) = ctx
+        .bound_worker_chain
+        .as_ref()
+        .and_then(|bound| bound.investigation_actor_contract.as_ref())
+    {
+        return if binding.validate().is_ok() {
+            vec![barrier_tool_definition(Some(
+                INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA,
+            ))]
+        } else {
+            vec![barrier_tool_definition(None)]
+        };
     }
+
+    // Every Primary-requested Verification actor sees the same four host
+    // wrappers plus bounded cognition and may make multiple invocations. Role
+    // is not a roster slot or capability selector; inner tools stay dynamic in
+    // the real Tool Manager inventory.
+    if let Some(crate::InvestigationActorContract::AssetVerification(binding)) = ctx
+        .bound_worker_chain
+        .as_ref()
+        .and_then(|bound| bound.investigation_actor_contract.as_ref())
+    {
+        if binding.validate().is_err() {
+            return vec![barrier_tool_definition(None)];
+        }
+        let mut candidates = tool_provider.get_all_tool_definitions();
+        let registry = ctx.tool_registry.read().await;
+        candidates.extend(registry.get_tool_definitions());
+        drop(registry);
+        let stage_team_output_schema = ctx
+            .bound_worker_chain
+            .as_ref()
+            .and_then(|bound| bound.stage_team_output_schema.as_deref());
+        return asset_verification_tool_definitions(candidates, stage_team_output_schema);
+    }
+
     if is_target_intel_reviewer_role(agent_id) {
         return target_intel_reviewer_tool_definitions();
     }
@@ -248,9 +262,26 @@ pub(super) async fn build_tool_definitions<P: ToolProvider>(
 
     // Fixture/dev Goal Loop uses one host-owned evidence adapter for root and
     // sub-agents. Legacy web tools are invisible so neither path can bypass
-    // evidence-first persistence. Closed Candidate roles returned above and
-    // therefore remain submit-only.
+    // evidence-first persistence.
     configure_intel_public_fixture_tools(&mut tools, tool_provider.intel_public_tool_definitions());
+    tools
+}
+
+fn asset_verification_tool_definitions(
+    candidates: Vec<ToolDefinition>,
+    output_schema: Option<&str>,
+) -> Vec<ToolDefinition> {
+    let mut seen = HashSet::new();
+    let mut tools = candidates
+        .into_iter()
+        .filter(|tool| {
+            (crate::is_investigation_asset_verification_tool(&tool.name)
+                || crate::is_investigation_asset_verification_cognition_tool(&tool.name))
+                && tool.name != BARRIER_TOOL_NAME
+                && seen.insert(tool.name.clone())
+        })
+        .collect::<Vec<_>>();
+    tools.push(barrier_tool_definition(output_schema));
     tools
 }
 
@@ -339,6 +370,70 @@ fn terminal_only_tool_definitions(
 }
 
 fn barrier_tool_definition(stage_team_output_schema: Option<&str>) -> ToolDefinition {
+    fn asset_verification_hypothesis_proposal_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "description": "Complete semantic proposal for a distinct follow-up hypothesis on the same asset. The host derives subject identity, dedupe keys, authority ids, and hashes.",
+            "properties": {
+                "predicate_schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                "predicate_version": {"type": "integer", "minimum": 1},
+                "predicate_arguments": {
+                    "type": "array", "maxItems": 64,
+                    "items": {
+                        "type": "array", "minItems": 2, "maxItems": 2,
+                        "prefixItems": [
+                            {"type": "string", "minLength": 1, "maxLength": 128},
+                            {"type": "string", "maxLength": 4096}
+                        ],
+                        "items": false
+                    }
+                },
+                "trust_boundary": {"type": "string", "minLength": 1, "maxLength": 256},
+                "polarity": {"type": "string", "enum": ["positive", "negative"]},
+                "structured_claim": {"type": "string", "minLength": 1, "maxLength": 8192},
+                "preconditions": {
+                    "type": "array", "maxItems": 64,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+                },
+                "impact": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "rationale": {"type": "string", "minLength": 1, "maxLength": 4096}
+            },
+            "required": [
+                "predicate_schema", "predicate_version", "predicate_arguments",
+                "trust_boundary", "polarity", "structured_claim", "preconditions",
+                "impact", "rationale"
+            ],
+            "additionalProperties": false
+        })
+    }
+
+    fn asset_verification_citation_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "description": "One durable fresh authority citation. Supply exactly one reference kind.",
+            "properties": {
+                "audit_evidence_id": {"type": ["integer", "null"], "minimum": 1},
+                "authority_id": {"type": ["string", "null"], "format": "uuid"}
+            },
+            "required": ["audit_evidence_id", "authority_id"],
+            "oneOf": [
+                {
+                    "properties": {
+                        "audit_evidence_id": {"type": "integer", "minimum": 1},
+                        "authority_id": {"type": "null"}
+                    }
+                },
+                {
+                    "properties": {
+                        "audit_evidence_id": {"type": "null"},
+                        "authority_id": {"type": "string", "format": "uuid"}
+                    }
+                }
+            ],
+            "additionalProperties": false
+        })
+    }
+
     fn investigation_subject_ref_schema() -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -394,6 +489,54 @@ fn barrier_tool_definition(stage_team_output_schema: Option<&str>) -> ToolDefini
         })
     }
 
+    fn dynamic_verification_subtask_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "description": "One ordered actor call on the exact current target and hypothesis revision. Roles may repeat within the same turn.",
+            "properties": {
+                "stable_key": {
+                    "type": "string", "minLength": 1, "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_:-]+$"
+                },
+                "role": {
+                    "type": "string",
+                    "enum": [
+                        "pentester", "researcher", "browser", "coder", "installer",
+                        "enricher", "memorist", "adviser"
+                    ]
+                },
+                "objective": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "rationale": {"type": "string", "minLength": 1, "maxLength": 2048},
+                "subject_refs": {
+                    "type": "array", "minItems": 2, "maxItems": 2,
+                    "prefixItems": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["target"]},
+                                "id": {"type": "string", "format": "uuid"}
+                            },
+                            "required": ["kind", "id"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["hypothesis_revision"]},
+                                "id": {"type": "string", "format": "uuid"}
+                            },
+                            "required": ["kind", "id"],
+                            "additionalProperties": false
+                        }
+                    ],
+                    "items": false
+                }
+            },
+            "required": ["stable_key", "role", "objective", "rationale", "subject_refs"],
+            "additionalProperties": false
+        })
+    }
+
     let result_schema = if stage_team_output_schema == Some(INVESTIGATION_TASK_PLAN_RESULT_SCHEMA) {
         serde_json::json!({
             "type": "object",
@@ -403,7 +546,7 @@ fn barrier_tool_definition(stage_team_output_schema: Option<&str>) -> ToolDefini
                 "summary": {"type": "string", "minLength": 1, "maxLength": 2048},
                 "subtasks": {
                     "type": "array",
-                    "minItems": 2,
+                    "minItems": 0,
                     "maxItems": 8,
                     "items": investigation_subtask_schema()
                 }
@@ -453,6 +596,153 @@ fn barrier_tool_definition(stage_team_output_schema: Option<&str>) -> ToolDefini
             "required": [
                 "schema_version", "summary", "accepted_output_sha256",
                 "proposal_signals", "action_intents", "residuals"
+            ],
+            "additionalProperties": false
+        })
+    } else if stage_team_output_schema
+        == Some(INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA)
+    {
+        serde_json::json!({
+            "type": "object",
+            "description": "Fresh evidence-grounded observation from one exact Primary-requested actor in an asset Verification session.",
+            "properties": {
+                "schema_version": {"type": "integer", "enum": [1]},
+                "session_id": {"type": "string", "format": "uuid"},
+                "hypothesis_revision_id": {"type": "string", "format": "uuid"},
+                "actor_call_id": {"type": "string", "format": "uuid"},
+                "actor_ordinal": {"type": "integer", "minimum": 1},
+                "subtask_id": {"type": "string", "format": "uuid"},
+                "specialist_role": {
+                    "type": "string",
+                    "enum": [
+                        "pentester", "researcher", "browser", "coder", "installer",
+                        "enricher", "memorist", "adviser"
+                    ]
+                },
+                "summary": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "cited_evidence_ids": {
+                    "type": "array", "maxItems": 256, "uniqueItems": true,
+                    "items": {"type": "integer", "minimum": 1}
+                },
+                "new_hypothesis_proposals": {
+                    "type": "array", "maxItems": 64,
+                    "items": asset_verification_hypothesis_proposal_schema()
+                }
+            },
+            "required": [
+                "schema_version", "session_id", "hypothesis_revision_id", "actor_call_id",
+                "actor_ordinal", "subtask_id", "specialist_role", "summary",
+                "cited_evidence_ids", "new_hypothesis_proposals"
+            ],
+            "additionalProperties": false
+        })
+    } else if stage_team_output_schema
+        == Some(INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA)
+    {
+        let common_properties = serde_json::json!({
+            "schema_version": {"type": "integer", "enum": [1]},
+            "session_id": {"type": "string", "format": "uuid"},
+            "hypothesis_revision_id": {"type": "string", "format": "uuid"}
+        });
+        let mut delegate_properties = common_properties
+            .as_object()
+            .expect("dynamic Verification Primary properties are an object")
+            .clone();
+        delegate_properties.insert(
+            "decision".to_string(),
+            serde_json::json!({"type": "string", "enum": ["delegate"]}),
+        );
+        delegate_properties.insert(
+            "subtasks".to_string(),
+            serde_json::json!({
+                "type": "array", "minItems": 1, "maxItems": 8,
+                "items": dynamic_verification_subtask_schema()
+            }),
+        );
+
+        let mut resolve_properties = common_properties
+            .as_object()
+            .expect("dynamic Verification Primary properties are an object")
+            .clone();
+        resolve_properties.insert(
+            "decision".to_string(),
+            serde_json::json!({"type": "string", "enum": ["resolve"]}),
+        );
+        resolve_properties.insert(
+            "subtasks".to_string(),
+            serde_json::json!({"type": "array", "maxItems": 0}),
+        );
+        resolve_properties.insert(
+            "disposition".to_string(),
+            serde_json::json!({"type": "string", "enum": ["verified", "refuted", "invalid"]}),
+        );
+        resolve_properties.insert(
+            "conclusion".to_string(),
+            serde_json::json!({"type": "string", "minLength": 1, "maxLength": 8192}),
+        );
+        resolve_properties.insert(
+            "cited_evidence_ids".to_string(),
+            serde_json::json!({
+                "type": "array", "maxItems": 256, "uniqueItems": true,
+                "items": {"type": "integer", "minimum": 1}
+            }),
+        );
+        resolve_properties.insert(
+            "new_hypothesis_proposals".to_string(),
+            serde_json::json!({
+                "type": "array", "maxItems": 64,
+                "items": asset_verification_hypothesis_proposal_schema()
+            }),
+        );
+
+        serde_json::json!({
+            "description": "One closed semantic turn by the exact Asset Verification Primary: delegate an ordered dynamic batch, or resolve the current hypothesis without creating an actor.",
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": delegate_properties,
+                    "required": [
+                        "schema_version", "session_id", "hypothesis_revision_id",
+                        "decision", "subtasks"
+                    ],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": resolve_properties,
+                    "required": [
+                        "schema_version", "session_id", "hypothesis_revision_id",
+                        "decision", "subtasks", "disposition", "conclusion",
+                        "cited_evidence_ids", "new_hypothesis_proposals"
+                    ],
+                    "additionalProperties": false
+                }
+            ]
+        })
+    } else if stage_team_output_schema
+        == Some(INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA)
+    {
+        serde_json::json!({
+            "type": "object",
+            "description": "The durable Asset Primary's semantic terminal decision. The host validates the current revision and cited session evidence and supplies all durable authority ids.",
+            "properties": {
+                "schema_version": {"type": "integer", "enum": [1]},
+                "session_id": {"type": "string", "format": "uuid"},
+                "hypothesis_revision_id": {"type": "string", "format": "uuid"},
+                "disposition": {"type": "string", "enum": ["verified", "refuted", "invalid"]},
+                "conclusion": {"type": "string", "minLength": 1, "maxLength": 8192},
+                "citations": {
+                    "type": "array", "maxItems": 256,
+                    "items": asset_verification_citation_schema()
+                },
+                "new_hypothesis_proposals": {
+                    "type": "array", "maxItems": 64,
+                    "items": asset_verification_hypothesis_proposal_schema()
+                }
+            },
+            "required": [
+                "schema_version", "session_id", "hypothesis_revision_id", "disposition",
+                "conclusion", "citations", "new_hypothesis_proposals"
             ],
             "additionalProperties": false
         })
@@ -895,35 +1185,6 @@ mod tests {
     }
 
     #[test]
-    fn candidate_hypothesis_definition_rejects_every_authority_widening() {
-        let valid = SubAgentDefinition::new(
-            "candidate_hypothesis_analyst",
-            "Candidate Hypothesis Analyst",
-            "closed",
-            "closed",
-        )
-        .with_tools(vec![BARRIER_TOOL_NAME.to_string()])
-        .with_readonly(true);
-        validate_closed_candidate_analysis_definition(&valid).expect("closed definition");
-
-        let mut writable = valid.clone();
-        writable.readonly = false;
-        assert!(validate_closed_candidate_analysis_definition(&writable).is_err());
-
-        let mut mcp_widened = valid.clone();
-        mcp_widened.allowed_tools.push("mcp_dynamic".to_string());
-        assert!(validate_closed_candidate_analysis_definition(&mcp_widened).is_err());
-
-        let mut delegating = valid.clone();
-        delegating.delegatable_agents.push("researcher".to_string());
-        assert!(validate_closed_candidate_analysis_definition(&delegating).is_err());
-
-        let mut generated = valid;
-        generated.prompt_template = Some("mutable architect".to_string());
-        assert!(validate_closed_candidate_analysis_definition(&generated).is_err());
-    }
-
-    #[test]
     fn target_intel_reviewer_exposes_only_ordered_reads_and_durable_verdict() {
         let tools = target_intel_reviewer_tool_definitions();
         assert_eq!(
@@ -956,29 +1217,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["submit_stage_deliverable"]
         );
-    }
-
-    #[test]
-    fn verification_campaign_definition_rejects_every_authority_widening() {
-        let valid =
-            SubAgentDefinition::new("verification_lead", "Verification Lead", "closed", "closed")
-                .with_tools(vec![BARRIER_TOOL_NAME.to_string()])
-                .with_readonly(true);
-        validate_closed_candidate_analysis_definition(&valid).expect("closed definition");
-
-        let mut dispatching = valid.clone();
-        dispatching
-            .allowed_tools
-            .push("verify_execute_candidate_action".to_string());
-        assert!(validate_closed_candidate_analysis_definition(&dispatching).is_err());
-
-        let mut delegating = valid.clone();
-        delegating.delegatable_agents.push("pentester".to_string());
-        assert!(validate_closed_candidate_analysis_definition(&delegating).is_err());
-
-        let mut generated = valid;
-        generated.prompt_template = Some("mutable prompt".to_string());
-        assert!(validate_closed_candidate_analysis_definition(&generated).is_err());
     }
 
     #[test]
@@ -1030,6 +1268,194 @@ mod tests {
     }
 
     #[test]
+    fn asset_verification_surface_keeps_dynamic_wrappers_cognition_and_one_barrier() {
+        let definition = |name: &str| ToolDefinition {
+            name: name.to_string(),
+            description: name.to_string(),
+            parameters: serde_json::json!({"type":"object"}),
+        };
+        let tools = asset_verification_tool_definitions(
+            [
+                "pentest_list_tools",
+                "pentest_read_skill",
+                "pentest_run",
+                "browser_collect_js_api",
+                "query_target_data",
+                "search_knowledge_base",
+                "submit_result",
+                "submit_stage_deliverable",
+                "sub_agent_coder",
+                "browser_navigate",
+                "run_pty_cmd",
+                "write_file",
+                "pentest_run",
+            ]
+            .into_iter()
+            .map(definition)
+            .collect(),
+            None,
+        );
+        let names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "pentest_list_tools",
+            "pentest_read_skill",
+            "pentest_run",
+            "browser_collect_js_api",
+            "query_target_data",
+            "search_knowledge_base",
+            "submit_result",
+        ] {
+            assert_eq!(
+                names.iter().filter(|name| **name == expected).count(),
+                1,
+                "{expected} must appear exactly once"
+            );
+        }
+        for forbidden in [
+            "submit_stage_deliverable",
+            "sub_agent_coder",
+            "browser_navigate",
+            "run_pty_cmd",
+            "write_file",
+        ] {
+            assert!(!names.contains(&forbidden));
+        }
+    }
+
+    #[test]
+    fn asset_verification_actor_observation_schema_is_call_bound_and_dynamic_role_bounded() {
+        let tool = barrier_tool_definition(Some(
+            INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA,
+        ));
+        let result = &tool.parameters["properties"]["result"];
+        assert_eq!(result["properties"]["actor_ordinal"]["minimum"], 1);
+        assert!(result["properties"]["specialist_role"]["enum"]
+            .as_array()
+            .is_some_and(|roles| roles.contains(&serde_json::json!("coder"))));
+        assert_eq!(result["properties"]["summary"]["minLength"], 1);
+        assert_eq!(
+            result["properties"]["cited_evidence_ids"]["uniqueItems"],
+            true
+        );
+        assert_eq!(
+            result["properties"]["cited_evidence_ids"]["items"]["minimum"],
+            1
+        );
+        assert_eq!(
+            result["properties"]["new_hypothesis_proposals"]["items"]["additionalProperties"],
+            false
+        );
+        assert_eq!(result["additionalProperties"], false);
+        for required in [
+            "schema_version",
+            "session_id",
+            "hypothesis_revision_id",
+            "actor_call_id",
+            "actor_ordinal",
+            "subtask_id",
+            "specialist_role",
+            "summary",
+            "cited_evidence_ids",
+            "new_hypothesis_proposals",
+        ] {
+            assert!(result["required"]
+                .as_array()
+                .is_some_and(|fields| fields.contains(&serde_json::json!(required))));
+        }
+    }
+
+    #[test]
+    fn dynamic_verification_primary_turn_schema_is_closed_delegate_or_resolve() {
+        let tool =
+            barrier_tool_definition(Some(INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA));
+        let result = &tool.parameters["properties"]["result"];
+        let branches = result["oneOf"]
+            .as_array()
+            .expect("Primary turn has two tagged branches");
+        assert_eq!(branches.len(), 2);
+
+        let delegate = &branches[0];
+        assert_eq!(
+            delegate["properties"]["decision"]["enum"],
+            serde_json::json!(["delegate"])
+        );
+        assert_eq!(delegate["properties"]["subtasks"]["minItems"], 1);
+        assert_eq!(delegate["properties"]["subtasks"]["maxItems"], 8);
+        assert_eq!(
+            delegate["properties"]["subtasks"]["items"]["properties"]["role"]["enum"],
+            serde_json::json!([
+                "pentester",
+                "researcher",
+                "browser",
+                "coder",
+                "installer",
+                "enricher",
+                "memorist",
+                "adviser"
+            ])
+        );
+        let subject_refs =
+            &delegate["properties"]["subtasks"]["items"]["properties"]["subject_refs"];
+        assert_eq!(subject_refs["minItems"], 2);
+        assert_eq!(subject_refs["maxItems"], 2);
+        assert_eq!(
+            subject_refs["prefixItems"][0]["properties"]["kind"]["enum"],
+            serde_json::json!(["target"])
+        );
+        assert_eq!(
+            subject_refs["prefixItems"][1]["properties"]["kind"]["enum"],
+            serde_json::json!(["hypothesis_revision"])
+        );
+
+        let resolve = &branches[1];
+        assert_eq!(
+            resolve["properties"]["decision"]["enum"],
+            serde_json::json!(["resolve"])
+        );
+        assert_eq!(resolve["properties"]["subtasks"]["maxItems"], 0);
+        assert!(resolve["properties"]["cited_evidence_ids"]
+            .get("minItems")
+            .is_none());
+        assert_eq!(
+            resolve["properties"]["cited_evidence_ids"]["uniqueItems"],
+            true
+        );
+        assert!(!serde_json::to_string(result)
+            .expect("schema serializes")
+            .contains("authority_id"));
+        assert!(branches
+            .iter()
+            .all(|branch| branch["additionalProperties"] == false));
+    }
+
+    #[test]
+    fn asset_verification_primary_resolution_keeps_host_authority_out_of_model_schema() {
+        let tool = barrier_tool_definition(Some(
+            INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA,
+        ));
+        let result = &tool.parameters["properties"]["result"];
+        assert_eq!(
+            result["properties"]["disposition"]["enum"],
+            serde_json::json!(["verified", "refuted", "invalid"])
+        );
+        assert!(result["properties"]["citations"].get("minItems").is_none());
+        for host_owned in [
+            "resolution_authority_id",
+            "adviser_review_output_id",
+            "adviser_review_output_sha256",
+            "primary_conclusion_sha256",
+            "adviser_concurrence_sha256",
+        ] {
+            assert!(result["properties"].get(host_owned).is_none());
+        }
+        assert_eq!(result["additionalProperties"], false);
+    }
+
+    #[test]
     fn investigation_primary_barriers_expose_each_host_phase_contract() {
         let plan = barrier_tool_definition(Some(INVESTIGATION_TASK_PLAN_RESULT_SCHEMA));
         let plan_result = &plan.parameters["properties"]["result"];
@@ -1037,7 +1463,7 @@ mod tests {
             plan_result["required"],
             serde_json::json!(["schema_version", "summary", "subtasks"])
         );
-        assert_eq!(plan_result["properties"]["subtasks"]["minItems"], 2);
+        assert_eq!(plan_result["properties"]["subtasks"]["minItems"], 0);
         assert_eq!(plan_result["properties"]["subtasks"]["maxItems"], 8);
         assert_eq!(
             plan_result["properties"]["subtasks"]["items"]["properties"]["role"]["enum"],

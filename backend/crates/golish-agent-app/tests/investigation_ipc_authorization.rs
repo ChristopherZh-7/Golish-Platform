@@ -1,16 +1,17 @@
 use async_trait::async_trait;
 use golish_agent_app::ai::commands::investigation::{
-    authorize_investigation_scope, InvestigationActorTopologyNodeView,
-    InvestigationAuthorityTimeViewV1, InvestigationCampaignDetailRequest,
-    InvestigationCampaignDetailResponse, InvestigationCampaignDetailView,
-    InvestigationCampaignListItemView, InvestigationCampaignListRequest,
-    InvestigationCampaignPageResponse, InvestigationCommandError, InvestigationControlProjectionV1,
-    InvestigationCoverageDenominatorView, InvestigationGenerationSummaryView,
-    InvestigationHypothesisDetailView, InvestigationHypothesisGetRequest,
-    InvestigationHypothesisListItemView, InvestigationHypothesisListRequest,
-    InvestigationHypothesisListView, InvestigationModePolicyView,
-    InvestigationOpenObligationSummaryView, InvestigationProjectionEnvelope,
-    InvestigationRequestStopRequest, InvestigationRequestStopResponse, InvestigationScopeRequest,
+    authorize_investigation_read_scope, authorize_investigation_scope,
+    InvestigationActorTopologyNodeView, InvestigationAuthorityTimeViewV1,
+    InvestigationCampaignDetailRequest, InvestigationCampaignDetailResponse,
+    InvestigationCampaignDetailView, InvestigationCampaignListItemView,
+    InvestigationCampaignListRequest, InvestigationCampaignPageResponse, InvestigationCommandError,
+    InvestigationControlProjectionV1, InvestigationCoverageDenominatorView,
+    InvestigationGenerationSummaryView, InvestigationHypothesisDetailView,
+    InvestigationHypothesisGetRequest, InvestigationHypothesisListItemView,
+    InvestigationHypothesisListRequest, InvestigationHypothesisListView,
+    InvestigationModePolicyView, InvestigationOpenObligationSummaryView,
+    InvestigationProjectionEnvelope, InvestigationRequestStopRequest,
+    InvestigationRequestStopResponse, InvestigationScopeRequest,
     InvestigationSourceCensusMemberView, InvestigationSummaryView,
     InvestigationTemporalSnapshotView, InvestigationTimelineItemView,
     InvestigationTimelineListRequest, InvestigationTimelinePageResponse,
@@ -26,8 +27,8 @@ use golish_core::investigation_projection::{
     TimelineEventKind,
 };
 use golish_core::runtime::{ApprovalResult, GolishRuntime, RuntimeError, RuntimeEvent};
-use golish_db::models::NewSession;
-use golish_db::repo::{project_scopes, runtime_memory_tx, sessions};
+use golish_db::models::{NewSession, TaskStatus};
+use golish_db::repo::{project_scopes, runtime_memory_tx, sessions, tasks};
 use golish_db::{DbConfig, GolishDb};
 use serial_test::serial;
 use std::{any::Any, path::Path, sync::Arc};
@@ -188,6 +189,7 @@ async fn investigation_scope(
             entry_stage: "target_intel".to_owned(),
             project_scope_id: project.project_scope_id,
             cli_scope: None,
+            application_model_contract: golish_core::ApplicationModelContract::LegacyNoModel,
         },
     )
     .await
@@ -284,6 +286,11 @@ async fn investigation_auth_accepts_only_trusted_active_exact_sealed_scope() {
         investigation_scope(&db, "unsealed", active_workspace.path(), false).await;
     let (no_bridge_operation, _, _, no_bridge_session) =
         investigation_scope(&db, "no-bridge", active_workspace.path(), true).await;
+    let (finished_operation, _, finished_org, finished_session) =
+        investigation_scope(&db, "finished-no-bridge", active_workspace.path(), true).await;
+    tasks::update_status(db.pool(), finished_operation, TaskStatus::Finished)
+        .await
+        .expect("finish historical Investigation task");
     let (retired_operation, retired_project, _, retired_session) =
         investigation_scope(&db, "retired", retired_workspace.path(), true).await;
     sqlx::query("UPDATE project_scopes SET retired_at=NOW() WHERE project_scope_id=$1")
@@ -322,6 +329,41 @@ async fn investigation_auth_accepts_only_trusted_active_exact_sealed_scope() {
         &authority
             .authorize_organization_selectors(&[Uuid::new_v4()])
             .expect_err("cross-organization selector fails closed"),
+    );
+
+    let historical = authorize_investigation_read_scope(
+        db.pool(),
+        &trusted,
+        &ai_state,
+        &finished_session,
+        finished_operation,
+    )
+    .await
+    .expect("finished historical projection is readable without a live bridge");
+    historical
+        .authorize_organization_selectors(&[finished_org])
+        .expect("historical read remains bound to the sealed organization set");
+    assert_forbidden(
+        &authorize_investigation_scope(
+            db.pool(),
+            &trusted,
+            &ai_state,
+            &finished_session,
+            finished_operation,
+        )
+        .await
+        .expect_err("control authority never falls back without a live bridge"),
+    );
+    assert_forbidden(
+        &authorize_investigation_read_scope(
+            db.pool(),
+            &trusted,
+            &ai_state,
+            &no_bridge_session,
+            no_bridge_operation,
+        )
+        .await
+        .expect_err("nonterminal historical reads still require a live bridge"),
     );
 
     for (session_id, operation_id) in [
@@ -394,7 +436,7 @@ fn investigation_auth_precedes_selector_and_projection_reads_in_all_commands() {
             .unwrap_or_else(|| panic!("missing command {command}"));
         let body = &source[start..];
         let auth = body
-            .find("authorize_investigation_scope")
+            .find("authorize_investigation_read_scope")
             .expect("command authorizes operation");
         for sensitive in [
             "read_investigation_summary(",
@@ -410,7 +452,7 @@ fn investigation_auth_precedes_selector_and_projection_reads_in_all_commands() {
     }
 
     let authorizer = source
-        .split("pub async fn authorize_investigation_scope")
+        .split("async fn authorize_investigation_scope_with_access")
         .nth(1)
         .expect("investigation authorizer");
     let ordered_authority_steps = [
@@ -418,9 +460,9 @@ fn investigation_auth_precedes_selector_and_projection_reads_in_all_commands() {
         "operation_state::get",
         "tasks::get",
         "sessions::get",
+        "get_active_for_share",
         "get_session_bridge",
         "canonical_workspace_identity",
-        "get_active_for_share",
         "load_for_operation",
     ];
     let mut previous = 0;

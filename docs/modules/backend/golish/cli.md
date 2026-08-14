@@ -48,7 +48,8 @@
 - `--approve-phase-boundaries` 是兼容参数：当前内置 flow 的常规人工确认只在 Scoping，post-Scoping 不再产生 generic phase confirmation。该 flag 即使与 `--auto-approve` 同用也不授权 target scope、Candidate plan 或高风险 tool call。
 - `--stage-run-resume <stage-run-key|session UUID|operation UUID>` 同样只 dispatch
   到 `stage_run`，不进入普通 headless chat。它与 fresh slice/seed/ephemeral 参数
-  冲突；`--replay` 仍然只读，不能恢复 operation。
+  冲突；`--replay` 仍然只读，不能恢复 operation。CLI不再提供
+  `--stage-run-campaign-authority`或任何PreparedAction人工授权注入参数。
 - `running` 孤儿恢复必须显式传 `--allow-orphan-running`，首 stage 缺
   `graph_flow` 时还必须传 `--repair-missing-graph-flow`；两者都依赖
   `--expect-session/--expect-task/--expect-operation/--expect-org/--expect-stage`

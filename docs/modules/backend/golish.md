@@ -84,3 +84,7 @@
 cd backend && cargo nextest run -p golish
 # 或全套：just precommit
 ```
+
+## Bundled CyberStrike resources（2026-08-12）
+
+`tauri.conf.json` 把`resources/methodology/corpora/cyberstrike/`作为完整目录资源打包到应用。runtime仍必须通过core exact-manifest/content-root policy和data-only catalog读取；bundle inclusion不等于prompt注入或执行授权。

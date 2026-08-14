@@ -303,6 +303,7 @@ fn run_head(row: db::InvestigationRunHeadRow) -> UnifiedInvestigationRunHead {
 fn work(row: db::InvestigationRunWorkRow) -> UnifiedInvestigationWork {
     UnifiedInvestigationWork {
         work_id: row.work_id,
+        asset_lane_id: row.asset_lane_id,
         stable_work_key_sha256: row.stable_work_key_sha256,
         authority_id: row.authority_id,
         operation_id: row.operation_id,
@@ -451,6 +452,45 @@ fn refiner_plan_ledger(
         generator_subtask_count: row.generator_subtask_count,
         generator_subtask_set_sha256: row.generator_subtask_set_sha256,
         ledger_sha256: row.ledger_sha256,
+    }
+}
+
+fn generator_source(
+    row: db::InvestigationFinishedSubmitResultCandidateRow,
+) -> UnifiedInvestigationFinishedSubmitResultCandidate {
+    UnifiedInvestigationFinishedSubmitResultCandidate {
+        source_tool_call_id: row.source_tool_call_id,
+        source_provider_call_id: row.source_provider_call_id,
+        source_attempt_epoch: row.source_attempt_epoch,
+        source_work_item_id: row.source_work_item_id,
+        source_worker_run_id: row.source_worker_run_id,
+        canonical_result: row.canonical_result,
+        canonical_result_sha256: row.canonical_result_sha256,
+    }
+}
+
+fn generator_materialization(
+    row: db::InvestigationGeneratorMaterializationRow,
+) -> UnifiedInvestigationGeneratorMaterialization {
+    UnifiedInvestigationGeneratorMaterialization {
+        ledger: refiner_plan_ledger(row.ledger),
+        subtasks: row.subtasks.into_iter().map(subtask).collect(),
+        source: generator_source(row.source),
+        source_receipt_id: row.source_receipt_id,
+        adoption_receipt_id: row.adoption_receipt_id,
+        replayed: row.replayed,
+    }
+}
+
+fn generator_consumer_fence(
+    fence: UnifiedInvestigationGeneratorConsumerFence,
+) -> db::InvestigationGeneratorConsumerFenceInput {
+    db::InvestigationGeneratorConsumerFenceInput {
+        current_consumer_work_item_id: fence.current_consumer_work_item_id,
+        current_consumer_worker_run_id: fence.current_consumer_worker_run_id,
+        current_consumer_lease_token: fence.current_consumer_lease_token,
+        expected_consumer_attempt_epoch: fence.expected_consumer_attempt_epoch,
+        expected_consumer_checkpoint_version: fence.expected_consumer_checkpoint_version,
     }
 }
 
@@ -766,6 +806,7 @@ impl UnifiedInvestigationRepository for PgUnifiedInvestigationRepository {
             .register_work(&db::RegisterInvestigationWorkInput {
                 identity: unit_identity(&request.identity),
                 work_id: request.work_id,
+                asset_lane_id: request.asset_lane_id,
                 stable_work_key_sha256: request.stable_work_key_sha256,
                 work_kind: work_kind(request.work_kind),
                 external_identity_sha256: request.external_identity_sha256,
@@ -774,6 +815,29 @@ impl UnifiedInvestigationRepository for PgUnifiedInvestigationRepository {
             })
             .await
             .map(work)
+            .map_err(map_storage_error)
+    }
+
+    async fn ensure_dynamic_asset_analysis_work(
+        &self,
+        request: EnsureDynamicAssetAnalysisWork,
+    ) -> UnifiedInvestigationRepoResult<EnsuredDynamicAssetAnalysisWork> {
+        self.writer
+            .ensure_dynamic_asset_analysis_work(&db::EnsureDynamicAssetAnalysisWorkInput {
+                identity: unit_identity(&request.identity),
+                stable_cutover_request_id: request.stable_cutover_request_id,
+                asset_lane_id: request.asset_lane_id,
+                legacy_stable_work_key_sha256: request.legacy_stable_work_key_sha256,
+                dynamic_work_id: request.dynamic_work_id,
+                dynamic_stable_work_key_sha256: request.dynamic_stable_work_key_sha256,
+                dynamic_external_identity_sha256: request.dynamic_external_identity_sha256,
+                observed_stop_epoch: request.observed_stop_epoch,
+            })
+            .await
+            .map(|ensured| EnsuredDynamicAssetAnalysisWork {
+                work: work(ensured.work),
+                cutover_authority_id: ensured.cutover_authority_id,
+            })
             .map_err(map_storage_error)
     }
 
@@ -892,6 +956,21 @@ impl UnifiedInvestigationRepository for PgUnifiedInvestigationRepository {
             .map_err(map_storage_error)
     }
 
+    async fn load_dispatch(
+        &self,
+        request: LoadUnifiedInvestigationDispatch,
+    ) -> UnifiedInvestigationRepoResult<Option<UnifiedInvestigationDispatch>> {
+        self.writer
+            .load_logical_dispatch(
+                &unit_identity(&request.identity),
+                request.task_plan_id,
+                request.dispatch_receipt_id,
+            )
+            .await
+            .map(|dispatch_row| dispatch_row.map(dispatch))
+            .map_err(map_storage_error)
+    }
+
     async fn insert_dispatch_attempt(
         &self,
         request: InsertUnifiedInvestigationDispatchAttempt,
@@ -954,6 +1033,84 @@ impl UnifiedInvestigationRepository for PgUnifiedInvestigationRepository {
             .map_err(map_storage_error)
     }
 
+    async fn materialize_generator(
+        &self,
+        request: MaterializeUnifiedInvestigationGenerator,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationGeneratorMaterialization> {
+        self.writer
+            .materialize_generator(&db::MaterializeInvestigationGeneratorInput {
+                identity: unit_identity(&request.identity),
+                task_plan_id: request.task_plan_id,
+                ledger_id: request.ledger_id,
+                stable_request_id: request.stable_request_id,
+                generator_pipeline_event_id: request.generator_pipeline_event_id,
+                source_receipt_id: request.source_receipt_id,
+                source_tool_call_id: request.source_tool_call_id,
+                consumer_fence: generator_consumer_fence(request.consumer_fence),
+                subtasks: request
+                    .subtasks
+                    .into_iter()
+                    .map(|member| db::InvestigationGeneratorSubtaskInput {
+                        subtask_id: member.subtask_id,
+                        subtask_ordinal: member.subtask_ordinal,
+                        label: member.label,
+                        runnable: member.runnable,
+                        input_manifest_sha256: member.input_manifest_sha256,
+                        expected_output_schema: member.expected_output_schema,
+                        member_sha256: member.member_sha256,
+                    })
+                    .collect(),
+            })
+            .await
+            .map(generator_materialization)
+            .map_err(map_storage_error)
+    }
+
+    async fn load_pending_generator_recovery(
+        &self,
+        request: LoadPendingUnifiedInvestigationGeneratorRecovery,
+    ) -> UnifiedInvestigationRepoResult<Option<PendingUnifiedInvestigationGeneratorRecovery>> {
+        self.writer
+            .load_pending_generator_recovery(
+                &unit_identity(&request.identity),
+                request.task_plan_id,
+            )
+            .await
+            .map(|pending| {
+                pending.map(|row| PendingUnifiedInvestigationGeneratorRecovery {
+                    task_plan_id: row.task_plan_id,
+                    primary_dispatch_receipt_id: row.primary_dispatch_receipt_id,
+                    primary_work_item_id: row.primary_work_item_id,
+                    primary_worker_run_id: row.primary_worker_run_id,
+                    existing_subtasks: row.existing_subtasks.into_iter().map(subtask).collect(),
+                    candidates: row.candidates.into_iter().map(generator_source).collect(),
+                })
+            })
+            .map_err(map_storage_error)
+    }
+
+    async fn adopt_orphan_generator(
+        &self,
+        request: AdoptUnifiedInvestigationOrphanGenerator,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationGeneratorMaterialization> {
+        self.writer
+            .adopt_orphan_generator(&db::AdoptInvestigationOrphanGeneratorInput {
+                identity: unit_identity(&request.identity),
+                task_plan_id: request.task_plan_id,
+                adoption_receipt_id: request.adoption_receipt_id,
+                stable_request_id: request.stable_request_id,
+                ledger_id: request.ledger_id,
+                ledger_stable_request_id: request.ledger_stable_request_id,
+                generator_pipeline_event_id: request.generator_pipeline_event_id,
+                source_tool_call_id: request.source_tool_call_id,
+                consumer_fence: generator_consumer_fence(request.consumer_fence),
+                expected_existing_subtask_ids: request.expected_existing_subtask_ids,
+            })
+            .await
+            .map(generator_materialization)
+            .map_err(map_storage_error)
+    }
+
     async fn load_refiner_plan_ledger(
         &self,
         request: LoadUnifiedInvestigationRefinerPlanLedger,
@@ -986,12 +1143,65 @@ impl UnifiedInvestigationRepository for PgUnifiedInvestigationRepository {
             .map_err(map_storage_error)
     }
 
+    async fn append_dynamic_refiner_plan_patch(
+        &self,
+        request: AppendUnifiedInvestigationDynamicRefinerPlanPatch,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanPatch> {
+        self.writer
+            .append_dynamic_refiner_plan_patch(
+                &db::AppendInvestigationDynamicRefinerPlanPatchInput {
+                    identity: unit_identity(&request.identity),
+                    patch_id: request.patch_id,
+                    stable_request_id: request.stable_request_id,
+                    ledger_id: request.ledger_id,
+                    task_plan_id: request.task_plan_id,
+                    refiner_pipeline_event_id: request.refiner_pipeline_event_id,
+                    expected_previous_state_sha256: request.expected_previous_state_sha256,
+                    remaining_plan_payload: request.remaining_plan_payload,
+                    ordered_active_subtask_ids: request.ordered_active_subtask_ids,
+                },
+            )
+            .await
+            .map(refiner_plan_patch)
+            .map_err(map_storage_error)
+    }
+
+    async fn load_latest_refiner_plan_patch(
+        &self,
+        request: LoadLatestUnifiedInvestigationRefinerPlanPatch,
+    ) -> UnifiedInvestigationRepoResult<Option<UnifiedInvestigationRefinerPlanPatch>> {
+        self.writer
+            .load_latest_refiner_plan_patch(&unit_identity(&request.identity), request.task_plan_id)
+            .await
+            .map(|patch| patch.map(refiner_plan_patch))
+            .map_err(map_storage_error)
+    }
+
     async fn seal_refiner_plan_ledger(
         &self,
         request: SealUnifiedInvestigationRefinerPlanLedger,
     ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanLedgerSeal> {
         self.writer
             .seal_refiner_plan_ledger(&db::SealInvestigationRefinerPlanLedgerInput {
+                identity: unit_identity(&request.identity),
+                seal_id: request.seal_id,
+                stable_request_id: request.stable_request_id,
+                ledger_id: request.ledger_id,
+                task_plan_id: request.task_plan_id,
+                result_barrier_pipeline_event_id: request.result_barrier_pipeline_event_id,
+                expected_final_patch_sha256: request.expected_final_patch_sha256,
+            })
+            .await
+            .map(refiner_plan_ledger_seal)
+            .map_err(map_storage_error)
+    }
+
+    async fn seal_dynamic_refiner_plan_ledger(
+        &self,
+        request: SealUnifiedInvestigationDynamicRefinerPlanLedger,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanLedgerSeal> {
+        self.writer
+            .seal_dynamic_refiner_plan_ledger(&db::SealInvestigationDynamicRefinerPlanLedgerInput {
                 identity: unit_identity(&request.identity),
                 seal_id: request.seal_id,
                 stable_request_id: request.stable_request_id,

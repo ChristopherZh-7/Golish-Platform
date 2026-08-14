@@ -38,8 +38,11 @@ pub use evidence::TargetIntelSemanticReceiptStore;
 pub mod hypothesis_registry;
 pub mod investigation_analysis_host;
 pub use investigation_analysis_host::PgInvestigationAnalysisHostRepository;
+mod investigation_asset_queue;
+pub use investigation_asset_queue::PgInvestigationAssetQueueRepository;
+mod investigation_asset_verification;
+pub use investigation_asset_verification::PgInvestigationAssetVerificationRepository;
 pub mod investigation_nested_dispatch;
-mod investigation_verification_advisory;
 pub use investigation_nested_dispatch::PgInvestigationNestedDispatchRepository;
 pub mod knowledge_context;
 pub mod knowledge_memory;
@@ -54,9 +57,6 @@ mod tasks;
 mod tool_truth;
 pub mod tool_truth_revalidation;
 mod unified_investigation;
-pub mod verification_campaign;
-mod verification_campaign_scheduler;
-pub mod verification_send_authority;
 mod wiki;
 
 pub struct GolishDbRepoProvider {
@@ -183,15 +183,6 @@ struct EnumerationUnresolvedOccurrenceRow {
     producer_receipt_set_sha256: String,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct CandidateCampaignAdmissionSubjectRow {
-    scope_snapshot_id: Uuid,
-    revision_id: Uuid,
-    verification_plan_id: Uuid,
-    objective_id: Uuid,
-    generation_member_count: i64,
-}
-
 impl GolishDbRepoProvider {
     pub fn new(pool: Arc<PgPool>) -> Self {
         let recon_scans: Arc<dyn ReconScansPort> = Arc::new(PgReconScansAdapter::new(pool.clone()));
@@ -231,6 +222,23 @@ fn summarize_scope_review_results(
 
 #[async_trait]
 impl DbRepoProvider for GolishDbRepoProvider {
+    fn investigation_asset_queue_repository(
+        &self,
+    ) -> InvestigationAssetQueueResult<Arc<dyn InvestigationAssetQueueRepository>> {
+        Ok(Arc::new(PgInvestigationAssetQueueRepository::new(
+            self.pool.clone(),
+        )))
+    }
+
+    fn investigation_asset_verification_repository(
+        &self,
+    ) -> InvestigationAssetVerificationResult<Arc<dyn InvestigationAssetVerificationRepository>>
+    {
+        Ok(Arc::new(PgInvestigationAssetVerificationRepository::new(
+            self.pool.clone(),
+        )))
+    }
+
     fn investigation_nested_dispatch_repository(
         &self,
     ) -> InvestigationNestedDispatchResult<Arc<dyn InvestigationNestedDispatchRepository>> {
@@ -252,22 +260,6 @@ impl DbRepoProvider for GolishDbRepoProvider {
     ) -> UnifiedInvestigationRepoResult<Arc<dyn UnifiedInvestigationRepository>> {
         Ok(Arc::new(
             unified_investigation::PgUnifiedInvestigationRepository::new(self.pool.clone()),
-        ))
-    }
-
-    fn verification_campaign_repository(
-        &self,
-    ) -> RepoResult<Arc<dyn VerificationCampaignRepository>> {
-        Ok(Arc::new(
-            verification_campaign::PgVerificationCampaignRepository::new(self.pool.clone()),
-        ))
-    }
-
-    fn verification_campaign_shadow_repository(
-        &self,
-    ) -> RepoResult<Arc<dyn VerificationCampaignShadowRepository>> {
-        Ok(Arc::new(
-            verification_campaign::PgVerificationCampaignRepository::new(self.pool.clone()),
         ))
     }
 
@@ -352,6 +344,10 @@ impl DbRepoProvider for GolishDbRepoProvider {
 
     async fn wiki_search_by_tag(&self, tag: &str, limit: i64) -> anyhow::Result<serde_json::Value> {
         self.wiki_search_by_tag_impl(tag, limit).await
+    }
+
+    async fn wiki_get_page(&self, path: &str) -> anyhow::Result<Option<serde_json::Value>> {
+        self.wiki_get_page_impl(path).await
     }
 
     async fn wiki_list_cves_with_pocs(&self) -> anyhow::Result<serde_json::Value> {
@@ -526,7 +522,8 @@ impl DbRepoProvider for GolishDbRepoProvider {
         target_id: Uuid,
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value> {
-        self.query_target_data_impl(None, target_id, sections).await
+        self.query_target_data_impl(None, target_id, sections, None)
+            .await
     }
 
     async fn query_target_data_for_operation(
@@ -535,7 +532,18 @@ impl DbRepoProvider for GolishDbRepoProvider {
         target_id: Uuid,
         sections: &[String],
     ) -> anyhow::Result<serde_json::Value> {
-        self.query_target_data_impl(operation_id, target_id, sections)
+        self.query_target_data_impl(operation_id, target_id, sections, None)
+            .await
+    }
+
+    async fn query_target_data_for_operation_origin(
+        &self,
+        operation_id: Option<Uuid>,
+        target_id: Uuid,
+        sections: &[String],
+        exact_origin: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.query_target_data_impl(operation_id, target_id, sections, exact_origin)
             .await
     }
 
@@ -961,273 +969,6 @@ impl DbRepoProvider for GolishDbRepoProvider {
         }
         tx.commit().await?;
         Ok(unresolved)
-    }
-
-    async fn admit_candidate_generation_campaigns(
-        &self,
-        stable_request_id: Uuid,
-        operation_id: Uuid,
-        organization_id: Uuid,
-        generation_seal_id: Uuid,
-    ) -> anyhow::Result<CandidateCampaignAdmissionBatchView> {
-        let subjects = sqlx::query_as::<_, CandidateCampaignAdmissionSubjectRow>(
-            r#"SELECT scope.id AS scope_snapshot_id,
-                      revision.revision_id,
-                      plan.plan_id AS verification_plan_id,
-                      objective.objective_id,
-                      seal.member_count AS generation_member_count
-                 FROM operation_state operation
-                 JOIN hypothesis_generation_seals seal
-                   ON seal.seal_id=$3
-                 JOIN hypothesis_generations generation
-                   ON generation.generation_id=seal.generation_id
-                  AND generation.operation_id=operation.operation_id
-                  AND generation.organization_id=$2
-                 JOIN candidate_analysis_snapshots candidate_snapshot
-                   ON candidate_snapshot.snapshot_id=generation.candidate_snapshot_id
-                  AND candidate_snapshot.operation_id=generation.operation_id
-                  AND candidate_snapshot.organization_id=generation.organization_id
-                  AND candidate_snapshot.snapshot_status IN (
-                      'sealed_ready','sealed_analysis_ready_with_residuals'
-                  )
-                 JOIN operation_org_scope_snapshots scope
-                   ON scope.id=candidate_snapshot.scope_snapshot_id
-                  AND scope.operation_id=operation.operation_id
-                  AND scope.project_scope_id=operation.project_scope_id
-                  AND scope.sealed_at IS NOT NULL
-                 JOIN operation_org_scope_units scope_unit
-                   ON scope_unit.snapshot_id=scope.id
-                  AND scope_unit.organization_id=generation.organization_id
-                 JOIN hypothesis_generation_members generation_member
-                   ON generation_member.generation_id=generation.generation_id
-                  AND generation_member.operation_id=generation.operation_id
-                  AND generation_member.organization_id=generation.organization_id
-                 JOIN attack_hypothesis_revisions revision
-                   ON revision.revision_id=generation_member.revision_id
-                  AND revision.operation_id=generation.operation_id
-                  AND revision.organization_id=generation.organization_id
-                 JOIN attack_hypothesis_verification_plans plan
-                   ON plan.revision_id=revision.revision_id
-                  AND plan.sealed_at IS NOT NULL
-                 JOIN attack_hypothesis_verification_plan_objectives objective
-                   ON objective.plan_id=plan.plan_id
-                  AND objective.revision_id=revision.revision_id
-                WHERE operation.operation_id=$1
-                  AND operation.tool_truth_contract='receipt_v1'
-                  AND operation.investigation_rollout_mode IN (
-                      'registry_authoritative_legacy_projection','new_only'
-                  )
-                  AND (
-                      (
-                          operation.stage_topology_contract='legacy_candidate_verification_v1'
-                          AND operation.current_stage='attack_candidate'
-                      ) OR (
-                          operation.stage_topology_contract='unified_investigation_v1'
-                          AND operation.current_stage='investigation'
-                      )
-                  )
-                ORDER BY generation_member.ordinal,objective.ordinal,
-                         revision.revision_id,objective.objective_id"#,
-        )
-        .bind(stable_request_id)
-        .bind(operation_id)
-        .bind(organization_id)
-        .bind(generation_seal_id)
-        .fetch_all(self.pool.as_ref())
-        .await?;
-        anyhow::ensure!(
-            !subjects.is_empty(),
-            "Candidate generation has no complete authoritative Plan C admission subjects"
-        );
-        let expected_member_count = subjects[0].generation_member_count;
-        anyhow::ensure!(
-            expected_member_count > 0
-                && subjects
-                    .iter()
-                    .all(
-                        |subject| subject.generation_member_count == expected_member_count
-                            && subject.scope_snapshot_id == subjects[0].scope_snapshot_id
-                    ),
-            "Candidate generation Campaign admission owner census drifted"
-        );
-        let revision_ids = subjects
-            .iter()
-            .map(|subject| subject.revision_id)
-            .collect::<std::collections::BTreeSet<_>>();
-        anyhow::ensure!(
-            i64::try_from(revision_ids.len()).ok() == Some(expected_member_count),
-            "Candidate generation Campaign admission omits a sealed revision or plan"
-        );
-        let objective_ids = subjects
-            .iter()
-            .map(|subject| subject.objective_id)
-            .collect::<std::collections::BTreeSet<_>>();
-        anyhow::ensure!(
-            objective_ids.len() == subjects.len(),
-            "Candidate generation Campaign admission contains duplicate objectives"
-        );
-
-        let campaign_repository =
-            verification_campaign::PgVerificationCampaignRepository::new(self.pool.clone());
-        let capability_registry =
-            golish_pentest_app::pentest_bridge::VerificationCapabilityRegistry::authoritative_v1();
-        let capability_ids = capability_registry
-            .capability_ids()
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        anyhow::ensure!(
-            capability_ids.len() == 4,
-            "Plan C authoritative capability registry is not the frozen four-member census"
-        );
-        let mut assessment_seals = std::collections::BTreeMap::new();
-        for subject in &subjects {
-            for capability_id in &capability_ids {
-                let assessment = capability_registry
-                    .assessment(capability_id)
-                    .ok_or_else(|| anyhow::anyhow!("Plan C capability registry drifted"))?;
-                campaign_repository
-                    .record_capability_assessment(RecordCapabilityAssessment {
-                        stable_request_id: Uuid::new_v5(
-                            &stable_request_id,
-                            format!(
-                                "candidate-campaign-capability.v1:{}:{capability_id}",
-                                subject.objective_id
-                            )
-                            .as_bytes(),
-                        ),
-                        operation_id,
-                        scope_snapshot_id: subject.scope_snapshot_id,
-                        organization_id,
-                        // The assessment writer derives generation authority
-                        // directly. The Wave seal is necessarily created only
-                        // after this exact four-member assessment set exists.
-                        wave_coverage_seal_id: Uuid::nil(),
-                        objective_id: subject.objective_id,
-                        capability_id: capability_id.clone(),
-                        disposition: verification_campaign::compiler_disposition_to_repository(
-                            assessment.disposition,
-                        ),
-                        adapter_contract_version: assessment.adapter_contract_version.clone(),
-                        adapter_contract_digest: assessment.adapter_contract_digest.clone(),
-                        residual_reason_code:
-                            (verification_campaign::compiler_disposition_to_repository(
-                                assessment.disposition,
-                            ) != CapabilityAssessmentDispositionV1::Available)
-                                .then(|| assessment.reason_code.clone()),
-                    })
-                    .await
-                    .map_err(anyhow::Error::new)?;
-            }
-            let sealed = campaign_repository
-                .seal_capability_assessment_set(SealCapabilityAssessmentSet {
-                    stable_request_id: Uuid::new_v5(
-                        &stable_request_id,
-                        format!(
-                            "candidate-campaign-capability-set.v1:{}",
-                            subject.objective_id
-                        )
-                        .as_bytes(),
-                    ),
-                    operation_id,
-                    scope_snapshot_id: subject.scope_snapshot_id,
-                    organization_id,
-                    wave_coverage_seal_id: Uuid::nil(),
-                    objective_id: subject.objective_id,
-                })
-                .await
-                .map_err(anyhow::Error::new)?;
-            assessment_seals.insert(subject.objective_id, sealed.seal_id);
-        }
-
-        let wave = campaign_repository
-            .seal_wave_coverage_denominator(SealWaveCoverage {
-                stable_request_id: Uuid::new_v5(
-                    &stable_request_id,
-                    b"candidate-campaign-wave-coverage.v1",
-                ),
-                operation_id,
-                scope_snapshot_id: subjects[0].scope_snapshot_id,
-                organization_id,
-                generation_seal_id,
-                verification_plan_id: subjects[0].verification_plan_id,
-            })
-            .await
-            .map_err(anyhow::Error::new)?;
-        anyhow::ensure!(
-            wave.member_count > 0,
-            "Candidate generation Wave denominator is unexpectedly empty"
-        );
-
-        let mut campaign_ids = Vec::with_capacity(subjects.len());
-        let mut replayed_campaign_count = 0_u32;
-        for subject in &subjects {
-            let campaign = campaign_repository
-                .admit_campaign_with_fresh_tool_truth(AdmitCampaignRequest {
-                    stable_consumer_request_id: Uuid::new_v5(
-                        &stable_request_id,
-                        format!("candidate-campaign-admission.v1:{}", subject.objective_id)
-                            .as_bytes(),
-                    ),
-                    operation_id,
-                    scope_snapshot_id: subject.scope_snapshot_id,
-                    organization_id,
-                    generation_seal_id,
-                    verification_plan_id: subject.verification_plan_id,
-                    objective_id: subject.objective_id,
-                    wave_coverage_seal_id: wave.seal_id,
-                    capability_assessment_set_seal_id: assessment_seals[&subject.objective_id],
-                    expected_campaign_id: None,
-                })
-                .await
-                .map_err(anyhow::Error::new)?;
-            anyhow::ensure!(
-                campaign.operation_id == operation_id
-                    && campaign.objective_id == subject.objective_id,
-                "Campaign admission returned mismatched authority"
-            );
-            replayed_campaign_count =
-                replayed_campaign_count.saturating_add(u32::from(campaign.replayed));
-            campaign_ids.push(campaign.campaign_id);
-        }
-        Ok(CandidateCampaignAdmissionBatchView {
-            generation_seal_id,
-            objective_count: u32::try_from(subjects.len())?,
-            campaign_ids,
-            replayed_campaign_count,
-        })
-    }
-
-    async fn drive_authoritative_verification_campaigns(
-        &self,
-        operation_id: Uuid,
-    ) -> anyhow::Result<VerificationCampaignSchedulerView> {
-        verification_campaign_scheduler::drive_authoritative_verification_campaigns(
-            self.pool.clone(),
-            operation_id,
-        )
-        .await
-    }
-
-    async fn prepare_authoritative_verification_consults(
-        &self,
-        operation_id: Uuid,
-    ) -> anyhow::Result<Vec<VerificationConsultWorkItemView>> {
-        verification_campaign_scheduler::prepare_authoritative_verification_consults(
-            self.pool.clone(),
-            operation_id,
-        )
-        .await
-    }
-
-    async fn record_authoritative_verification_consult_terminal(
-        &self,
-        command: RecordVerificationConsultTerminal,
-    ) -> anyhow::Result<()> {
-        verification_campaign_scheduler::record_authoritative_verification_consult_terminal(
-            self.pool.clone(),
-            command,
-        )
-        .await
     }
 
     async fn in_scope_target_types(&self, org_id: Option<Uuid>) -> anyhow::Result<Vec<String>> {

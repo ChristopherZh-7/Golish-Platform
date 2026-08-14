@@ -177,6 +177,7 @@ fn snapshot_view(
         operation_id: value.operation_id,
         scope_snapshot_id: value.scope_snapshot_id,
         organization_id: value.organization_id,
+        asset_lane_id: value.asset_lane_id,
         disposition: snapshot_disposition(value.disposition),
         snapshot_hash: value.snapshot_hash,
         candidate_snapshot_authority_hash: value.candidate_snapshot_authority_hash,
@@ -409,6 +410,7 @@ impl HypothesisRegistryRepository for PgHypothesisRegistryRepository {
                 operation_id: request.operation_id,
                 scope_snapshot_id: request.scope_snapshot_id,
                 organization_id: request.organization_id,
+                asset_lane_id: request.asset_lane_id,
             },
         )
         .await

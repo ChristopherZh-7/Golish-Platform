@@ -77,15 +77,23 @@ pub(crate) async fn initialize_agent(
     // Initialize MCP (Model Context Protocol) integration
     // Load config from user-global (~/.golish/mcp.json) and project-specific paths
     // Auto-connect to enabled servers and expose tools to the agent
-    let mcp_manager = match initialize_mcp_integration(&mut bridge, workspace, args.verbose).await {
-        Ok(manager) => manager,
-        Err(e) => {
-            if args.verbose {
-                eprintln!("[cli] Warning: Failed to initialize MCP: {}", e);
+    let mcp_manager = if args.stage_run_test_investigation_llm_endpoint.is_some() {
+        tracing::info!(
+            target: "harness::stage_run",
+            "deterministic Investigation fixture disabled MCP initialization"
+        );
+        None
+    } else {
+        match initialize_mcp_integration(&mut bridge, workspace, args.verbose).await {
+            Ok(manager) => manager,
+            Err(e) => {
+                if args.verbose {
+                    eprintln!("[cli] Warning: Failed to initialize MCP: {}", e);
+                }
+                tracing::warn!("[mcp] Failed to initialize MCP integration: {}", e);
+                // Non-fatal: agent continues without MCP tools
+                None
             }
-            tracing::warn!("[mcp] Failed to initialize MCP integration: {}", e);
-            // Non-fatal: agent continues without MCP tools
-            None
         }
     };
 

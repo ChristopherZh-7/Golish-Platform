@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const HYPOTHESIS_VERIFICATION_TASK_CONTRACT_V1: &str = "hypothesis_verification_task.v1";
+pub const HYPOTHESIS_VERIFICATION_TASK_CONTRACT_DYNAMIC_V2: &str =
+    "hypothesis_verification_task.dynamic_v2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -85,6 +87,23 @@ impl HypothesisVerificationTaskHeaderV1 {
     pub fn host_create(
         input: NewHypothesisVerificationTaskV1,
     ) -> Result<Self, HypothesisVerificationTaskError> {
+        Self::host_create_with_contract(input, HYPOTHESIS_VERIFICATION_TASK_CONTRACT_V1)
+    }
+
+    /// Create the server-owned task identity used by the per-root dynamic
+    /// verification runtime. The contract discriminator participates in both
+    /// the stable key and deterministic task UUID, so a historical v1 task can
+    /// never be replayed as a dynamic task.
+    pub fn host_create_dynamic(
+        input: NewHypothesisVerificationTaskV1,
+    ) -> Result<Self, HypothesisVerificationTaskError> {
+        Self::host_create_with_contract(input, HYPOTHESIS_VERIFICATION_TASK_CONTRACT_DYNAMIC_V2)
+    }
+
+    fn host_create_with_contract(
+        input: NewHypothesisVerificationTaskV1,
+        task_contract_version: &'static str,
+    ) -> Result<Self, HypothesisVerificationTaskError> {
         for (field, value) in [
             ("operation_id", input.operation_id),
             ("stage_execution_id", input.stage_execution_id),
@@ -152,7 +171,7 @@ impl HypothesisVerificationTaskHeaderV1 {
             semantic_evidence_set_sha256: &input.semantic_evidence_set_sha256,
             open_obligation_set_sha256: &input.open_obligation_set_sha256,
             semantic_attempt_fingerprint: &input.semantic_attempt_fingerprint,
-            task_contract_version: HYPOTHESIS_VERIFICATION_TASK_CONTRACT_V1,
+            task_contract_version,
             host_rerun_receipt_id: input.host_rerun_receipt_id,
             host_rerun_receipt_sha256: input.host_rerun_receipt_sha256.as_deref(),
             rerun_contract_version: input.rerun_contract_version,
@@ -173,7 +192,7 @@ impl HypothesisVerificationTaskHeaderV1 {
             semantic_evidence_set_sha256: input.semantic_evidence_set_sha256,
             open_obligation_set_sha256: input.open_obligation_set_sha256,
             semantic_attempt_fingerprint: input.semantic_attempt_fingerprint,
-            task_contract_version: HYPOTHESIS_VERIFICATION_TASK_CONTRACT_V1.into(),
+            task_contract_version: task_contract_version.into(),
             first_admission_generation_id: input.first_admission_generation_id,
             host_rerun_receipt_id: input.host_rerun_receipt_id,
             host_rerun_receipt_sha256: input.host_rerun_receipt_sha256,
@@ -470,6 +489,21 @@ mod tests {
         rerun.rerun_contract_version = Some(1);
         let rerun = HypothesisVerificationTaskHeaderV1::host_create(rerun).unwrap();
         assert!(!first.same_semantic_task(&rerun));
+    }
+
+    #[test]
+    fn dynamic_task_contract_has_a_distinct_deterministic_identity() {
+        let historical = HypothesisVerificationTaskHeaderV1::host_create(input()).unwrap();
+        let dynamic = HypothesisVerificationTaskHeaderV1::host_create_dynamic(input()).unwrap();
+        let dynamic_replay =
+            HypothesisVerificationTaskHeaderV1::host_create_dynamic(input()).unwrap();
+
+        assert_eq!(
+            dynamic.task_contract_version,
+            HYPOTHESIS_VERIFICATION_TASK_CONTRACT_DYNAMIC_V2
+        );
+        assert!(!historical.same_semantic_task(&dynamic));
+        assert!(dynamic.same_semantic_task(&dynamic_replay));
     }
 
     #[test]

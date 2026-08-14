@@ -113,3 +113,7 @@ cd backend && cargo nextest run -p golish-sub-agents executor
   six-axis completion prompt. The `intel_review.v1` parser accepts only PASS/REWORK/NEEDS_HUMAN,
   requires actionable material findings for REWORK, and a typed human requirement for
   NEEDS_HUMAN. Advisory rework remains disabled.
+
+## Investigation actor contract（2026-08-12）
+
+`BoundWorkerChainContext` 可携带 closed `InvestigationActorContract`。Analysis Primary/worker 仍保持 cognition-only；Asset Verification 使用两种独立且不可互换的 host binding：`AssetVerificationPrimary` 精确绑定 session/lane/target/revision 与 Primary WorkItem/WorkerRun/message-chain，只能提交 tagged `investigation_dynamic_verification_primary_turn.v1`，每轮要么动态委派 1–8 个同资产 actor call（八种宽角色可重复），要么以零 subtask 对当前 hypothesis 作 terminal resolve；`AssetVerification` 则精确绑定一个动态 actor call，并可通过 Tool Manager wrapper 连续调用 installed+enabled+ready 工具。Primary 绝不能由 AnalysisPrimary 身份推断，actor 也不能从 role name 推断 authority。所有 delegate subject refs 必须同时且仅指向当前 target 与 hypothesis revision；模型只提交本 session invocation 产生的 audit evidence ids（0..N 合法），opaque authority ids、receipt/hash、worker fence与 authorization 均由 host/DB 派生并复验。

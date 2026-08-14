@@ -58,7 +58,6 @@ function model(): InvestigationWorkspaceModel {
     changeSeq: 7,
     stale: false,
     stageStatus: "verifying",
-    allowPreparedActionJit: true,
     main: actor("main-transcript", "Main", {
       actorId: "main",
       actorKind: "main",
@@ -78,6 +77,7 @@ function model(): InvestigationWorkspaceModel {
             taskId: "analysis-task-1",
             label: "Analysis Task",
             status: "running",
+            primaryAliasLabel: null,
             primary: actor("analysis-primary-transcript", "Analysis Primary", {
               actorId: "analysis-primary",
               actorKind: "primary",
@@ -106,6 +106,7 @@ function model(): InvestigationWorkspaceModel {
           taskId: "verification-task-1",
           label: "Verification Task",
           status: "running",
+          primaryAliasLabel: null,
           primary: actor("verification-primary-transcript", "Verification Primary", {
             actorId: "verification-primary",
             actorKind: "primary",
@@ -140,6 +141,7 @@ function model(): InvestigationWorkspaceModel {
       stageTopologyContract: "unified_investigation_v1",
       investigationRunState: "verifying",
       investigationRunStateHead: "run-head-7",
+      changeSeq: 3,
       stopEpoch: 0,
       stopAllowed: true,
       stopReason: null,
@@ -165,37 +167,36 @@ describe("InvestigationWorkspaceView", () => {
     expect(screen.getByText(/Inspect trust boundary/)).toBeInTheDocument();
     expect(screen.getByText("Dynamic Browser")).toBeInTheDocument();
     expect(screen.getByText("Nested Researcher")).toBeInTheDocument();
+    expect(screen.queryByText("Verification Primary")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /An exact, independently falsifiable claim/ }));
     expect(screen.getByText("Verification Primary")).toBeInTheDocument();
     expect(screen.getByText("Typed Operator")).toBeInTheDocument();
   });
 
-  it("clicking a hypothesis is view-only and keeps JIT and stop as separate controls", () => {
+  it("clicking a hypothesis and campaign remains view-only", () => {
     const onRequestStop = vi.fn();
-    const onPreparedAction = vi.fn();
     render(
       <InvestigationWorkspaceView
         identity={identity}
         state={{ status: "ready", model: model() }}
         onRequestStop={onRequestStop}
-        renderPreparedActions={({ operationId, campaignId }) => {
-          onPreparedAction(operationId, campaignId);
-          return <div>Prepared action control</div>;
-        }}
       />
     );
 
     fireEvent.click(screen.getByRole("button", { name: /An exact, independently falsifiable claim/ }));
     expect(onRequestStop).not.toHaveBeenCalled();
-    expect(onPreparedAction).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Stop Investigation" })).not.toBe(
       screen.getByRole("button", { name: /An exact, independently falsifiable claim/ })
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Campaign 1" }));
-    expect(onPreparedAction).toHaveBeenCalledWith("operation-1", "campaign-1");
+    expect(screen.getByRole("button", { name: "Campaign 1" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   });
 
-  it("selects an exact nested transcript and reports missing identity as unavailable", () => {
+  it("selects an exact nested transcript and never presents the read snapshot as an Agent", () => {
     const { rerender } = render(
       <InvestigationWorkspaceView
         identity={identity}
@@ -209,16 +210,18 @@ describe("InvestigationWorkspaceView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Nested Researcher/ }));
     expect(screen.getByText("stage-run-1::nested-transcript")).toBeInTheDocument();
 
-    const missingReadIdentity = model();
-    missingReadIdentity.organizations[0].readSession!.transcriptRequestId = null;
     rerender(
       <InvestigationWorkspaceView
         identity={identity}
-        state={{ status: "ready", model: missingReadIdentity }}
+        state={{ status: "ready", model: model() }}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: /Bounded read session/ }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Transcript unavailable");
+    expect(
+      screen.queryByRole("button", { name: /Bounded read session/ })
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Bounded read session context snapshot")).toHaveTextContent(
+      "Bounded read session"
+    );
   });
 
   it("fails closed on a foreign topology or incomplete nested parent ownership", () => {
@@ -302,11 +305,11 @@ describe("InvestigationWorkspaceView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stop Investigation" }));
     expect(onRequestStop).toHaveBeenCalledWith({
       identity,
-      expectedChangeSeq: 7,
+      expectedChangeSeq: 3,
       expectedInvestigationRunStateHead: "run-head-7",
     });
-    expect(screen.getByRole("button", { name: "Reset Investigation" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Fork Investigation successor" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Reset Investigation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Fork Investigation successor" })).not.toBeInTheDocument();
   });
 
   it("keeps local focus stable across monotonic refresh and applies a deep-link only once", async () => {
@@ -341,5 +344,84 @@ describe("InvestigationWorkspaceView", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: /Nested Researcher/ })
     );
+  });
+
+  it("follows the selected transcript, pauses for history reading, and follows a newly selected actor", async () => {
+    const first = model();
+    const view = render(
+      <InvestigationWorkspaceView
+        identity={identity}
+        state={{ status: "ready", model: first }}
+        renderTranscript={({ transcriptRequestId }) => <div>{transcriptRequestId}</div>}
+      />
+    );
+    const viewport = screen.getByTestId("investigation-transcript-viewport");
+    let contentHeight = 300;
+    let scrollTop = 0;
+    Object.defineProperties(viewport, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, get: () => contentHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = Math.max(0, Math.min(value, contentHeight - 100));
+        },
+      },
+    });
+    viewport.getBoundingClientRect = () =>
+      ({ top: 100, bottom: 200, height: 100, left: 0, right: 100, width: 100, x: 0, y: 100, toJSON() {} }) as DOMRect;
+    const patchContentGeometry = () => {
+      const content = screen.getByTestId("investigation-transcript-content");
+      Object.defineProperty(content, "scrollHeight", {
+        configurable: true,
+        get: () => contentHeight,
+      });
+      content.getBoundingClientRect = () =>
+        ({
+          top: 100 - scrollTop,
+          bottom: 100 - scrollTop + contentHeight,
+          height: contentHeight,
+          left: 0,
+          right: 100,
+          width: 100,
+          x: 0,
+          y: 100 - scrollTop,
+          toJSON() {},
+        }) as DOMRect;
+    };
+    patchContentGeometry();
+
+    const refreshed = model();
+    refreshed.changeSeq = 8;
+    view.rerender(
+      <InvestigationWorkspaceView
+        identity={identity}
+        state={{ status: "ready", model: refreshed }}
+        renderTranscript={({ transcriptRequestId }) => <div>{transcriptRequestId}</div>}
+      />
+    );
+    await waitFor(() => expect(scrollTop).toBe(200));
+
+    fireEvent.wheel(viewport, { deltaY: -120 });
+    scrollTop = 60;
+    fireEvent.scroll(viewport);
+    contentHeight = 400;
+    const growing = model();
+    growing.changeSeq = 9;
+    view.rerender(
+      <InvestigationWorkspaceView
+        identity={identity}
+        state={{ status: "ready", model: growing }}
+        renderTranscript={({ transcriptRequestId }) => <div>{transcriptRequestId}</div>}
+      />
+    );
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(scrollTop).toBe(60);
+
+    contentHeight = 500;
+    fireEvent.click(screen.getByRole("button", { name: /Dynamic Browser/ }));
+    patchContentGeometry();
+    await waitFor(() => expect(scrollTop).toBe(400));
   });
 });

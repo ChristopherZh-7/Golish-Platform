@@ -32,8 +32,7 @@ struct ProjectionBodyRow {
     payload_valid: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 struct HypothesisBody {
     source_generation_id: Uuid,
     root_id: Uuid,
@@ -51,9 +50,58 @@ struct HypothesisBody {
     target_value_at_time: String,
     origin_decision_hash: String,
     proposal: ProposalBody,
+    relation_sources: Vec<RelationSourceBody>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadModelHypothesisBody {
+    source_generation_id: Uuid,
+    root_id: Uuid,
+    revision_id: Uuid,
+    revision_ordinal: i32,
+    predecessor_revision_id: Option<Uuid>,
+    revision_hash: String,
+    revision_ingredients_hash: String,
+    semantic_key: SemanticKeyBody,
+    semantic_key_hash: String,
+    state: String,
+    lifecycle_state: String,
+    planning_readiness: String,
+    target_type_at_time: String,
+    target_value_at_time: String,
+    origin_decision_hash: String,
+    proposal: ReadModelProposalBody,
     proof_refs: Vec<Value>,
     refutation_refs: Vec<Value>,
     relation_sources: Vec<RelationSourceBody>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompilerHypothesisBody {
+    source_generation_id: Uuid,
+    root_id: Uuid,
+    revision_id: Uuid,
+    revision_ordinal: i32,
+    predecessor_revision_id: Option<Uuid>,
+    revision_hash: String,
+    revision_ingredients_hash: String,
+    semantic_key: SemanticKeyBody,
+    semantic_key_hash: String,
+    state: String,
+    lifecycle_state: String,
+    planning_readiness: String,
+    origin_decision_hash: String,
+    proposal: CompilerProposalBody,
+    origin_authority: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum HypothesisBodyWire {
+    ReadModel(ReadModelHypothesisBody),
+    Compiler(CompilerHypothesisBody),
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,9 +130,19 @@ struct PredicateBody {
     normalized_arguments: Value,
 }
 
+#[derive(Debug)]
+struct ProposalBody {
+    proposal_id: Uuid,
+    subject_kind: String,
+    subject_identity_hash: String,
+    predicate: PredicateBody,
+    trust_boundary: String,
+    polarity: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProposalBody {
+struct ReadModelProposalBody {
     kind: String,
     proposal_id: Uuid,
     subject_kind: String,
@@ -97,6 +155,34 @@ struct ProposalBody {
     priority: i32,
     tags: Vec<String>,
     evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompilerProposalBody {
+    proposal_id: Uuid,
+    subject_kind: String,
+    subject_identity_hash: String,
+    predicate_schema: String,
+    predicate_version: u32,
+    predicate_arguments: Vec<[String; 2]>,
+    trust_boundary: String,
+    polarity: String,
+    structured_claim: String,
+    preconditions: Vec<String>,
+    impact: String,
+    proof_refs: Vec<CompilerProofRefBody>,
+    knowledge_signals: Vec<Value>,
+    readiness: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompilerProofRefBody {
+    input_id: Uuid,
+    chunk_id: Uuid,
+    source_hash: String,
+    source_role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +229,7 @@ enum SourceRefKind {
     ApplicationContext,
     KnowledgeSignal,
     Gap,
+    CompilerProof,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +237,161 @@ struct SourceRef {
     kind: SourceRefKind,
     id: String,
     contradiction: bool,
+}
+
+fn normalize_hypothesis_body(
+    value: Value,
+) -> InvestigationProjectionResult<(HypothesisBody, Vec<SourceRef>)> {
+    let wire: HypothesisBodyWire = serde_json::from_value(value)
+        .map_err(|error| invalid_payload(format!("Hypothesis redacted body: {error}")))?;
+    match wire {
+        HypothesisBodyWire::ReadModel(body) => {
+            let mut source_refs = body
+                .proof_refs
+                .iter()
+                .map(|value| parse_source_ref(value, false))
+                .collect::<InvestigationProjectionResult<Vec<_>>>()?;
+            source_refs.extend(
+                body.refutation_refs
+                    .iter()
+                    .map(|value| parse_source_ref(value, true))
+                    .collect::<InvestigationProjectionResult<Vec<_>>>()?,
+            );
+            let proposal = body.proposal;
+            if proposal.kind != "hypothesis_proposal" {
+                return Err(invalid_payload(
+                    "Hypothesis read-model proposal kind is invalid",
+                ));
+            }
+            let _presentation_only = (
+                proposal.prose.as_str(),
+                proposal.confidence,
+                proposal.priority,
+                proposal.tags.as_slice(),
+                proposal.evidence_refs.as_slice(),
+            );
+            Ok((
+                HypothesisBody {
+                    source_generation_id: body.source_generation_id,
+                    root_id: body.root_id,
+                    revision_id: body.revision_id,
+                    revision_ordinal: body.revision_ordinal,
+                    predecessor_revision_id: body.predecessor_revision_id,
+                    revision_hash: body.revision_hash,
+                    revision_ingredients_hash: body.revision_ingredients_hash,
+                    semantic_key: body.semantic_key,
+                    semantic_key_hash: body.semantic_key_hash,
+                    state: body.state,
+                    lifecycle_state: body.lifecycle_state,
+                    planning_readiness: body.planning_readiness,
+                    target_type_at_time: body.target_type_at_time,
+                    target_value_at_time: body.target_value_at_time,
+                    origin_decision_hash: body.origin_decision_hash,
+                    proposal: ProposalBody {
+                        proposal_id: proposal.proposal_id,
+                        subject_kind: proposal.subject_kind,
+                        subject_identity_hash: proposal.subject_identity_hash,
+                        predicate: proposal.predicate,
+                        trust_boundary: proposal.trust_boundary,
+                        polarity: proposal.polarity,
+                    },
+                    relation_sources: body.relation_sources,
+                },
+                source_refs,
+            ))
+        }
+        HypothesisBodyWire::Compiler(body) => {
+            let proposal = body.proposal;
+            if body.origin_authority != "investigation_compiler"
+                || proposal.readiness != body.planning_readiness
+                || proposal.structured_claim.trim().is_empty()
+                || proposal.impact.trim().is_empty()
+                || proposal
+                    .preconditions
+                    .iter()
+                    .any(|value| value.trim().is_empty())
+            {
+                return Err(invalid_payload(
+                    "Hypothesis compiler proposal authority is inconsistent",
+                ));
+            }
+            let mut normalized_arguments = serde_json::Map::new();
+            for [key, value] in proposal.predicate_arguments {
+                if key.trim().is_empty()
+                    || normalized_arguments
+                        .insert(key, Value::String(value))
+                        .is_some()
+                {
+                    return Err(invalid_payload(
+                        "Hypothesis compiler predicate arguments are invalid",
+                    ));
+                }
+            }
+            let mut source_refs = Vec::with_capacity(proposal.proof_refs.len());
+            for proof in proposal.proof_refs {
+                if proof.input_id.is_nil()
+                    || proof.chunk_id.is_nil()
+                    || !is_sha256(&proof.source_hash)
+                {
+                    return Err(invalid_payload(
+                        "Hypothesis compiler proof authority is malformed",
+                    ));
+                }
+                let (kind, contradiction) = match proof.source_role.as_str() {
+                    "support" => (SourceRefKind::CompilerProof, false),
+                    "contradiction" => (SourceRefKind::CompilerProof, true),
+                    "authorization_use" => (SourceRefKind::ApplicationContext, false),
+                    "gap" => (SourceRefKind::Gap, false),
+                    _ => {
+                        return Err(invalid_payload("Hypothesis compiler proof role is unknown"));
+                    }
+                };
+                source_refs.push(SourceRef {
+                    kind,
+                    id: proof.source_hash,
+                    contradiction,
+                });
+            }
+            // Knowledge signals are presentation-only in this projection;
+            // their exact frozen array is retained but never promoted to a
+            // typed evidence reference by this reader.
+            let _knowledge_signals = proposal.knowledge_signals;
+            let target_value_at_time = body.semantic_key.subject.identity_hash.clone();
+            Ok((
+                HypothesisBody {
+                    source_generation_id: body.source_generation_id,
+                    root_id: body.root_id,
+                    revision_id: body.revision_id,
+                    revision_ordinal: body.revision_ordinal,
+                    predecessor_revision_id: body.predecessor_revision_id,
+                    revision_hash: body.revision_hash,
+                    revision_ingredients_hash: body.revision_ingredients_hash,
+                    semantic_key: body.semantic_key,
+                    semantic_key_hash: body.semantic_key_hash,
+                    state: body.state,
+                    lifecycle_state: body.lifecycle_state,
+                    planning_readiness: body.planning_readiness,
+                    target_type_at_time: "subject_identity_hash".to_owned(),
+                    target_value_at_time,
+                    origin_decision_hash: body.origin_decision_hash,
+                    proposal: ProposalBody {
+                        proposal_id: proposal.proposal_id,
+                        subject_kind: proposal.subject_kind,
+                        subject_identity_hash: proposal.subject_identity_hash,
+                        predicate: PredicateBody {
+                            schema: proposal.predicate_schema,
+                            version: proposal.predicate_version,
+                            normalized_arguments: Value::Object(normalized_arguments),
+                        },
+                        trust_boundary: proposal.trust_boundary,
+                        polarity: proposal.polarity,
+                    },
+                    relation_sources: Vec::new(),
+                },
+                source_refs,
+            ))
+        }
+    }
 }
 
 fn parse_projection_body(
@@ -172,13 +414,11 @@ fn parse_projection_body(
     {
         return Err(invalid_payload("Hypothesis projection identity mismatch"));
     }
-    let body: HypothesisBody =
-        serde_json::from_value(record.record().canonical_redacted_body().as_value().clone())
-            .map_err(|error| invalid_payload(format!("Hypothesis redacted body: {error}")))?;
+    let (body, source_refs) =
+        normalize_hypothesis_body(record.record().canonical_redacted_body().as_value().clone())?;
     if body.root_id.to_string() != row.entity_id
         || body.revision_ordinal.checked_add(1).map(i64::from) != Some(row.entity_version)
         || body.semantic_key.schema != "hypothesis_semantic_key.v1"
-        || body.proposal.kind != "hypothesis_proposal"
         || body.proposal.subject_kind != body.semantic_key.subject.kind
         || body.proposal.subject_identity_hash != body.semantic_key.subject.identity_hash
         || body.proposal.predicate.schema != body.semantic_key.predicate.schema
@@ -221,17 +461,7 @@ fn parse_projection_body(
             return Err(invalid_payload("Hypothesis authority hash is malformed"));
         }
     }
-    // These model-authored presentation fields are intentionally parsed only
-    // to enforce the exact frozen payload. They are never returned by this
-    // read model.
-    let _presentation_only = (
-        body.proposal.proposal_id,
-        body.proposal.prose.as_str(),
-        body.proposal.confidence,
-        body.proposal.priority,
-        body.proposal.tags.as_slice(),
-        body.proposal.evidence_refs.as_slice(),
-    );
+    let _proposal_id = body.proposal.proposal_id;
     for relation in &body.relation_sources {
         if relation.root_id.is_nil()
             || relation.revision_id.is_nil()
@@ -241,13 +471,6 @@ fn parse_projection_body(
         }
     }
 
-    let mut source_refs = Vec::new();
-    for value in body.proof_refs.iter() {
-        source_refs.push(parse_source_ref(value, false)?);
-    }
-    for value in body.refutation_refs.iter() {
-        source_refs.push(parse_source_ref(value, true)?);
-    }
     Ok(ParsedHypothesis {
         body,
         source_refs,
@@ -322,6 +545,7 @@ async fn load_latest_page_on(
     tx: &mut Transaction<'_, Postgres>,
     operation_id: Uuid,
     as_of_change_seq: i64,
+    scope_snapshot_id: Option<Uuid>,
     query: &InvestigationHypothesisListQuery,
 ) -> InvestigationProjectionResult<Vec<ProjectionBodyRow>> {
     let after = query
@@ -358,9 +582,7 @@ async fn load_latest_page_on(
                                   'revision_ordinal','predecessor_revision_id','revision_hash',
                                   'revision_ingredients_hash','semantic_key','semantic_key_hash',
                                   'state','lifecycle_state','planning_readiness',
-                                  'target_type_at_time','target_value_at_time',
-                                  'origin_decision_hash','proposal','proof_refs',
-                                  'refutation_refs','relation_sources'
+                                  'origin_decision_hash','proposal'
                               ]
                           AND latest.projection_body #>>
                               '{record,canonicalRedactedBody,state}' IN (
@@ -402,6 +624,10 @@ async fn load_latest_page_on(
                               '{record,canonicalRedactedBody,proof_refs}')='array'
                            THEN latest.projection_body #>
                               '{record,canonicalRedactedBody,proof_refs}'
+                           WHEN jsonb_typeof(latest.projection_body #>
+                              '{record,canonicalRedactedBody,proposal,proof_refs}')='array'
+                           THEN latest.projection_body #>
+                              '{record,canonicalRedactedBody,proposal,proof_refs}'
                            ELSE '[]'::JSONB END AS proof_refs,
                       CASE WHEN jsonb_typeof(latest.projection_body #>
                               '{record,canonicalRedactedBody,refutation_refs}')='array'
@@ -417,6 +643,7 @@ async fn load_latest_page_on(
                  FROM latest
                  LEFT JOIN operation_org_scope_snapshots scope
                    ON scope.operation_id=$1 AND scope.sealed_at IS NOT NULL
+                  AND ($15::UUID IS NULL OR scope.id=$15)
                  LEFT JOIN operation_org_scope_units scope_unit
                    ON scope_unit.snapshot_id=scope.id
                   AND scope_unit.organization_id::TEXT=latest.projection_body #>>
@@ -441,7 +668,11 @@ async fn load_latest_page_on(
                        WHEN 'VerificationReceipt' THEN 'verification_receipt'
                        WHEN 'ApplicationContext' THEN 'application_context'
                        WHEN 'KnowledgeSignal' THEN 'knowledge_signal'
-                       WHEN 'Gap' THEN 'gap' ELSE '' END = ANY($7)))
+                       WHEN 'Gap' THEN 'gap' ELSE '' END = ANY($7)
+                      OR (source_ref->>'source_role'='authorization_use'
+                          AND 'application_context'=ANY($7))
+                      OR (source_ref->>'source_role'='gap'
+                          AND 'gap'=ANY($7))))
               AND (organization_ordinal,group_key,readiness_rank,epistemic_rank,
                    root_id,revision_ordinal)>($8,$9,$10,$11,$12,$13)
             )
@@ -463,6 +694,7 @@ async fn load_latest_page_on(
     .bind(after.root_id)
     .bind(after.revision_ordinal)
     .bind(limit)
+    .bind(scope_snapshot_id)
     .fetch_all(&mut **tx)
     .await?)
 }
@@ -472,6 +704,7 @@ async fn load_revision_lineage_on(
     operation_id: Uuid,
     as_of_change_seq: i64,
     revision_id: Uuid,
+    scope_snapshot_id: Option<Uuid>,
 ) -> InvestigationProjectionResult<Vec<ProjectionBodyRow>> {
     Ok(sqlx::query_as::<_, ProjectionBodyRow>(
         r#"WITH target AS MATERIALIZED (
@@ -490,6 +723,7 @@ async fn load_revision_lineage_on(
              JOIN target USING(entity_id)
              LEFT JOIN operation_org_scope_snapshots scope
                ON scope.operation_id=$1 AND scope.sealed_at IS NOT NULL
+              AND ($4::UUID IS NULL OR scope.id=$4)
              LEFT JOIN operation_org_scope_units scope_unit
                ON scope_unit.snapshot_id=scope.id
               AND scope_unit.organization_id::TEXT=entity.projection_body #>>
@@ -501,6 +735,7 @@ async fn load_revision_lineage_on(
     .bind(operation_id)
     .bind(as_of_change_seq)
     .bind(revision_id.to_string())
+    .bind(scope_snapshot_id)
     .fetch_all(&mut **tx)
     .await?)
 }
@@ -629,6 +864,7 @@ fn item_from_parsed(
                     SourceRefKind::ToolTruthEvidence
                         | SourceRefKind::Finding
                         | SourceRefKind::VerificationReceipt
+                        | SourceRefKind::CompilerProof
                 )
         })
         .count() as i64;
@@ -642,6 +878,7 @@ fn item_from_parsed(
                     SourceRefKind::ToolTruthEvidence
                         | SourceRefKind::Finding
                         | SourceRefKind::VerificationReceipt
+                        | SourceRefKind::CompilerProof
                 )
         })
         .count() as i64;
@@ -716,11 +953,17 @@ async fn list_investigation_hypotheses_inner(
     }
     let head = snapshot.authority.temporal.as_of_change_seq;
     let page_size = query.page_size.clamp(1, 100) as usize;
-    let mut parsed = load_latest_page_on(&mut snapshot.tx, operation_id, head, &query)
-        .await?
-        .into_iter()
-        .map(parse_projection_body)
-        .collect::<InvestigationProjectionResult<Vec<_>>>()?;
+    let mut parsed = load_latest_page_on(
+        &mut snapshot.tx,
+        operation_id,
+        head,
+        selector.map(|value| value.scope_snapshot_id),
+        &query,
+    )
+    .await?
+    .into_iter()
+    .map(parse_projection_body)
+    .collect::<InvestigationProjectionResult<Vec<_>>>()?;
     let has_more = parsed.len() > page_size;
     parsed.truncate(page_size);
     let root_ids = parsed
@@ -872,11 +1115,17 @@ async fn get_investigation_hypothesis_inner(
         apply_expected_page_authority(&mut snapshot, expected)?;
     }
     let head = snapshot.authority.temporal.as_of_change_seq;
-    let parsed = load_revision_lineage_on(&mut snapshot.tx, operation_id, head, revision_id)
-        .await?
-        .into_iter()
-        .map(parse_projection_body)
-        .collect::<InvestigationProjectionResult<Vec<_>>>()?;
+    let parsed = load_revision_lineage_on(
+        &mut snapshot.tx,
+        operation_id,
+        head,
+        revision_id,
+        selector.map(|value| value.scope_snapshot_id),
+    )
+    .await?
+    .into_iter()
+    .map(parse_projection_body)
+    .collect::<InvestigationProjectionResult<Vec<_>>>()?;
     let Some(target) = parsed
         .iter()
         .find(|row| row.body.revision_id == revision_id)
@@ -949,6 +1198,7 @@ async fn get_investigation_hypothesis_inner(
                         SourceRefKind::ToolTruthEvidence
                             | SourceRefKind::Finding
                             | SourceRefKind::VerificationReceipt
+                            | SourceRefKind::CompilerProof
                     )
             })
             .map(|source| source.id.clone())
@@ -963,6 +1213,7 @@ async fn get_investigation_hypothesis_inner(
                         SourceRefKind::ToolTruthEvidence
                             | SourceRefKind::Finding
                             | SourceRefKind::VerificationReceipt
+                            | SourceRefKind::CompilerProof
                     )
             })
             .map(|source| source.id.clone())
@@ -975,4 +1226,121 @@ async fn get_investigation_hypothesis_inner(
     };
     snapshot.finish().await?;
     Ok(Some(detail))
+}
+
+#[cfg(test)]
+mod compiler_projection_tests {
+    use golish_core::{
+        hypothesis_semantic_key::CanonicalJsonObject,
+        investigation_projection::HypothesisProjectionRecordV1,
+    };
+
+    use super::*;
+
+    fn digest(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn compiler_body(root_id: Uuid, revision_id: Uuid, source_role: &str) -> Value {
+        let organization_id = Uuid::new_v4();
+        let identity_hash = digest('1');
+        serde_json::json!({
+            "source_generation_id": Uuid::new_v4(),
+            "root_id": root_id,
+            "revision_id": revision_id,
+            "revision_ordinal": 0,
+            "predecessor_revision_id": Value::Null,
+            "revision_hash": digest('2'),
+            "revision_ingredients_hash": digest('3'),
+            "semantic_key": {
+                "schema": "hypothesis_semantic_key.v1",
+                "organization_id": organization_id,
+                "subject": {"kind": "endpoint", "identity_hash": identity_hash},
+                "predicate": {
+                    "schema": "typed.verification.route_probe_ready",
+                    "version": 1,
+                    "normalized_arguments": {"route": "/health"}
+                },
+                "trust_boundary": "exact_origin_https://example.test:443_sealed_scope",
+                "polarity": "positive"
+            },
+            "semantic_key_hash": digest('4'),
+            "state": "proposed",
+            "lifecycle_state": "current",
+            "planning_readiness": "ready_for_strategy",
+            "origin_decision_hash": digest('5'),
+            "proposal": {
+                "proposal_id": Uuid::new_v4(),
+                "subject_kind": "endpoint",
+                "subject_identity_hash": identity_hash,
+                "predicate_schema": "typed.verification.route_probe_ready",
+                "predicate_version": 1,
+                "predicate_arguments": [["route", "/health"]],
+                "trust_boundary": "exact_origin_https://example.test:443_sealed_scope",
+                "polarity": "positive",
+                "structured_claim": "Probe the exact frozen route.",
+                "preconditions": ["The exact origin remains in scope."],
+                "impact": "Adjudicates the route hypothesis.",
+                "proof_refs": [{
+                    "input_id": Uuid::new_v4(),
+                    "chunk_id": Uuid::new_v4(),
+                    "source_hash": digest('6'),
+                    "source_role": source_role
+                }],
+                "knowledge_signals": [],
+                "readiness": "ready_for_strategy"
+            },
+            "origin_authority": "investigation_compiler"
+        })
+    }
+
+    fn compiler_row(body: Value, root_id: Uuid) -> ProjectionBodyRow {
+        let body = CanonicalJsonObject::try_from_value(body).expect("canonical compiler body");
+        let entity = ProjectionEntityV1::Hypothesis(
+            HypothesisProjectionRecordV1::try_new(root_id.to_string(), 1, 1, body)
+                .expect("typed compiler projection"),
+        );
+        ProjectionBodyRow {
+            entity_id: root_id.to_string(),
+            entity_version: 1,
+            projection_body: serde_json::to_value(entity).expect("serialize projection"),
+            invalidation_reason: None,
+            organization_ordinal: 0,
+            payload_valid: true,
+        }
+    }
+
+    #[test]
+    fn compiler_projection_normalizes_the_frozen_production_shape() {
+        let root_id = Uuid::new_v4();
+        let revision_id = Uuid::new_v4();
+        let parsed = parse_projection_body(compiler_row(
+            compiler_body(root_id, revision_id, "support"),
+            root_id,
+        ))
+        .expect("parse compiler projection");
+
+        assert_eq!(parsed.body.revision_id, revision_id);
+        assert_eq!(parsed.body.target_type_at_time, "subject_identity_hash");
+        assert_eq!(
+            parsed.body.target_value_at_time,
+            parsed.body.semantic_key.subject.identity_hash
+        );
+        assert_eq!(parsed.source_refs.len(), 1);
+        assert_eq!(parsed.source_refs[0].kind, SourceRefKind::CompilerProof);
+        assert!(!parsed.source_refs[0].contradiction);
+    }
+
+    #[test]
+    fn compiler_projection_rejects_an_unknown_proof_role() {
+        let root_id = Uuid::new_v4();
+        let revision_id = Uuid::new_v4();
+        let error = parse_projection_body(compiler_row(
+            compiler_body(root_id, revision_id, "invented_role"),
+            root_id,
+        ))
+        .expect_err("unknown proof role must fail closed");
+
+        assert!(error.to_string().contains("proof role is unknown"));
+    }
 }

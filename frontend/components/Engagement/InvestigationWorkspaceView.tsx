@@ -1,6 +1,7 @@
 import { AlertTriangle, Bot, Circle, Loader2, OctagonX, Square, Workflow } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
+import { useTranscriptAutoScroll } from "./useTranscriptAutoScroll";
 
 export interface InvestigationStageIdentity {
   operationId: string;
@@ -51,6 +52,8 @@ export interface InvestigationTaskNode {
   status: string;
   /** The shape permits one Primary by construction. */
   primary: InvestigationActorNode | null;
+  /** Historical unified runs can use the same durable actor for Main and Analysis Primary. */
+  primaryAliasLabel: string | null;
   subtasks: InvestigationSubtaskNode[];
   operator?: InvestigationActorNode | null;
 }
@@ -72,6 +75,7 @@ export interface InvestigationHypothesisNode {
   revisionId: string;
   organizationId: string;
   claim: string;
+  exactPredicate?: string;
   epistemicState: string;
   admissionDisposition: string;
   task: InvestigationTaskNode | null;
@@ -84,6 +88,7 @@ export interface InvestigationControlProjection {
   stageTopologyContract: string;
   investigationRunState: string;
   investigationRunStateHead: string;
+  changeSeq: number;
   stopEpoch: number;
   stopAllowed: boolean;
   stopReason: string | null;
@@ -101,7 +106,6 @@ export interface InvestigationWorkspaceModel {
   changeSeq: number;
   stale: boolean;
   stageStatus: string;
-  allowPreparedActionJit: boolean;
   main: InvestigationActorNode | null;
   organizations: InvestigationOrganizationNode[];
   hypotheses: InvestigationHypothesisNode[];
@@ -129,6 +133,7 @@ export type InvestigationWorkspaceSelection =
 
 export interface InvestigationWorkspaceViewProps {
   identity: InvestigationStageIdentity;
+  displayStageRunRequestId?: string | null;
   state: InvestigationWorkspaceState;
   deepLinkTranscriptRequestId?: string | null;
   onBack?: () => void;
@@ -145,7 +150,6 @@ export interface InvestigationWorkspaceViewProps {
     owningStageRunRequestId: string;
     actor: InvestigationActorNode;
   }) => ReactNode;
-  renderPreparedActions?: (identity: { operationId: string; campaignId: string }) => ReactNode;
 }
 
 function sameIdentity(
@@ -164,7 +168,7 @@ function isUnifiedProjection(model: InvestigationWorkspaceModel): boolean {
 }
 
 function statusTone(status: string): string {
-  if (["completed", "verified", "refuted", "terminal"].includes(status)) {
+  if (["passed", "completed", "verified", "refuted", "terminal"].includes(status)) {
     return "text-emerald-300";
   }
   if (status.includes("blocked") || status.includes("recovery") || status.includes("denied")) {
@@ -189,7 +193,6 @@ function modelActors(model: InvestigationWorkspaceModel): InvestigationActorNode
   return [
     ...(model.main ? nestedActors(model.main) : []),
     ...model.organizations.flatMap((organization) => [
-      ...(organization.readSession ? nestedActors(organization.readSession) : []),
       ...organization.analysisTasks.flatMap(taskActors),
     ]),
     ...model.hypotheses.flatMap((hypothesis) =>
@@ -283,6 +286,15 @@ function TaskTree({
           selection={selection}
           onSelect={onSelectActor}
         />
+      ) : task.primaryAliasLabel ? (
+        <div
+          className="flex items-center gap-1.5 px-2 py-1 text-[10px] text-muted-foreground"
+          style={{ paddingLeft: `${8 + (depth + 1) * 12}px` }}
+        >
+          <Bot className="h-3 w-3 shrink-0 text-cyan-300/70" />
+          <span className="min-w-0 flex-1 truncate">{task.primaryAliasLabel}</span>
+          <span className={statusTone(task.status)}>{task.status}</span>
+        </div>
       ) : (
         <div
           role="status"
@@ -416,6 +428,7 @@ function StatePanel({
 
 export function InvestigationWorkspaceView({
   identity,
+  displayStageRunRequestId = null,
   state,
   deepLinkTranscriptRequestId = null,
   onBack,
@@ -424,7 +437,6 @@ export function InvestigationWorkspaceView({
   onRequestReset,
   onRequestSuccessorFork,
   renderTranscript,
-  renderPreparedActions,
 }: InvestigationWorkspaceViewProps) {
   const model = state.status === "ready" || state.status === "stale" ? state.model : null;
   const [selection, setSelection] = useState<InvestigationWorkspaceSelection | null>(() =>
@@ -483,6 +495,15 @@ export function InvestigationWorkspaceView({
           (campaign) => campaign.campaignId === selection.campaignId
         ) ?? null)
       : null;
+  const transcriptFollowIdentity = selectedActor
+    ? `${selectedActor.actorId}:${selectedActor.transcriptRequestId ?? "unavailable"}`
+    : null;
+  const {
+    viewportRef: transcriptViewportRef,
+    contentRef: transcriptContentRef,
+    onViewportScroll: onTranscriptScroll,
+    onViewportWheel: onTranscriptWheel,
+  } = useTranscriptAutoScroll<HTMLElement, HTMLElement>(transcriptFollowIdentity);
 
   return (
     <section
@@ -504,60 +525,60 @@ export function InvestigationWorkspaceView({
           <h2 className="text-xs font-semibold">Investigation</h2>
           <p className="truncate font-mono text-[9px] text-muted-foreground">
             {identity.operationId} · {identity.stageExecutionId ?? "execution pending"} ·{" "}
-            {identity.stageRunRequestId}
+            {displayStageRunRequestId ?? identity.stageRunRequestId}
           </p>
         </div>
         {model && (
           <div className="ml-auto flex items-center gap-2 text-[10px] text-muted-foreground">
             <span>{model.stageStatus}</span>
             <span>projection #{model.changeSeq}</span>
-            <button
-              type="button"
-              aria-label="Stop Investigation"
-              disabled={!model.control.stopAllowed || !onRequestStop}
-              title={
-                model.control.stopAllowed ? undefined : (model.control.stopReason ?? undefined)
-              }
-              className="flex items-center gap-1 rounded border border-red-500/30 px-2 py-1 text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={() =>
-                onRequestStop?.({
-                  identity: model.identity,
-                  expectedChangeSeq: model.changeSeq,
-                  expectedInvestigationRunStateHead: model.control.investigationRunStateHead,
-                })
-              }
-            >
-              <OctagonX className="h-3 w-3" />
-              Stop Investigation
-            </button>
-            <button
-              type="button"
-              aria-label="Reset Investigation"
-              disabled={!model.control.resetAllowed || !onRequestReset}
-              title={
-                model.control.resetAllowed
-                  ? "Reset action is not registered on this direct route"
-                  : (model.control.resetReason ?? undefined)
-              }
-              className="rounded border border-border/30 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={onRequestReset}
-            >
-              Reset
-            </button>
-            <button
-              type="button"
-              aria-label="Fork Investigation successor"
-              disabled={!model.control.forkAllowed || !onRequestSuccessorFork}
-              title={
-                model.control.forkAllowed
-                  ? "Successor fork action is not registered on this direct route"
-                  : (model.control.forkReason ?? undefined)
-              }
-              className="rounded border border-border/30 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={onRequestSuccessorFork}
-            >
-              Fork successor
-            </button>
+            {model.control.stopAllowed && onRequestStop && (
+              <button
+                type="button"
+                aria-label="Stop Investigation"
+                className="flex items-center gap-1 rounded border border-red-500/30 px-2 py-1 text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={() =>
+                  onRequestStop?.({
+                    identity: model.identity,
+                    expectedChangeSeq: model.control.changeSeq,
+                    expectedInvestigationRunStateHead: model.control.investigationRunStateHead,
+                  })
+                }
+              >
+                <OctagonX className="h-3 w-3" />
+                Stop Investigation
+              </button>
+            )}
+            {model.control.resetAllowed && onRequestReset && (
+              <button
+                type="button"
+                aria-label="Reset Investigation"
+                title={
+                  model.control.resetAllowed
+                    ? "Reset action is not registered on this direct route"
+                    : (model.control.resetReason ?? undefined)
+                }
+                className="rounded border border-border/30 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={onRequestReset}
+              >
+                Reset
+              </button>
+            )}
+            {model.control.forkAllowed && onRequestSuccessorFork && (
+              <button
+                type="button"
+                aria-label="Fork Investigation successor"
+                title={
+                  model.control.forkAllowed
+                    ? "Successor fork action is not registered on this direct route"
+                    : (model.control.forkReason ?? undefined)
+                }
+                className="rounded border border-border/30 px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={onRequestSuccessorFork}
+              >
+                Fork successor
+              </button>
+            )}
           </div>
         )}
       </header>
@@ -606,12 +627,20 @@ export function InvestigationWorkspaceView({
                   {organization.label}
                 </div>
                 {organization.readSession ? (
-                  <ActorTree
-                    actor={organization.readSession}
-                    depth={1}
-                    selection={selection}
-                    onSelect={(actor) => setSelection({ kind: "agent", actorId: actor.actorId })}
-                  />
+                  <div
+                    role="note"
+                    aria-label="Bounded read session context snapshot"
+                    className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-muted-foreground"
+                    style={{ paddingLeft: `${8 + 12}px` }}
+                  >
+                    <Workflow className="h-3 w-3 shrink-0 text-cyan-300/70" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {organization.readSession.label}
+                    </span>
+                    <span className={cn("text-[9px]", statusTone(organization.readSession.status))}>
+                      context
+                    </span>
+                  </div>
                 ) : (
                   <div role="alert" className="px-5 py-1 text-[10px] text-amber-300">
                     Read session identity unavailable
@@ -637,6 +666,12 @@ export function InvestigationWorkspaceView({
                     const selected =
                       (selection?.kind === "hypothesis" || selection?.kind === "campaign") &&
                       selection.revisionId === hypothesis.revisionId;
+                    const selectedActorBelongsToTask =
+                      selection?.kind === "agent" &&
+                      hypothesis.task !== null &&
+                      taskActors(hypothesis.task).some(
+                        (actor) => actor.actorId === selection.actorId
+                      );
                     return (
                       <div key={hypothesis.revisionId}>
                         <button
@@ -659,7 +694,7 @@ export function InvestigationWorkspaceView({
                             {hypothesis.epistemicState} · {hypothesis.admissionDisposition}
                           </span>
                         </button>
-                        {hypothesis.task && (
+                        {hypothesis.task && (selected || selectedActorBelongsToTask) && (
                           <TaskTree
                             task={hypothesis.task}
                             depth={2}
@@ -676,7 +711,13 @@ export function InvestigationWorkspaceView({
             ))}
           </nav>
 
-          <main className="min-w-0 flex-1 overflow-y-auto p-4">
+          <main
+            ref={selectedActor ? transcriptViewportRef : undefined}
+            data-testid={selectedActor ? "investigation-transcript-viewport" : undefined}
+            className="min-w-0 flex-1 overflow-y-auto p-4"
+            onScroll={selectedActor ? onTranscriptScroll : undefined}
+            onWheel={selectedActor ? onTranscriptWheel : undefined}
+          >
             {state.status === "stale" && (
               <div
                 role="alert"
@@ -707,7 +748,12 @@ export function InvestigationWorkspaceView({
             )}
 
             {selectedActor && (
-              <section aria-label={`${selectedActor.label} transcript`} className="space-y-3">
+              <section
+                ref={transcriptContentRef}
+                data-testid="investigation-transcript-content"
+                aria-label={`${selectedActor.label} transcript`}
+                className="space-y-3"
+              >
                 <div>
                   <h3 className="text-sm font-semibold">{selectedActor.label}</h3>
                   <p className="mt-1 font-mono text-[10px] text-muted-foreground">
@@ -771,6 +817,15 @@ export function InvestigationWorkspaceView({
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     {selectedHypothesis.epistemicState} · {selectedHypothesis.admissionDisposition}
                   </p>
+                  {selectedHypothesis.exactPredicate &&
+                    selectedHypothesis.exactPredicate !== selectedHypothesis.claim && (
+                      <details className="mt-2 text-[10px] text-muted-foreground">
+                        <summary className="cursor-pointer select-none">Exact predicate</summary>
+                        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded border border-border/25 bg-background/40 p-2">
+                          {selectedHypothesis.exactPredicate}
+                        </pre>
+                      </details>
+                    )}
                 </div>
                 {selectedHypothesis.campaigns.length > 0 && (
                   <div>
@@ -825,11 +880,6 @@ export function InvestigationWorkspaceView({
                     </div>
                   </div>
                 </div>
-                {selectedCampaign &&
-                  renderPreparedActions?.({
-                    operationId: identity.operationId,
-                    campaignId: selectedCampaign.campaignId,
-                  })}
               </section>
             )}
 

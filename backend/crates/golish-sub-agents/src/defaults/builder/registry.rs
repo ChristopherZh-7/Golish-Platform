@@ -5,15 +5,12 @@ use crate::schemas::IMPLEMENTATION_PLAN_FULL_EXAMPLE;
 
 use super::super::prompts::{
     build_adviser_prompt, build_application_understanding_company_synthesizer_prompt,
-    build_application_understanding_shard_modeler_prompt, build_attack_analyst_prompt,
-    build_browser_prompt, build_candidate_hypothesis_analyst_prompt,
-    build_candidate_hypothesis_controller_prompt, build_candidate_verifier_prompt,
-    build_coder_prompt, build_enricher_prompt, build_enumerator_prompt, build_installer_prompt,
-    build_memorist_prompt, build_merge_conflict_critic_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_post_exploit_operator_prompt,
-    build_prober_prompt, build_recon_prompt, build_refiner_prompt, build_reflector_prompt,
-    build_reporter_prompt, build_researcher_prompt_fallback, build_resolution_analyst_prompt,
-    build_vuln_scanner_prompt,
+    build_application_understanding_shard_modeler_prompt, build_browser_prompt, build_coder_prompt,
+    build_enricher_prompt, build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
+    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt,
+    build_post_exploit_operator_prompt, build_prober_prompt, build_recon_prompt,
+    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt,
+    build_researcher_prompt_fallback, build_resolution_analyst_prompt, build_vuln_scanner_prompt,
 };
 
 /// Create default sub-agents with prompts loaded from the template registry.
@@ -204,22 +201,6 @@ pub async fn create_default_sub_agents_from_registry(
 
     agents.push(
         SubAgentDefinition::new(
-            "attack_analyst",
-            "Attack Analyst",
-            "Reasoning-only attack_candidate specialist. Produces bounded Candidate plans from durable facts and evidence; it never executes verification actions.",
-            build_attack_analyst_prompt(),
-        )
-        .with_tools(vec![
-            "query_target_data".into(),
-            "list_recent_evidence".into(),
-            "submit_stage_deliverable".into(),
-        ])
-        .with_max_iterations(30)
-        .with_idle_timeout(180),
-    );
-
-    agents.push(
-        SubAgentDefinition::new(
             "application_understanding_shard_modeler",
             "Application Understanding Shard Modeler",
             "Closed semantic modeler for one host-frozen application shard. It cannot collect data or cross identity boundaries.",
@@ -243,63 +224,6 @@ pub async fn create_default_sub_agents_from_registry(
         .with_max_iterations(8)
         .with_max_tokens(32_768)
         .with_idle_timeout(180),
-    );
-
-    // Candidate registry analysis uses hardcoded, host-reviewed prompts. A
-    // mutable prompt-registry override must not widen this closed authority.
-    agents.push(
-        SubAgentDefinition::new(
-            "candidate_hypothesis_controller",
-            "Candidate Hypothesis Controller",
-            "Read-only Controller over one server-frozen Candidate snapshot; the unique final submitter for the closed analysis team.",
-            build_candidate_hypothesis_controller_prompt(),
-        )
-        .with_tools(vec!["submit_result".into()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180),
-    );
-
-    agents.push(
-        SubAgentDefinition::new(
-            "candidate_hypothesis_analyst",
-            "Candidate Hypothesis Analyst",
-            "Read-only analyst over one server-frozen Candidate microbatch.",
-            build_candidate_hypothesis_analyst_prompt(),
-        )
-        .with_tools(vec!["submit_result".into()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180),
-    );
-
-    agents.push(
-        SubAgentDefinition::new(
-            "merge_conflict_critic",
-            "Merge Conflict Critic",
-            "Read-only critic for closed proposal-conflict, coverage-subreview, and synthesis artifacts.",
-            build_merge_conflict_critic_prompt(),
-        )
-        .with_tools(vec!["submit_result".into()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180),
-    );
-
-    agents.push(
-        SubAgentDefinition::new(
-            "candidate_verifier",
-            "Candidate Verifier",
-            "Foreground-only verifier for one scheduler-bound CandidateAttempt. Executes only canonical DB-authorized action ordinals.",
-            build_candidate_verifier_prompt(),
-        )
-        .with_tools(vec![
-            "verify_execute_candidate_action".into(),
-            "list_recent_evidence".into(),
-            "submit_candidate_attempt".into(),
-        ])
-        .with_max_iterations(30)
-        .with_idle_timeout(300),
     );
 
     agents.push(
@@ -596,8 +520,5 @@ pub async fn create_default_sub_agents_from_registry(
         .as_pipeline_only(),
     );
 
-    // Campaign authority roles always use the host-reviewed static prompts;
-    // prompt-registry overrides cannot widen this closed surface.
-    agents.extend(super::verification_campaign_agent_definitions());
     agents
 }

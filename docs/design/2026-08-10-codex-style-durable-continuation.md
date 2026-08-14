@@ -105,3 +105,36 @@ the product must not run two copies of the same frozen producer manifest.
 - Malformed/foreign/stale operation-state slots fail closed.
 - A retained real operation can continue without repeated user messages until
   it reaches a genuine authorization/Gate boundary.
+
+## Unified Investigation retained-child continuation
+
+The 2026-08-11 retained Moresec run exposed a separate restart seam after the
+Analysis Primary had already accepted and persisted a dynamic child. The
+static Stage Team seed deliberately contains only server-seeded items, so a
+restart must not infer that the accepted child disappeared merely because it
+is absent from the seed response.
+
+The recovery contract is therefore exact and additive:
+
+- the host reloads the persisted WorkItem by its durable id and verifies the
+  same operation, StageExecution, Unit, scope, organization and TeamPlan;
+- the accepted dispatch receipt and latest Refiner patch are reloaded from the
+  same authority instead of rebuilt from current mutable context;
+- a Primary parked at `waiting_dependency` can be returned read-only only when
+  exactly one pending child is attached to that Primary; no fake lease or new
+  message chain is created;
+- the scheduler treats that witnessed Primary as planning-only and resumes the
+  exact child identity, including deterministic sibling retry after a failed
+  Worker;
+- Main read-session replay uses the sealed ContextPack/methodology census and
+  domain-separated Refiner payload hash. It never re-runs mutable RAG reads to
+  impersonate the original session.
+
+This contract was exercised by operation
+`4d5f17a5-88f5-423e-9dcb-3e9cad6e1003`: five Analysis children completed,
+four Verification Campaigns reached terminal state, one missing
+`submit_result` was repaired on the same chain, one failed Worker converged via
+an exact sibling retry, and the Main stage retry reached `pass_with_gaps`
+without another user continuation. Reporting then created validated concise
+revision `287cbf51-aec7-5254-936c-4029d18c9d31` and the task became
+`finished`.

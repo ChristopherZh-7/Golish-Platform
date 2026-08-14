@@ -19,53 +19,99 @@ export interface ChatAutoScrollState {
   chatAtBottomRef: React.MutableRefObject<boolean>;
 }
 
-export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollState {
+export interface ChatAutoScrollOptions {
+  /** The heavy ChatPanel DOM is absent while a full-width detail owns the UI. */
+  active?: boolean;
+  /** Resets/restores viewport intent independently for each conversation. */
+  scrollKey?: string;
+}
+
+interface ChatScrollSnapshot {
+  scrollTop: number;
+  userScrolledUp: boolean;
+  atBottom: boolean;
+}
+
+function isChatBottom(container: HTMLDivElement): boolean {
+  const { scrollTop, scrollHeight, clientHeight } = container;
+  return scrollHeight - scrollTop - clientHeight < 80;
+}
+
+export function useChatAutoScroll<T>(
+  messages: readonly T[],
+  { active = true, scrollKey = "default" }: ChatAutoScrollOptions = {}
+): ChatAutoScrollState {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const chatAtBottomRef = useRef(true);
   const userScrolledUpRef = useRef(false);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  const boundContainerRef = useRef<HTMLDivElement | null>(null);
+  const boundScrollKeyRef = useRef<string | null>(null);
+  const snapshotsRef = useRef(new Map<string, ChatScrollSnapshot>());
 
-  const scheduleScrollToBottom = useCallback(() => {
-    if (userScrolledUpRef.current || scrollFrameRef.current != null) return;
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = null;
-      if (userScrolledUpRef.current) return;
-      const el = messagesContainerRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+  const rememberPosition = useCallback((container: HTMLDivElement, key: string) => {
+    const atBottom = isChatBottom(container);
+    chatAtBottomRef.current = atBottom;
+    snapshotsRef.current.set(key, {
+      scrollTop: container.scrollTop,
+      userScrolledUp: userScrolledUpRef.current,
+      atBottom,
     });
   }, []);
 
+  const schedulePosition = useCallback((position: "bottom" | number, force = false) => {
+    if (!force && userScrolledUpRef.current) return;
+    if (scrollFrameRef.current != null) {
+      if (!force) return;
+      cancelAnimationFrame(scrollFrameRef.current);
+    }
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      if (!force && userScrolledUpRef.current) return;
+      const container = messagesContainerRef.current;
+      if (!container) return;
+      container.scrollTop = position === "bottom" ? container.scrollHeight : position;
+      chatAtBottomRef.current = isChatBottom(container);
+      snapshotsRef.current.set(boundScrollKeyRef.current ?? "default", {
+        scrollTop: container.scrollTop,
+        userScrolledUp: userScrolledUpRef.current,
+        atBottom: chatAtBottomRef.current,
+      });
+    });
+  }, []);
+
+  const scheduleScrollToBottom = useCallback(() => {
+    schedulePosition("bottom");
+  }, [schedulePosition]);
+
   useEffect(() => {
+    if (!active) return;
     const container = messagesContainerRef.current;
     if (!container) return;
-
-    const isAtBottom = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      return scrollHeight - scrollTop - clientHeight < 80;
-    };
 
     const handleWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) {
         userScrolledUpRef.current = true;
       } else if (e.deltaY > 0) {
         requestAnimationFrame(() => {
-          if (isAtBottom()) userScrolledUpRef.current = false;
+          if (isChatBottom(container)) userScrolledUpRef.current = false;
         });
       }
     };
 
     const handleScroll = () => {
-      chatAtBottomRef.current = isAtBottom();
+      rememberPosition(container, scrollKey);
     };
 
     container.addEventListener("wheel", handleWheel, { passive: true });
     container.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
+      rememberPosition(container, scrollKey);
       container.removeEventListener("wheel", handleWheel);
       container.removeEventListener("scroll", handleScroll);
     };
-  }, []);
+  }, [active, rememberPosition, scrollKey]);
 
   // Keep the chat pinned to the bottom whenever the scrollable *content* grows,
   // not only when the `messages` array changes. The preparing indicator,
@@ -81,8 +127,25 @@ export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollStat
   // that swap the array reference) keeps content arriving at the bottom without
   // a paint flicker.
   useLayoutEffect(() => {
+    if (!active) {
+      const previous = boundContainerRef.current;
+      const previousKey = boundScrollKeyRef.current;
+      if (previous && previousKey) rememberPosition(previous, previousKey);
+      resizeObserverRef.current?.disconnect();
+      boundContainerRef.current = null;
+      boundScrollKeyRef.current = null;
+      if (scrollFrameRef.current != null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+      return;
+    }
     const container = messagesContainerRef.current;
     if (!container) return;
+    const viewportChanged =
+      boundContainerRef.current !== container || boundScrollKeyRef.current !== scrollKey;
+    boundContainerRef.current = container;
+    boundScrollKeyRef.current = scrollKey;
 
     if (!resizeObserverRef.current) {
       resizeObserverRef.current = new ResizeObserver(() => {
@@ -93,8 +156,15 @@ export function useChatAutoScroll<T>(messages: readonly T[]): ChatAutoScrollStat
     ro.disconnect();
     ro.observe(container.firstElementChild ?? container);
 
-    scheduleScrollToBottom();
-  }, [messages, scheduleScrollToBottom]);
+    if (viewportChanged) {
+      const snapshot = snapshotsRef.current.get(scrollKey);
+      userScrolledUpRef.current = snapshot?.userScrolledUp ?? false;
+      chatAtBottomRef.current = snapshot?.atBottom ?? true;
+      schedulePosition(snapshot?.userScrolledUp ? snapshot.scrollTop : "bottom", true);
+    } else {
+      scheduleScrollToBottom();
+    }
+  }, [active, messages, rememberPosition, schedulePosition, scheduleScrollToBottom, scrollKey]);
 
   // Tear down the observer on unmount.
   useEffect(() => {

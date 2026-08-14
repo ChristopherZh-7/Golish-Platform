@@ -2695,6 +2695,7 @@ fn submit_result_result_event(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn submit_result_events(
     agent_id: &str,
     args: &serde_json::Value,
@@ -2934,8 +2935,6 @@ where
     M: RigCompletionModel + Sync,
     P: ToolProvider,
 {
-    use super::tool_setup::is_closed_candidate_analysis_role;
-
     let agent_id = &agent_def.id;
     let mut tool_results: Vec<UserContent> = vec![];
     let mut barrier_hit = false;
@@ -2949,8 +2948,6 @@ where
 
     for tool_call in tool_calls {
         let tool_name = &tool_call.function.name;
-        let closed_candidate_forbidden =
-            is_closed_candidate_analysis_role(agent_id) && tool_name.as_str() != BARRIER_TOOL_NAME;
         if ctx
             .bound_worker_chain
             .as_ref()
@@ -2973,7 +2970,7 @@ where
                 cancelled: true,
             };
         }
-        if hard_supervisor_active || barrier_hit || closed_candidate_forbidden {
+        if hard_supervisor_active || barrier_hit {
             let tool_args = if tool_name == "run_pty_cmd" {
                 tool_provider.normalize_run_pty_cmd_args(tool_call.function.arguments.clone())
             } else {
@@ -2999,13 +2996,7 @@ where
                 });
             }
 
-            let result_value = if closed_candidate_forbidden {
-                serde_json::json!({
-                    "error": "Closed Candidate analysis roles may call only submit_result; the requested tool was not executed.",
-                    "code": "CANDIDATE_ANALYSIS_TOOL_FORBIDDEN",
-                    "allowed_tools": [BARRIER_TOOL_NAME],
-                })
-            } else if barrier_hit {
+            let result_value = if barrier_hit {
                 serde_json::json!({
                     "error": "Skipped without execution because submit_result is a terminal barrier for this tool batch.",
                     "blocked_by_result_barrier": true,
@@ -4515,6 +4506,7 @@ mod tests {
             target_intel_review: None,
             stage_team_output_schema: None,
             terminal_execution: None,
+            investigation_actor_contract: None,
             chain_id: Uuid::new_v4(),
             session_id: Uuid::new_v4(),
             agent_type: "recon".to_string(),

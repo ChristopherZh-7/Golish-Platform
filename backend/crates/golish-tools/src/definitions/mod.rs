@@ -69,6 +69,15 @@ mod tests {
         assert!(names.contains(&"edit_file"));
         assert!(names.contains(&"delete_file"));
 
+        let query_target_data = declarations
+            .iter()
+            .find(|declaration| declaration.name == "query_target_data")
+            .expect("query_target_data declaration");
+        assert_eq!(
+            query_target_data.parameters["properties"]["exact_origin"]["type"],
+            json!("string")
+        );
+
         assert!(names.contains(&"list_files"));
         assert!(names.contains(&"list_directory"));
         assert!(names.contains(&"grep_file"));

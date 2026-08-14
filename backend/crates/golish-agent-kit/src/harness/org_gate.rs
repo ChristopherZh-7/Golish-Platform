@@ -68,6 +68,7 @@ const VULN_TRIAGE_TECHNIQUES: [&str; 10] = [
 const TRUSTED_ENUM_BLOCKED_SOURCE: &str = "enum_preflight_web_origins";
 const TRUSTED_ENUM_ROUTE_RECOVERY_BLOCKED_SOURCE: &str = "route_probe_paths";
 const TRUSTED_ENUM_COLLECTION_RECOVERY_BLOCKED_SOURCE: &str = "browser_collect_js_api";
+const TRUSTED_EAS_PORT_POLICY_BLOCKED_SOURCE: &str = "eas_discover_ports_policy";
 const TRUSTED_EAS_WEB_BLOCKED_SOURCE: &str = "eas_fingerprint_web_stack";
 const TRUSTED_VULN_ANONYMOUS_ACCESS_SOURCE: &str = "vuln_probe_anonymous_access";
 
@@ -185,6 +186,23 @@ fn trusted_enumeration_blocked_source(
         ),
         _ => false,
     }
+}
+
+fn trusted_eas_blocked_source(asset: &str, technique: &str, source: Option<&str>) -> bool {
+    if technique == TECH_EAS_WEB_FP && source == Some(TRUSTED_EAS_WEB_BLOCKED_SOURCE) {
+        return golish_pentest_domain::canonical_web_origin(asset).is_some();
+    }
+    if source != Some(TRUSTED_EAS_PORT_POLICY_BLOCKED_SOURCE) {
+        return false;
+    }
+    golish_pentest_domain::canonical_asset_key(asset).is_some_and(|key| match technique {
+        TECH_EAS_LIVENESS | TECH_EAS_PORT => matches!(
+            key.class,
+            golish_pentest_domain::AssetClass::Ip | golish_pentest_domain::AssetClass::Cidr
+        ),
+        TECH_EAS_SERVICE_FP => key.class == golish_pentest_domain::AssetClass::Ip,
+        _ => false,
+    })
 }
 
 pub type ExactWebOriginCoverageAxis = (Vec<String>, Vec<(String, String)>);
@@ -462,12 +480,10 @@ pub fn apply_technique_outcome_rows_for_contract(
         }
         if stage == StageKind::ExternalAttackSurface && EAS_TECHNIQUES.contains(&technique.as_str())
         {
-            let trusted_web_blocked = technique == TECH_EAS_WEB_FP
-                && outcome == "blocked"
-                && source.as_deref() == Some(TRUSTED_EAS_WEB_BLOCKED_SOURCE)
-                && golish_pentest_domain::canonical_web_origin(asset).is_some();
+            let trusted_producer_blocked = outcome == "blocked"
+                && trusted_eas_blocked_source(asset, technique, source.as_deref());
             if *evidence_id <= 0
-                || (!matches!(outcome.as_str(), "found" | "empty") && !trusted_web_blocked)
+                || (!matches!(outcome.as_str(), "found" | "empty") && !trusted_producer_blocked)
             {
                 return None;
             }
@@ -2522,6 +2538,84 @@ mod tests {
             assert!(
                 facts.is_empty(),
                 "untrusted EAS blocked row leaked: {row:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn eas_port_policy_blocked_requires_trusted_ip_producer_and_exact_guarded_evidence() {
+        let asset = "61.130.180.110";
+        for (offset, technique) in [TECH_EAS_LIVENESS, TECH_EAS_PORT, TECH_EAS_SERVICE_FP]
+            .into_iter()
+            .enumerate()
+        {
+            let evidence_id = 60 + offset as i64;
+            let guarded = EvidenceFact {
+                asset: asset.to_string(),
+                technique: technique.to_string(),
+                outcome: EvidenceOutcome::Blocked,
+                evidence_id,
+            };
+            let trusted = TechniqueOutcomeFact::new(
+                asset,
+                technique,
+                "blocked",
+                evidence_id,
+                Some("eas_discover_ports_policy".to_string()),
+            );
+            let mut facts = vec![guarded.clone()];
+            apply_technique_outcome_rows(
+                StageKind::ExternalAttackSurface,
+                &mut facts,
+                std::slice::from_ref(&trusted),
+            );
+            assert_eq!(facts, vec![guarded], "trusted {technique} residual");
+        }
+
+        for row in [
+            TechniqueOutcomeFact::new(
+                asset,
+                TECH_EAS_PORT,
+                "blocked",
+                61,
+                Some("model_authored".to_string()),
+            ),
+            TechniqueOutcomeFact::new(
+                "moresec.cn",
+                TECH_EAS_PORT,
+                "blocked",
+                61,
+                Some("eas_discover_ports_policy".to_string()),
+            ),
+            TechniqueOutcomeFact::new(
+                asset,
+                TECH_EAS_PORT,
+                "blocked",
+                999,
+                Some("eas_discover_ports_policy".to_string()),
+            ),
+            TechniqueOutcomeFact::new(
+                asset,
+                TECH_EAS_WEB_FP,
+                "blocked",
+                61,
+                Some("eas_discover_ports_policy".to_string()),
+            ),
+        ] {
+            let mut facts = vec![EvidenceFact {
+                asset: asset.to_string(),
+                technique: TECH_EAS_PORT.to_string(),
+                outcome: EvidenceOutcome::Blocked,
+                evidence_id: 61,
+            }];
+            apply_technique_outcome_rows(
+                StageKind::ExternalAttackSurface,
+                &mut facts,
+                std::slice::from_ref(&row),
+            );
+            assert!(
+                facts.is_empty(),
+                "untrusted EAS port-policy blocked row leaked: {row:?}"
             );
         }
     }

@@ -12,7 +12,6 @@ use super::profile::{load_profile_from_json, Profile, ProfileLoadError};
 use super::sprint_contract::SprintSkeleton;
 use super::stage_spec::{load_stage_spec_from_json, StageSpec, StageSpecLoadError};
 use super::types::StageKind;
-use super::InvestigationOperatorToolCatalogV1;
 
 macro_rules! stage_json {
     ($p:literal) => {
@@ -57,17 +56,6 @@ pub fn stage_spec_json(kind: StageKind) -> &'static str {
     }
 }
 
-/// Embedded host-owned catalog for Investigation Operator tools. Cognitive
-/// workers never read this resource; only the host admission boundary does.
-pub fn investigation_tool_catalog_json() -> &'static str {
-    stage_json!("investigation/tool_catalog.json")
-}
-
-pub fn load_embedded_investigation_tool_catalog(
-) -> Result<InvestigationOperatorToolCatalogV1, super::InvestigationToolCatalogError> {
-    InvestigationOperatorToolCatalogV1::parse_and_validate(investigation_tool_catalog_json())
-}
-
 /// 所有内嵌 profile 的 id，单一来源（与 [`profile_json`] 的 match 臂一一对应）。
 /// 顺序即 UI 列表呈现顺序：最安全的 assessment 在前，最激进的 red_team 在后。
 /// 新增一个 profile JSON 时，在此数组与 [`profile_json`] 各加一行即可，前端零改动。
@@ -97,25 +85,7 @@ pub fn profile_json(id: &str) -> Option<&'static str> {
 
 /// 按 kind 加载 + 解析 stage spec.
 pub fn load_embedded_stage_spec(kind: StageKind) -> Result<StageSpec, StageSpecLoadError> {
-    let spec = load_stage_spec_from_json(stage_spec_json(kind))?;
-    if kind == StageKind::Investigation {
-        let catalog = load_embedded_investigation_tool_catalog().map_err(|error| {
-            StageSpecLoadError::InvalidContract(format!(
-                "Investigation operator tool catalog is invalid: {error}"
-            ))
-        })?;
-        let reference = spec.operator_tool_catalog.as_ref().ok_or_else(|| {
-            StageSpecLoadError::InvalidContract(
-                "Investigation operator tool catalog reference is missing".to_string(),
-            )
-        })?;
-        if reference.canonical_sha256 != catalog.contract_sha256() {
-            return Err(StageSpecLoadError::InvalidContract(
-                "Investigation operator tool catalog content hash drifted".to_string(),
-            ));
-        }
-    }
-    Ok(spec)
+    load_stage_spec_from_json(stage_spec_json(kind))
 }
 
 /// 按 stage kind 取嵌入的「阶段方法论 playbook」原文 (`<stage>/methodology.md`).

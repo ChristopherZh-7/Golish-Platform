@@ -1,13 +1,16 @@
 //! Immutable Company Identity receipts frozen by Scoping.
 
+use std::collections::BTreeMap;
+
 use anyhow::{bail, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::audit;
+use crate::DbError;
 
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct ScopingCompanyIdentityReceiptRow {
@@ -41,6 +44,560 @@ pub struct TrustedCompanyIdentityIntake {
     pub organization_id: Uuid,
     pub canonical_legal_name: String,
     pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct HumanSelectionToolCallRow {
+    id: Uuid,
+    session_id: Uuid,
+    name: String,
+    args: Value,
+    result: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+struct HumanSelectedCandidate {
+    ask_human_tool_call_id: Uuid,
+    ask_human_session_id: Uuid,
+    ask_human_created_at: DateTime<Utc>,
+    candidate: Value,
+}
+
+/// Promote one exact interactive Scoping candidate without trusting model prose.
+///
+/// The ordinary happy path remains a second `recon_lookup_company` call with a
+/// host-issued `selected_candidate_id`. This recovery path exists because a
+/// completed Human choice and root-organization creation are already durable
+/// authority even when the model forgets that second resolver call. Every row
+/// remains bound to the caller's operation and active Scoping execution.
+pub async fn promote_exact_human_selection_on(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+    root_organization_id: Uuid,
+) -> crate::Result<Option<ScopingCompanyIdentityReceiptRow>> {
+    if let Some(confirmed) = load_confirmed_on(connection, operation_id).await? {
+        return Ok(Some(confirmed));
+    }
+
+    let Some(pending) =
+        load_latest_needs_human_on(connection, operation_id, stage_execution_id).await?
+    else {
+        return Ok(None);
+    };
+    let pending_created_at: DateTime<Utc> = sqlx::query_scalar(
+        "SELECT created_at FROM scoping_company_identity_receipts WHERE id=$1 FOR SHARE",
+    )
+    .bind(pending.id)
+    .fetch_one(&mut *connection)
+    .await?;
+    let tool_calls = sqlx::query_as::<_, HumanSelectionToolCallRow>(
+        r#"SELECT id,session_id,name,args,result,created_at
+             FROM tool_calls
+            WHERE operation_id=$1 AND stage_execution_id=$2
+              AND status='finished' AND created_at >= $3
+              AND name IN ('ask_human','manage_organizations')
+            ORDER BY created_at,id
+            FOR SHARE"#,
+    )
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .bind(pending_created_at)
+    .fetch_all(&mut *connection)
+    .await?;
+    let Some(selected) = latest_exact_human_selection(&pending, &tool_calls) else {
+        return Ok(None);
+    };
+    let candidate_id = selected
+        .candidate
+        .get("candidate_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let canonical_legal_name = selected
+        .candidate
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    if candidate_id.is_empty() || canonical_legal_name.is_empty() {
+        return Ok(None);
+    }
+    let Some(create_tool_call_id) = exact_root_create_after_selection(
+        &tool_calls,
+        &selected,
+        root_organization_id,
+        canonical_legal_name,
+    ) else {
+        return Ok(None);
+    };
+
+    let organization: Option<(String, Option<Uuid>, String)> = sqlx::query_as(
+        r#"SELECT organization.name,organization.parent_id,scope.canonical_project_path
+             FROM operation_state operation
+             JOIN project_scopes scope
+               ON scope.project_scope_id=operation.project_scope_id
+              AND scope.retired_at IS NULL
+             JOIN organizations organization
+               ON organization.id=$2
+              AND organization.project_path=scope.canonical_project_path
+            WHERE operation.operation_id=$1
+              AND operation.current_stage='scoping'
+              AND operation.superseded_by IS NULL
+            FOR SHARE"#,
+    )
+    .bind(operation_id)
+    .bind(root_organization_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    let Some((organization_name, parent_id, canonical_project_path)) = organization else {
+        return Ok(None);
+    };
+    if parent_id.is_some() || organization_name.trim() != canonical_legal_name {
+        return Ok(None);
+    }
+
+    let trusted_roots = pending
+        .scope_policy
+        .get("trusted_roots")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let identity_payload = serde_json::json!({
+        "candidate_id": candidate_id,
+        "canonical_legal_name": canonical_legal_name,
+        "credit_code": selected.candidate.get("credit_code").cloned().unwrap_or(Value::Null),
+        "industry": selected.candidate.get("industry").cloned().unwrap_or(Value::Null),
+        "legal_representative": selected.candidate.get("legal_representative").cloned().unwrap_or(Value::Null),
+        "address": selected.candidate.get("address").cloned().unwrap_or(Value::Null),
+        "registered_at": selected.candidate.get("registered_at").cloned().unwrap_or(Value::Null),
+        "provider_id": selected.candidate.get("provider_id").cloned().unwrap_or(Value::Null),
+        "evidence": selected.candidate.get("evidence").cloned().unwrap_or(Value::Null),
+        "trusted_roots": trusted_roots,
+        "human_confirmation": {
+            "ask_human_tool_call_id": selected.ask_human_tool_call_id,
+            "create_tool_call_id": create_tool_call_id,
+        }
+    });
+    let identity_sha256 = prefixed_sha256(&identity_payload).map_err(DbError::Other)?;
+    let scope_policy = pending.scope_policy.clone();
+    let scope_policy_sha256 = prefixed_sha256(&scope_policy).map_err(DbError::Other)?;
+    let resolution_attempt = pending.resolution_attempt.saturating_add(1);
+    let created_at = Utc::now();
+    let session_id = selected.ask_human_session_id.to_string();
+    let evidence = audit::log_evidence_in_transaction(
+        connection,
+        "scoping_human_selected_company_identity",
+        "scoping",
+        "scoping.company_identity.human_selection.v1",
+        Some(&canonical_project_path),
+        "harness",
+        None,
+        Some(&session_id),
+        Some("ask_human"),
+        &serde_json::json!({
+            "kind": "scoping.company_identity.human_selection",
+            "operation_id": operation_id,
+            "stage_execution_id": stage_execution_id,
+            "organization_id": root_organization_id,
+            "candidate_id": candidate_id,
+            "supersedes_receipt_id": pending.id,
+            "ask_human_tool_call_id": selected.ask_human_tool_call_id,
+            "create_tool_call_id": create_tool_call_id,
+            "identity_sha256": identity_sha256,
+            "scope_policy_sha256": scope_policy_sha256,
+        }),
+        Some(operation_id),
+        None,
+        Some(canonical_legal_name),
+        Some("confirmed"),
+        created_at,
+    )
+    .await?;
+    let evidence_ref = format!("audit:{}", evidence.id);
+    let mut source_receipt_refs = json_string_values(&pending.source_receipt_refs);
+    source_receipt_refs.push(format!("tool_call:{}", selected.ask_human_tool_call_id));
+    source_receipt_refs.push(format!("tool_call:{create_tool_call_id}"));
+    source_receipt_refs.push(evidence_ref.clone());
+    source_receipt_refs.sort();
+    source_receipt_refs.dedup();
+    let mut evidence_refs = json_string_values(&pending.evidence_refs);
+    evidence_refs.push(evidence_ref.clone());
+    evidence_refs.sort();
+    evidence_refs.dedup();
+    let mut artifact_refs = json_string_values(&pending.artifact_refs);
+    artifact_refs.push(evidence_ref);
+    artifact_refs.sort();
+    artifact_refs.dedup();
+    let mut disambiguation_fields = pending
+        .disambiguation_fields
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    disambiguation_fields.insert(
+        "selected_candidate_id".to_string(),
+        Value::String(candidate_id.to_string()),
+    );
+    disambiguation_fields.insert(
+        "ask_human_tool_call_id".to_string(),
+        Value::String(selected.ask_human_tool_call_id.to_string()),
+    );
+    disambiguation_fields.insert(
+        "create_tool_call_id".to_string(),
+        Value::String(create_tool_call_id.to_string()),
+    );
+    let receipt = ScopingCompanyIdentityReceiptRow {
+        id: Uuid::new_v5(
+            &operation_id,
+            format!("company-identity:{resolution_attempt}:{identity_sha256}").as_bytes(),
+        ),
+        operation_id,
+        stage_execution_id,
+        resolution_attempt,
+        supersedes_receipt_id: Some(pending.id),
+        organization_id: Some(root_organization_id),
+        subject_hint: pending.subject_hint,
+        canonical_legal_name: Some(canonical_legal_name.to_string()),
+        aliases: pending.aliases,
+        brands: pending.brands,
+        registration_identifiers: serde_json::json!({
+            "credit_code": selected.candidate.get("credit_code").cloned().unwrap_or(Value::Null),
+            "provider_id": selected.candidate.get("provider_id").cloned().unwrap_or(Value::Null),
+        }),
+        disambiguation_fields: Value::Object(disambiguation_fields),
+        confirmation_method: "human_selected".to_string(),
+        resolution_status: "confirmed".to_string(),
+        scope_policy,
+        source_receipt_refs: serde_json::json!(source_receipt_refs),
+        artifact_refs: serde_json::json!(artifact_refs),
+        evidence_refs: serde_json::json!(evidence_refs),
+        identity_payload,
+        identity_sha256,
+        scope_policy_sha256,
+    };
+    validate_receipt(&receipt).map_err(DbError::Other)?;
+    insert_receipt_on(connection, &receipt).await?;
+    Ok(Some(receipt))
+}
+
+/// Validate the immutable Human-choice/root-create witness needed to resume a
+/// pre-freeze Scoping execution.
+///
+/// This is intentionally read-only. The resume selector may name the expected
+/// root, but that identifier becomes authority only when the exact operation's
+/// terminal `ask_human` choice and later successful `manage_organizations`
+/// create call both bind it to the same candidate from the needs-human receipt.
+pub async fn exact_human_selection_root_is_ready(
+    pool: &PgPool,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+    root_organization_id: Uuid,
+) -> crate::Result<bool> {
+    let mut connection = pool.acquire().await?;
+    if let Some(confirmed) = load_confirmed_on(&mut connection, operation_id).await? {
+        return Ok(confirmed.stage_execution_id == stage_execution_id
+            && confirmed.organization_id == Some(root_organization_id)
+            && validate_receipt(&confirmed).is_ok());
+    }
+
+    let Some(pending) =
+        load_latest_needs_human_on(&mut connection, operation_id, stage_execution_id).await?
+    else {
+        return Ok(false);
+    };
+    let pending_created_at: DateTime<Utc> =
+        sqlx::query_scalar("SELECT created_at FROM scoping_company_identity_receipts WHERE id=$1")
+            .bind(pending.id)
+            .fetch_one(&mut *connection)
+            .await?;
+    let tool_calls = sqlx::query_as::<_, HumanSelectionToolCallRow>(
+        r#"SELECT id,session_id,name,args,result,created_at
+             FROM tool_calls
+            WHERE operation_id=$1 AND stage_execution_id=$2
+              AND status='finished' AND created_at >= $3
+              AND name IN ('ask_human','manage_organizations')
+            ORDER BY created_at,id"#,
+    )
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .bind(pending_created_at)
+    .fetch_all(&mut *connection)
+    .await?;
+    let Some(selected) = latest_exact_human_selection(&pending, &tool_calls) else {
+        return Ok(false);
+    };
+    let Some(canonical_legal_name) = selected
+        .candidate
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return Ok(false);
+    };
+    if exact_root_create_after_selection(
+        &tool_calls,
+        &selected,
+        root_organization_id,
+        canonical_legal_name,
+    )
+    .is_none()
+    {
+        return Ok(false);
+    }
+
+    let organization: Option<(String, Option<Uuid>)> = sqlx::query_as(
+        r#"SELECT organization.name,organization.parent_id
+             FROM operation_state operation
+             JOIN project_scopes scope
+               ON scope.project_scope_id=operation.project_scope_id
+              AND scope.retired_at IS NULL
+             JOIN organizations organization
+               ON organization.id=$2
+              AND organization.project_path=scope.canonical_project_path
+            WHERE operation.operation_id=$1
+              AND operation.current_stage='scoping'
+              AND operation.superseded_by IS NULL"#,
+    )
+    .bind(operation_id)
+    .bind(root_organization_id)
+    .fetch_optional(&mut *connection)
+    .await?;
+    Ok(organization.is_some_and(|(name, parent_id)| {
+        parent_id.is_none() && name.trim() == canonical_legal_name
+    }))
+}
+
+async fn load_confirmed_on(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+) -> crate::Result<Option<ScopingCompanyIdentityReceiptRow>> {
+    Ok(sqlx::query_as::<_, ScopingCompanyIdentityReceiptRow>(
+        r#"SELECT id,operation_id,stage_execution_id,resolution_attempt,supersedes_receipt_id,
+                  organization_id,subject_hint,canonical_legal_name,aliases,brands,
+                  registration_identifiers,disambiguation_fields,confirmation_method,
+                  resolution_status,scope_policy,source_receipt_refs,artifact_refs,evidence_refs,
+                  identity_payload,identity_sha256,scope_policy_sha256
+             FROM scoping_company_identity_receipts
+            WHERE operation_id=$1 AND resolution_status='confirmed' FOR SHARE"#,
+    )
+    .bind(operation_id)
+    .fetch_optional(connection)
+    .await?)
+}
+
+async fn load_latest_needs_human_on(
+    connection: &mut PgConnection,
+    operation_id: Uuid,
+    stage_execution_id: Uuid,
+) -> crate::Result<Option<ScopingCompanyIdentityReceiptRow>> {
+    Ok(sqlx::query_as::<_, ScopingCompanyIdentityReceiptRow>(
+        r#"SELECT id,operation_id,stage_execution_id,resolution_attempt,supersedes_receipt_id,
+                  organization_id,subject_hint,canonical_legal_name,aliases,brands,
+                  registration_identifiers,disambiguation_fields,confirmation_method,
+                  resolution_status,scope_policy,source_receipt_refs,artifact_refs,evidence_refs,
+                  identity_payload,identity_sha256,scope_policy_sha256
+             FROM scoping_company_identity_receipts
+            WHERE operation_id=$1 AND stage_execution_id=$2
+              AND resolution_status='needs_human'
+            ORDER BY resolution_attempt DESC LIMIT 1 FOR SHARE"#,
+    )
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .fetch_optional(connection)
+    .await?)
+}
+
+fn latest_exact_human_selection(
+    pending: &ScopingCompanyIdentityReceiptRow,
+    tool_calls: &[HumanSelectionToolCallRow],
+) -> Option<HumanSelectedCandidate> {
+    let receipt_candidates = candidate_map(pending.identity_payload.get("candidates")?)?;
+    tool_calls
+        .iter()
+        .filter(|row| row.name == "ask_human")
+        .filter_map(|row| {
+            let context = parse_context(row.args.get("context")?)?;
+            (context.get("decision")?.as_str()? == "company_identity").then_some((row, context))
+        })
+        .next_back()
+        .and_then(|(row, context)| {
+            let context_candidates = candidate_map(context.get("candidates")?)?;
+            if !same_candidate_authority(&receipt_candidates, &context_candidates) {
+                return None;
+            }
+            let result = serde_json::from_str::<Value>(row.result.as_deref()?).ok()?;
+            if result.get("skipped").and_then(Value::as_bool) == Some(true)
+                || result.get("error").is_some()
+            {
+                return None;
+            }
+            let response = result.get("response")?.as_str()?.trim();
+            let options = row.args.get("options")?.as_array()?;
+            if !options
+                .iter()
+                .any(|option| option.as_str() == Some(response))
+            {
+                return None;
+            }
+            let matches = receipt_candidates
+                .values()
+                .filter(|candidate| human_response_matches(candidate, response))
+                .cloned()
+                .collect::<Vec<_>>();
+            (matches.len() == 1).then(|| HumanSelectedCandidate {
+                ask_human_tool_call_id: row.id,
+                ask_human_session_id: row.session_id,
+                ask_human_created_at: row.created_at,
+                candidate: matches[0].clone(),
+            })
+        })
+}
+
+fn exact_root_create_after_selection(
+    tool_calls: &[HumanSelectionToolCallRow],
+    selected: &HumanSelectedCandidate,
+    root_organization_id: Uuid,
+    canonical_legal_name: &str,
+) -> Option<Uuid> {
+    tool_calls
+        .iter()
+        .filter(|row| {
+            row.name == "manage_organizations" && row.created_at > selected.ask_human_created_at
+        })
+        .find_map(|row| {
+            if row.args.get("action").and_then(Value::as_str) != Some("create")
+                || row.args.get("name").and_then(Value::as_str).map(str::trim)
+                    != Some(canonical_legal_name)
+                || row
+                    .args
+                    .get("parent_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+            {
+                return None;
+            }
+            let result = serde_json::from_str::<Value>(row.result.as_deref()?).ok()?;
+            if result.get("error").is_some()
+                || result.get("action").and_then(Value::as_str) != Some("create")
+                || result.get("name").and_then(Value::as_str).map(str::trim)
+                    != Some(canonical_legal_name)
+                || result
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|value| value.parse::<Uuid>().ok())
+                    != Some(root_organization_id)
+            {
+                return None;
+            }
+            Some(row.id)
+        })
+}
+
+fn parse_context(value: &Value) -> Option<Value> {
+    match value {
+        Value::String(encoded) => serde_json::from_str(encoded).ok(),
+        Value::Object(_) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn candidate_map(value: &Value) -> Option<BTreeMap<String, Value>> {
+    let mut candidates = BTreeMap::new();
+    for candidate in value.as_array()? {
+        let candidate_id = candidate.get("candidate_id")?.as_str()?.trim();
+        let name = candidate.get("name")?.as_str()?.trim();
+        if candidate_id.is_empty()
+            || name.is_empty()
+            || candidates
+                .insert(candidate_id.to_string(), candidate.clone())
+                .is_some()
+        {
+            return None;
+        }
+    }
+    (!candidates.is_empty()).then_some(candidates)
+}
+
+fn same_candidate_authority(
+    receipt: &BTreeMap<String, Value>,
+    context: &BTreeMap<String, Value>,
+) -> bool {
+    receipt.len() == context.len()
+        && receipt.iter().all(|(candidate_id, receipt_candidate)| {
+            let Some(context_candidate) = context.get(candidate_id) else {
+                return false;
+            };
+            receipt_candidate.get("name").and_then(Value::as_str)
+                == context_candidate.get("name").and_then(Value::as_str)
+                && receipt_candidate.get("credit_code").and_then(Value::as_str)
+                    == context_candidate.get("credit_code").and_then(Value::as_str)
+        })
+}
+
+fn human_response_matches(candidate: &&Value, response: &str) -> bool {
+    let Some(name) = candidate.get("name").and_then(Value::as_str) else {
+        return false;
+    };
+    if name.trim().is_empty() || !response.contains(name.trim()) {
+        return false;
+    }
+    candidate
+        .get("credit_code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|credit_code| response.contains(credit_code))
+}
+
+fn json_string_values(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+async fn insert_receipt_on(
+    connection: &mut PgConnection,
+    receipt: &ScopingCompanyIdentityReceiptRow,
+) -> crate::Result<()> {
+    sqlx::query(
+        r#"INSERT INTO scoping_company_identity_receipts(
+               id,operation_id,stage_execution_id,resolution_attempt,supersedes_receipt_id,
+               organization_id,subject_hint,canonical_legal_name,aliases,brands,
+               registration_identifiers,disambiguation_fields,confirmation_method,
+               resolution_status,scope_policy,source_receipt_refs,artifact_refs,evidence_refs,
+               identity_payload,identity_sha256,scope_policy_sha256
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)"#,
+    )
+    .bind(receipt.id)
+    .bind(receipt.operation_id)
+    .bind(receipt.stage_execution_id)
+    .bind(receipt.resolution_attempt)
+    .bind(receipt.supersedes_receipt_id)
+    .bind(receipt.organization_id)
+    .bind(&receipt.subject_hint)
+    .bind(&receipt.canonical_legal_name)
+    .bind(&receipt.aliases)
+    .bind(&receipt.brands)
+    .bind(&receipt.registration_identifiers)
+    .bind(&receipt.disambiguation_fields)
+    .bind(&receipt.confirmation_method)
+    .bind(&receipt.resolution_status)
+    .bind(&receipt.scope_policy)
+    .bind(&receipt.source_receipt_refs)
+    .bind(&receipt.artifact_refs)
+    .bind(&receipt.evidence_refs)
+    .bind(&receipt.identity_payload)
+    .bind(&receipt.identity_sha256)
+    .bind(&receipt.scope_policy_sha256)
+    .execute(connection)
+    .await?;
+    Ok(())
 }
 
 /// Freeze an adapter-confirmed root company before Scoping invokes the model.

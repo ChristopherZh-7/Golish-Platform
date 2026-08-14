@@ -9,7 +9,6 @@ import {
   Clock3,
   FileCheck2,
   Loader2,
-  Wrench,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -18,11 +17,11 @@ import {
 } from "@/components/Engagement/AgentPlanCard";
 import type { StageAssetCoverageSnapshot } from "@/lib/api/stage-coverage";
 import type { StageTeamReadModel } from "@/lib/api/stage-team";
-import { safeStringify } from "@/lib/text";
 import { cn } from "@/lib/utils";
 import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import { AgentTranscriptMessage, isLiveAgentThinkingEntry } from "./AgentTranscriptMessage";
 import { StageRunDetailShell } from "./StageRunDetailShell";
+import { ToolActivityGroup } from "./ToolActivityDisclosure";
 import { useTranscriptAutoScroll } from "./useTranscriptAutoScroll";
 
 type StageTeamUnit = StageTeamReadModel["units"][number];
@@ -499,14 +498,48 @@ function displayTime(value: string | number | undefined): string {
     : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function toolSummary(tool: SubAgentToolCall): string {
-  if (tool.streamingOutput?.trim()) return tool.streamingOutput.trim().slice(0, 600);
-  if (tool.result !== undefined) return safeStringify(tool.result, 600);
-  return safeStringify(tool.args, 600);
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isGenericActivityTool(tool: SubAgentToolCall): boolean {
+  return (
+    tool.name !== "update_plan" &&
+    !tool.name.startsWith("sub_agent_") &&
+    tool.name !== "stage_team_dispatch_workers"
+  );
+}
+
+type TranscriptDisplayItem =
+  | { kind: "entry"; entry: SubAgentEntry }
+  | { kind: "tool_activity_group"; tools: SubAgentToolCall[] };
+
+function groupToolActivityEntries(
+  entries: readonly SubAgentEntry[],
+  toolCalls: readonly SubAgentToolCall[]
+): TranscriptDisplayItem[] {
+  const toolsById = new Map(toolCalls.map((tool) => [tool.id, tool]));
+  const displayItems: TranscriptDisplayItem[] = [];
+  let pendingTools: SubAgentToolCall[] = [];
+
+  const flushTools = () => {
+    if (pendingTools.length === 0) return;
+    displayItems.push({ kind: "tool_activity_group", tools: pendingTools });
+    pendingTools = [];
+  };
+
+  for (const entry of entries) {
+    const tool =
+      entry.kind === "tool_call" && entry.toolCallId ? toolsById.get(entry.toolCallId) : undefined;
+    if (tool && isGenericActivityTool(tool)) {
+      pendingTools.push(tool);
+      continue;
+    }
+    flushTools();
+    displayItems.push({ kind: "entry", entry });
+  }
+  flushTools();
+  return displayItems;
 }
 
 function dispatchResult(tool: SubAgentToolCall): Record<string, unknown> | null {
@@ -683,40 +716,7 @@ function ActivityEntry({
         />
       );
     }
-    const blocked = tool.status === "error" || tool.status === "interrupted";
-    return (
-      <article className="grid grid-cols-[1.75rem_minmax(0,1fr)] gap-2.5 px-4 py-3">
-        <div className="grid h-7 w-7 place-items-center rounded-md bg-sky-400/10 text-sky-200">
-          <Wrench className="h-3.5 w-3.5" aria-hidden="true" />
-        </div>
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="font-medium text-foreground">{actor.label}</span>
-            <span className="text-muted-foreground">{displayTime(tool.startedAt)}</span>
-          </div>
-          <div className="mt-2 overflow-hidden rounded-md border border-border/60 bg-background/70">
-            <div className="flex items-center gap-2 border-b border-border/50 px-2.5 py-1.5 text-xs">
-              <span className="font-medium text-foreground/85">{tool.name}</span>
-              <span
-                className={cn(
-                  "ml-auto rounded px-1.5 py-0.5 text-[10px]",
-                  blocked
-                    ? "bg-rose-400/10 text-rose-200"
-                    : tool.status === "running" || tool.status === "backgrounded"
-                      ? "bg-sky-400/10 text-sky-200"
-                      : "bg-emerald-400/10 text-emerald-200"
-                )}
-              >
-                {tool.status}
-              </span>
-            </div>
-            <pre className="whitespace-pre-wrap break-words px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-              {toolSummary(tool)}
-            </pre>
-          </div>
-        </div>
-      </article>
-    );
+    return <ToolActivityGroup tools={[tool]} actorLabel={actor.label} />;
   }
   if (!entry.text?.trim()) return null;
   return (
@@ -764,6 +764,9 @@ function ConversationPanel({
       parentStageStopped: !parentStagePassed && actor.state === "blocked",
     })?.id ?? null;
   const visibleEntries = boundedTranscriptEntries(entries, currentPlanToolId);
+  const displayItems = activity
+    ? groupToolActivityEntries(visibleEntries.entries, activity.toolCalls)
+    : [];
   const conversationStateLabel = actor.item
     ? actor.stateLabel
     : actor.state === "blocked"
@@ -870,18 +873,26 @@ function ConversationPanel({
             </div>
           )}
           {activity ? (
-            visibleEntries.entries.length > 0 ? (
-              visibleEntries.entries.map((entry, index) => (
-                <ActivityEntry
-                  key={`${entry.kind}:${entry.toolCallId ?? index}`}
-                  entry={entry}
-                  activity={activity}
-                  actor={actor}
-                  actors={actors}
-                  currentPlanToolId={currentPlanToolId}
-                  onSelectActor={onSelectActor}
-                />
-              ))
+            displayItems.length > 0 ? (
+              displayItems.map((item, index) =>
+                item.kind === "tool_activity_group" ? (
+                  <ToolActivityGroup
+                    key={`tool-activity:${item.tools[0]?.id ?? index}`}
+                    tools={item.tools}
+                    actorLabel={actor.label}
+                  />
+                ) : (
+                  <ActivityEntry
+                    key={`${item.entry.kind}:${item.entry.toolCallId ?? index}`}
+                    entry={item.entry}
+                    activity={activity}
+                    actor={actor}
+                    actors={actors}
+                    currentPlanToolId={currentPlanToolId}
+                    onSelectActor={onSelectActor}
+                  />
+                )
+              )
             ) : (
               <div className="grid h-full min-h-32 place-items-center px-4 text-center text-sm text-muted-foreground">
                 Agent transcript 已建立，但当前 attempt 尚无可见消息或工具事件。

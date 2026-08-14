@@ -99,7 +99,6 @@ pub struct InvestigationModePolicy {
     pub allow_legacy_mutation: bool,
     pub write_registry_shadow: bool,
     pub campaign_write_policy: CampaignWritePolicy,
-    pub allow_prepared_action_jit: bool,
     pub compare_policy: ComparePolicy,
     pub legacy_projection: LegacyProjectionPolicy,
 }
@@ -203,7 +202,6 @@ impl InvestigationRolloutMode {
                 allow_legacy_mutation: true,
                 write_registry_shadow: false,
                 campaign_write_policy: CampaignOff,
-                allow_prepared_action_jit: false,
                 compare_policy: Off,
                 legacy_projection: Native,
             },
@@ -213,7 +211,6 @@ impl InvestigationRolloutMode {
                 allow_legacy_mutation: true,
                 write_registry_shadow: true,
                 campaign_write_policy: ShadowAudit,
-                allow_prepared_action_jit: false,
                 compare_policy: PromotionBlocking,
                 legacy_projection: Native,
             },
@@ -223,7 +220,6 @@ impl InvestigationRolloutMode {
                 allow_legacy_mutation: true,
                 write_registry_shadow: true,
                 campaign_write_policy: CompareOnly,
-                allow_prepared_action_jit: false,
                 compare_policy: WholeRecordExact,
                 legacy_projection: Native,
             },
@@ -233,7 +229,6 @@ impl InvestigationRolloutMode {
                 allow_legacy_mutation: false,
                 write_registry_shadow: false,
                 campaign_write_policy: Canonical,
-                allow_prepared_action_jit: true,
                 compare_policy: AuditOnly,
                 legacy_projection: CanonicalDerivedFailClosed,
             },
@@ -243,7 +238,6 @@ impl InvestigationRolloutMode {
                 allow_legacy_mutation: false,
                 write_registry_shadow: false,
                 campaign_write_policy: Canonical,
-                allow_prepared_action_jit: true,
                 compare_policy: Off,
                 legacy_projection: HistoricalReadOnly,
             },
@@ -290,7 +284,6 @@ mod tests {
                 true,
                 false,
                 Off,
-                false,
                 CompareOff,
                 Native,
             ),
@@ -300,7 +293,6 @@ mod tests {
                 true,
                 true,
                 ShadowAudit,
-                false,
                 PromotionBlocking,
                 Native,
             ),
@@ -310,7 +302,6 @@ mod tests {
                 true,
                 true,
                 CompareOnly,
-                false,
                 WholeRecordExact,
                 Native,
             ),
@@ -320,7 +311,6 @@ mod tests {
                 false,
                 false,
                 Canonical,
-                true,
                 AuditOnly,
                 CanonicalDerivedFailClosed,
             ),
@@ -330,21 +320,17 @@ mod tests {
                 false,
                 false,
                 Canonical,
-                true,
                 CompareOff,
                 HistoricalReadOnly,
             ),
         ];
-        for (mode, authority, legacy_mutation, shadow, campaign, jit, compare, projection) in
-            expected
-        {
+        for (mode, authority, legacy_mutation, shadow, campaign, compare, projection) in expected {
             let policy = mode.policy();
             assert_eq!(policy.canonical_writer, authority);
             assert_eq!(policy.gate_authority, authority);
             assert_eq!(policy.allow_legacy_mutation, legacy_mutation);
             assert_eq!(policy.write_registry_shadow, shadow);
             assert_eq!(policy.campaign_write_policy, campaign);
-            assert_eq!(policy.allow_prepared_action_jit, jit);
             assert_eq!(policy.compare_policy, compare);
             assert_eq!(policy.legacy_projection, projection);
         }
@@ -361,7 +347,6 @@ mod tests {
 
             assert_eq!(policy.gate_authority, policy.canonical_writer);
             assert_eq!(campaign_is_canonical, registry_is_authoritative);
-            assert_eq!(policy.allow_prepared_action_jit, registry_is_authoritative);
             assert_eq!(policy.allow_legacy_mutation, !registry_is_authoritative);
             assert_eq!(
                 policy.legacy_projection == LegacyProjectionPolicy::HistoricalReadOnly,

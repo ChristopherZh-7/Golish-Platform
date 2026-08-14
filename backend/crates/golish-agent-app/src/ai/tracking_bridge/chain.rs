@@ -77,6 +77,48 @@ fn persistence_agent_type(agent_id: &str) -> anyhow::Result<AgentType> {
     }
 }
 
+fn bound_worker_persistence_agent_type(
+    bound: &golish_sub_agents::BoundWorkerChainContext,
+) -> anyhow::Result<AgentType> {
+    if let Some(contract) = bound.investigation_actor_contract.as_ref() {
+        return match contract {
+            golish_sub_agents::InvestigationActorContract::AnalysisPrimary => {
+                Ok(AgentType::Primary)
+            }
+            golish_sub_agents::InvestigationActorContract::AssetVerificationPrimary(binding) => {
+                binding.validate().map_err(|code| anyhow::anyhow!(code))?;
+                Ok(AgentType::Primary)
+            }
+            golish_sub_agents::InvestigationActorContract::AssetVerification(binding) => {
+                binding.validate().map_err(|code| anyhow::anyhow!(code))?;
+                match binding.specialist_role.as_str() {
+                    "browser" | "pentester" => Ok(AgentType::Pentester),
+                    "researcher" => Ok(AgentType::Searcher),
+                    "adviser" => Ok(AgentType::Adviser),
+                    "coder" => Ok(AgentType::Coder),
+                    "installer" => Ok(AgentType::Installer),
+                    "enricher" => Ok(AgentType::Enricher),
+                    "memorist" => Ok(AgentType::Memorist),
+                    other => anyhow::bail!(
+                        "unsupported dynamic Investigation verification actor '{other}'"
+                    ),
+                }
+            }
+            golish_sub_agents::InvestigationActorContract::AnalysisWorker => {
+                persistence_agent_type(&bound.agent_type)
+            }
+        };
+    }
+    if bound
+        .stage_team_leader
+        .as_ref()
+        .is_some_and(|leader| leader.planning_only)
+    {
+        return Ok(AgentType::Primary);
+    }
+    persistence_agent_type(&bound.agent_type)
+}
+
 #[async_trait]
 impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
     async fn chain_create(
@@ -195,7 +237,7 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
                 worker_run_id: bound.worker_lease.worker_run_id,
                 message_chain_id: bound.chain_id,
                 session_id: bound.session_id,
-                agent: persistence_agent_type(&bound.agent_type)?,
+                agent: bound_worker_persistence_agent_type(bound)?,
                 selected_source: bound.runtime_memory_source.map(|source| match source {
                     golish_sub_agents::BoundWorkerRuntimeMemorySource::Legacy => {
                         golish_agent_kit::db_traits::RuntimeMemoryRecordSource::Legacy
@@ -273,8 +315,21 @@ impl golish_sub_agents::SubAgentChainPersistence for PgChainPersistence {
 
 #[cfg(test)]
 mod tests {
-    use super::{persistence_agent_type, LOAD_CHAIN_BY_ID_SQL, UPDATE_CHAIN_SQL};
+    use super::{
+        bound_worker_persistence_agent_type, persistence_agent_type, LOAD_CHAIN_BY_ID_SQL,
+        UPDATE_CHAIN_SQL,
+    };
     use golish_agent_kit::db_traits::AgentType;
+    use golish_sub_agents::{
+        BoundWorkerChainContext, InvestigationActorContract,
+        InvestigationAssetVerificationActorBinding, InvestigationAssetVerificationPrimaryBinding,
+        StageTeamLeaderBinding,
+    };
+    use std::sync::{
+        atomic::{AtomicBool, AtomicI64},
+        Arc, RwLock,
+    };
+    use uuid::Uuid;
 
     #[test]
     fn exact_chain_load_is_scoped_to_id_session_and_agent() {
@@ -321,5 +376,135 @@ mod tests {
             );
         }
         assert!(persistence_agent_type("model_invented_agent").is_err());
+    }
+
+    #[test]
+    fn planning_only_investigation_primary_uses_primary_chain_ownership() {
+        let nil = Uuid::nil();
+        let bound = BoundWorkerChainContext {
+            operation_id: nil,
+            stage_execution_id: nil,
+            organization_id: nil,
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: nil,
+                stage_run_unit_id: nil,
+                lease_token: nil,
+                attempt_epoch: 0,
+            },
+            candidate_attempt: None,
+            candidate_submit_only: false,
+            return_on_first_durable_stage_submission: false,
+            stage_team_leader: Some(StageTeamLeaderBinding {
+                stage_team_plan_id: nil,
+                leader_work_item_id: nil,
+                expected_dispatch_epoch: 0,
+                expected_plan_row_version: 0,
+                expected_work_item_row_version: 0,
+                controller_action_compiler: None,
+                compiled_actions: Vec::new(),
+                planning_only: true,
+            }),
+            target_intel_review: None,
+            stage_team_output_schema: Some("stage_unit_aggregate.v1".to_string()),
+            terminal_execution: None,
+            investigation_actor_contract: None,
+            chain_id: nil,
+            session_id: nil,
+            agent_type: "investigation".to_string(),
+            runtime_memory_source: None,
+            initial_chain: serde_json::json!([]),
+            initial_prompt_already_checkpointed: false,
+            reset_provider_history: false,
+            checkpoint_version: Arc::new(AtomicI64::new(0)),
+            checkpoint_body: Arc::new(RwLock::new(serde_json::json!([]))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: None,
+        };
+        assert_eq!(
+            bound_worker_persistence_agent_type(&bound).expect("planning Primary type"),
+            AgentType::Primary
+        );
+    }
+
+    #[test]
+    fn dynamic_verification_contract_uses_the_exact_persisted_agent_family() {
+        let id = Uuid::new_v4();
+        let mut bound = BoundWorkerChainContext {
+            operation_id: id,
+            stage_execution_id: id,
+            organization_id: id,
+            worker_lease: golish_core::WorkerLeaseContext {
+                worker_run_id: id,
+                stage_run_unit_id: id,
+                lease_token: id,
+                attempt_epoch: 1,
+            },
+            candidate_attempt: None,
+            candidate_submit_only: false,
+            return_on_first_durable_stage_submission: false,
+            stage_team_leader: None,
+            target_intel_review: None,
+            stage_team_output_schema: Some(
+                "investigation_dynamic_verification_actor_observation.v2".to_string(),
+            ),
+            terminal_execution: None,
+            investigation_actor_contract: None,
+            chain_id: id,
+            session_id: id,
+            agent_type: "researcher".to_string(),
+            runtime_memory_source: None,
+            initial_chain: serde_json::json!([]),
+            initial_prompt_already_checkpointed: false,
+            reset_provider_history: false,
+            checkpoint_version: Arc::new(AtomicI64::new(0)),
+            checkpoint_body: Arc::new(RwLock::new(serde_json::json!([]))),
+            lease_lost: Arc::new(AtomicBool::new(false)),
+            mutation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            tool_lifecycle: None,
+        };
+        let actor = InvestigationAssetVerificationActorBinding {
+            session_id: id,
+            actor_call_id: id,
+            actor_ordinal: 1,
+            subtask_id: id,
+            specialist_role: "researcher".to_string(),
+            asset_lane_id: id,
+            target_id: id,
+            hypothesis_revision_id: id,
+            work_item_id: id,
+            worker_run_id: id,
+            message_chain_id: id,
+            primary_parent_request_id: id,
+        };
+        bound.investigation_actor_contract =
+            Some(InvestigationActorContract::AssetVerification(actor));
+        assert_eq!(
+            bound_worker_persistence_agent_type(&bound).expect("Researcher chain type"),
+            AgentType::Searcher
+        );
+
+        bound.investigation_actor_contract =
+            Some(InvestigationActorContract::AssetVerificationPrimary(
+                InvestigationAssetVerificationPrimaryBinding {
+                    session_id: id,
+                    asset_lane_id: id,
+                    target_id: id,
+                    hypothesis_revision_id: id,
+                    work_item_id: id,
+                    worker_run_id: id,
+                    message_chain_id: id,
+                },
+            ));
+        assert_eq!(
+            bound_worker_persistence_agent_type(&bound).expect("Verification Primary chain type"),
+            AgentType::Primary
+        );
+
+        bound.investigation_actor_contract = Some(InvestigationActorContract::AnalysisPrimary);
+        assert_eq!(
+            bound_worker_persistence_agent_type(&bound).expect("Analysis Primary chain type"),
+            AgentType::Primary
+        );
     }
 }

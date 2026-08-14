@@ -82,6 +82,18 @@ impl GolishDbRepoProvider {
         Ok(serde_json::to_value(results)?)
     }
 
+    pub(super) async fn wiki_get_page_impl(
+        &self,
+        path: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        self.wiki_kb
+            .wiki_get_page(path)
+            .await?
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(Into::into)
+    }
+
     pub(super) async fn wiki_list_cves_with_pocs_impl(&self) -> anyhow::Result<serde_json::Value> {
         let rows = self.wiki_kb.wiki_list_cves_with_pocs().await?;
         Ok(serde_json::to_value(rows)?)

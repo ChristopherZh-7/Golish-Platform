@@ -125,6 +125,76 @@
     },
     "runLog": "/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1786350293301-1/run.log"
   },
+  "latestRetainedInvestigationContinuation": {
+    "recordedAt": "2026-08-11T17:36:54+08:00",
+    "workspace": "/Users/christopherzheng/golish-platform/Test1",
+    "organization": "杭州默安科技有限公司",
+    "subsidiariesIncluded": false,
+    "operationId": "4d5f17a5-88f5-423e-9dcb-3e9cad6e1003",
+    "sessionId": "3d8f9c5a-f16e-4f1f-a126-0a08c86debbc",
+    "chatSessionId": "pentest-chat-1786431419372-1",
+    "organizationId": "05101589-73ef-4537-a436-0a6d301c9be1",
+    "investigationStageExecutionId": "65ef8af7-5eb8-4ce7-87a5-836d5b5e6e35",
+    "reportingStageExecutionId": "c9ef82f0-2282-449e-b940-a5d087f69065",
+    "reportId": "b204e1d5-e651-5b14-85b5-8495f4bedc65",
+    "reportRevisionId": "287cbf51-aec7-5254-936c-4029d18c9d31",
+    "terminal": {
+      "taskStatus": "finished",
+      "completedStageRuns": 8,
+      "completedStages": [
+        "scoping",
+        "target_intel",
+        "external_attack_surface",
+        "enumeration",
+        "vuln_triage",
+        "application_understanding",
+        "investigation",
+        "reporting"
+      ],
+      "nonterminalStageUnits": 0,
+      "nonterminalWorkItems": 0,
+      "nonterminalWorkers": 0,
+      "verificationCampaignsTerminal": 4,
+      "factDeltasInconclusive": 4,
+      "preparedActions": 0,
+      "actionAuthorizations": 0,
+      "actionExecutions": 0,
+      "reportValidation": "validated",
+      "reportPublication": "unpublished",
+      "reportSections": 3,
+      "reportClaims": 55,
+      "reportCitations": 77,
+      "sourceManifestMembers": 214
+    },
+    "automaticContinuation": {
+      "analysisChildrenCompleted": 5,
+      "sameChainMissingSubmitResultRepairObserved": true,
+      "failedWorkerSiblingRetryObserved": true,
+      "mainStageRunRetryObserved": true,
+      "manualContinuationRequiredAfterRepair": false
+    },
+    "memoryAndRag": {
+      "mainReadSessionId": "02c9e3b3-2365-5336-a26f-bae60479935e",
+      "contextSnapshotId": "f5259a83-19c6-5426-9254-cd800b85c524",
+      "contextItemCount": 8,
+      "methodologyHitCount": 2,
+      "omissionCount": 6,
+      "searchKnowledgeBaseCalls": 127,
+      "nonEmptyKnowledgeBaseResults": 31,
+      "readKnowledgeCalls": 8,
+      "nonEmptyReadKnowledgeResults": 8,
+      "knowledgeAssertionsGenerated": 4,
+      "knowledgeDocumentsGenerated": 4,
+      "knowledgeOutboxEvents": 8,
+      "assessment": "The immutable Main read-session sealed two content-addressed methodology hits and eight context items. Runtime tool telemetry proves both knowledge search and read paths executed, while the evidence-bound projector generated four assertions and four documents. Empty searches remained empty and were not promoted to positive evidence."
+    },
+    "reporting": {
+      "mode": "concise evidence-linked summary",
+      "templateReplacementUsed": false,
+      "templateArtifactsCreated": 0
+    },
+    "runLog": "/Users/christopherzheng/golish-platform/Test1/.golish/transcripts/pentest-chat-1786431419372-1/run.log"
+  },
   "controlledFixture": {
     "workspace": "/Users/christopherzheng/golish-platform/ControlledFixtureAcceptance-20260810-Fresh02",
     "target": "http://127.0.0.1:62140",
@@ -232,7 +302,10 @@
       "browser collection Node tests: 30/30",
       "stage-smoke/run-tree Python tests: 39/39",
       "run_tree.py --db --full on retained controlled operation: exit 0",
-      "cargo fmt --all -- --check: exit 0"
+      "cargo fmt --all -- --check: exit 0",
+      "nextest 1d5abe78-ad46-47fc-a6e5-0c7b257d6fc5: 5/5 retained Investigation identity/parked-Primary/runtime tests",
+      "nextest a9908545-899c-48f7-aece-8bf16ba19667: 1/1 embedded-Postgres retained child reentry",
+      "scoped Clippy -D warnings for golish-db/golish-agent-kit/golish-agent-app/golish-agent-runtime: exit 0"
     ],
     "largeOptionalGate": "just precommit not run; project policy permits targeted evidence and the user explicitly requested avoiding repeated multi-minute full loops"
   }

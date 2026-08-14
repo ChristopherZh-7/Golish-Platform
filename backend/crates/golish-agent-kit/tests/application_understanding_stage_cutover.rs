@@ -1,37 +1,41 @@
 use golish_agent_kit::harness::{
-    application_model_operation_graph, load_embedded_phase_map, load_embedded_profile,
-    load_embedded_stage_spec, ApplicationModelOperationContract, StageKind,
+    load_embedded_phase_map, load_embedded_profile, load_embedded_stage_spec,
+    operation_graph_for_topology, StageKind, StageTopologyContract, EMBEDDED_PROFILE_IDS,
 };
 
 #[test]
-fn legacy_and_v1_operation_graphs_have_frozen_distinct_candidate_crossings() {
-    let profile = load_embedded_profile("pentest")
-        .expect("load pentest profile")
-        .expect("pentest profile exists");
-    let allowed = profile.allowed_stage_set();
-
-    let legacy =
-        application_model_operation_graph(ApplicationModelOperationContract::LegacyNoModel)
-            .expect("legacy operation graph")
-            .project(&allowed);
-    assert!(!legacy.contains(StageKind::ApplicationUnderstanding));
+fn legacy_and_unified_operation_graphs_have_frozen_distinct_investigation_crossings() {
+    let legacy = operation_graph_for_topology(StageTopologyContract::LegacyCandidateVerificationV1)
+        .expect("legacy operation graph");
+    assert!(!legacy.nodes.contains(&StageKind::ApplicationUnderstanding));
     assert_eq!(
-        legacy.next_stages(StageKind::VulnTriage),
+        legacy
+            .edges
+            .iter()
+            .filter(|edge| edge.from == StageKind::VulnTriage)
+            .map(|edge| edge.to)
+            .collect::<Vec<_>>(),
         vec![StageKind::AttackCandidate, StageKind::Reporting]
     );
 
-    let v1 =
-        application_model_operation_graph(ApplicationModelOperationContract::ApplicationModelV1)
-            .expect("Application Model v1 operation graph")
-            .project(&allowed);
-    assert!(v1.contains(StageKind::ApplicationUnderstanding));
+    let v1 = operation_graph_for_topology(StageTopologyContract::UnifiedInvestigationV1)
+        .expect("Unified Investigation graph");
+    assert!(v1.nodes.contains(&StageKind::ApplicationUnderstanding));
     assert_eq!(
-        v1.next_stages(StageKind::VulnTriage),
-        vec![StageKind::ApplicationUnderstanding, StageKind::Reporting]
+        v1.edges
+            .iter()
+            .filter(|edge| edge.from == StageKind::VulnTriage)
+            .map(|edge| edge.to)
+            .collect::<Vec<_>>(),
+        vec![StageKind::ApplicationUnderstanding]
     );
     assert_eq!(
-        v1.next_stages(StageKind::ApplicationUnderstanding),
-        vec![StageKind::AttackCandidate]
+        v1.edges
+            .iter()
+            .filter(|edge| edge.from == StageKind::ApplicationUnderstanding)
+            .map(|edge| edge.to)
+            .collect::<Vec<_>>(),
+        vec![StageKind::Investigation]
     );
 }
 
@@ -45,10 +49,7 @@ fn application_understanding_stage_is_reasoning_only_and_in_the_vuln_phase() {
         Some("application_understanding")
     );
     assert_eq!(spec.requires_stages, vec![StageKind::VulnTriage]);
-    assert_eq!(
-        spec.allowed_next_stages,
-        vec![StageKind::AttackCandidate, StageKind::Reporting]
-    );
+    assert_eq!(spec.allowed_next_stages, vec![StageKind::Investigation]);
     assert!(spec.allowed_tool_types.is_empty());
     assert!(!spec.findings_allowed);
 
@@ -60,15 +61,9 @@ fn application_understanding_stage_is_reasoning_only_and_in_the_vuln_phase() {
             .id,
         "vuln"
     );
-    let pentest = load_embedded_profile("pentest")
-        .expect("load pentest profile")
-        .expect("pentest profile exists");
-    assert!(pentest
-        .allowed_stage_set()
-        .contains(&StageKind::ApplicationUnderstanding));
-    for profile_id in ["assessment", "bug_bounty", "cloud_assessment"] {
+    for profile_id in EMBEDDED_PROFILE_IDS {
         let profile = load_embedded_profile(profile_id)
-            .expect("load non-Candidate profile")
+            .expect("load profile")
             .expect("profile exists");
         assert!(!profile
             .allowed_stage_set()
@@ -77,14 +72,10 @@ fn application_understanding_stage_is_reasoning_only_and_in_the_vuln_phase() {
 }
 
 #[test]
-fn application_model_operation_contract_parser_is_closed() {
+fn unified_investigation_topology_parser_is_closed() {
     assert_eq!(
-        ApplicationModelOperationContract::try_from("legacy_no_model").expect("legacy contract"),
-        ApplicationModelOperationContract::LegacyNoModel
+        StageTopologyContract::try_parse("unified_investigation_v1").expect("unified contract"),
+        StageTopologyContract::UnifiedInvestigationV1
     );
-    assert_eq!(
-        ApplicationModelOperationContract::try_from("application_model_v1").expect("v1 contract"),
-        ApplicationModelOperationContract::ApplicationModelV1
-    );
-    assert!(ApplicationModelOperationContract::try_from("latest_if_available").is_err());
+    assert!(StageTopologyContract::try_parse("latest_if_available").is_err());
 }

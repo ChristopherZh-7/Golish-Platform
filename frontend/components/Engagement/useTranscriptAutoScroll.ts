@@ -9,15 +9,18 @@ import {
 } from "react";
 import { isNearScrollBottom } from "@/lib/scroll-stickiness";
 
-export interface TranscriptAutoScrollState {
-  viewportRef: MutableRefObject<HTMLDivElement | null>;
-  contentRef: MutableRefObject<HTMLDivElement | null>;
-  onViewportScroll: (event: UIEvent<HTMLDivElement>) => void;
-  onViewportWheel: (event: WheelEvent<HTMLDivElement>) => void;
-  syncViewportPosition: (viewport: HTMLDivElement) => void;
+export interface TranscriptAutoScrollState<
+  Viewport extends HTMLElement = HTMLDivElement,
+  Content extends HTMLElement = HTMLDivElement,
+> {
+  viewportRef: MutableRefObject<Viewport | null>;
+  contentRef: MutableRefObject<Content | null>;
+  onViewportScroll: (event: UIEvent<Viewport>) => void;
+  onViewportWheel: (event: WheelEvent<Viewport>) => void;
+  syncViewportPosition: (viewport: Viewport) => void;
 }
 
-function transcriptScrollTarget(viewport: HTMLDivElement, content: HTMLDivElement): number {
+function transcriptScrollTarget(viewport: HTMLElement, content: HTMLElement): number {
   const viewportRect = viewport.getBoundingClientRect();
   const contentRect = content.getBoundingClientRect();
   const contentTop = contentRect.top - viewportRect.top + viewport.scrollTop;
@@ -30,15 +33,20 @@ function transcriptScrollTarget(viewport: HTMLDivElement, content: HTMLDivElemen
  * near the bottom restores follow mode; content below the transcript wrapper
  * (for example Evidence) is deliberately excluded from the follow target.
  */
-export function useTranscriptAutoScroll(): TranscriptAutoScrollState {
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const contentRef = useRef<HTMLDivElement | null>(null);
+export function useTranscriptAutoScroll<
+  Viewport extends HTMLElement = HTMLDivElement,
+  Content extends HTMLElement = HTMLDivElement,
+>(followIdentity: string | null = null): TranscriptAutoScrollState<Viewport, Content> {
+  const viewportRef = useRef<Viewport | null>(null);
+  const contentRef = useRef<Content | null>(null);
   const followingRef = useRef(true);
   const previousScrollTopRef = useRef(0);
   const previousScrollHeightRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
 
-  const syncViewportPosition = useCallback((viewport: HTMLDivElement) => {
+  const previousFollowIdentityRef = useRef(followIdentity);
+
+  const syncViewportPosition = useCallback((viewport: Viewport) => {
     const content = contentRef.current;
     const viewportScrollHeight = viewport.scrollHeight;
     const target = content
@@ -87,13 +95,25 @@ export function useTranscriptAutoScroll(): TranscriptAutoScrollState {
   }, []);
 
   const onViewportScroll = useCallback(
-    (event: UIEvent<HTMLDivElement>) => syncViewportPosition(event.currentTarget),
+    (event: UIEvent<Viewport>) => syncViewportPosition(event.currentTarget),
     [syncViewportPosition]
   );
 
-  const onViewportWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+  const onViewportWheel = useCallback((event: WheelEvent<Viewport>) => {
     if (event.deltaY < 0) followingRef.current = false;
   }, []);
+
+  useLayoutEffect(() => {
+    if (previousFollowIdentityRef.current === followIdentity) return;
+    previousFollowIdentityRef.current = followIdentity;
+    followingRef.current = true;
+    previousScrollTopRef.current = 0;
+    previousScrollHeightRef.current = 0;
+    if (scrollFrameRef.current != null) {
+      cancelAnimationFrame(scrollFrameRef.current);
+      scrollFrameRef.current = null;
+    }
+  }, [followIdentity]);
 
   // A running tool updates its card without adding a transcript entry. Run
   // after every committed render; ResizeObserver below covers later layout-only
@@ -107,7 +127,7 @@ export function useTranscriptAutoScroll(): TranscriptAutoScrollState {
     const observer = new ResizeObserver(scheduleFollow);
     observer.observe(contentRef.current);
     return () => observer.disconnect();
-  }, [scheduleFollow]);
+  }, [followIdentity, scheduleFollow]);
 
   useEffect(
     () => () => {

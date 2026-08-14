@@ -28,13 +28,15 @@ function Harness({
   items,
   toolOutput = "",
   supplementary = false,
+  followIdentity = "actor-a",
 }: {
   items: readonly string[];
   toolOutput?: string;
   supplementary?: boolean;
+  followIdentity?: string;
 }) {
   const { viewportRef, contentRef, onViewportScroll, onViewportWheel } =
-    useTranscriptAutoScroll();
+    useTranscriptAutoScroll(followIdentity);
   return (
     <div
       ref={viewportRef}
@@ -42,7 +44,7 @@ function Harness({
       onScroll={onViewportScroll}
       onWheel={onViewportWheel}
     >
-      <div ref={contentRef} data-testid="content">
+      <div key={followIdentity} ref={contentRef} data-testid="content">
         {items.map((item) => (
           <div key={item}>{item}</div>
         ))}
@@ -249,5 +251,50 @@ describe("useTranscriptAutoScroll", () => {
     viewportHeight = 700;
     view.rerender(<Harness items={["one", "two", "three", "four"]} supplementary />);
     await waitFor(() => expect(geometry.readTop()).toBe(400));
+  });
+
+  it("keeps manual reading for one actor but follows the bottom when another actor is selected", async () => {
+    const view = render(<Harness items={["one"]} followIdentity="actor-a" />);
+    const viewport = screen.getByTestId("viewport");
+    let content = screen.getByTestId("content");
+    let contentHeight = 300;
+    const geometry = setMetrics(viewport, content, () => contentHeight);
+
+    view.rerender(<Harness items={["one", "two"]} followIdentity="actor-a" />);
+    await waitFor(() => expect(geometry.readTop()).toBe(200));
+
+    fireEvent.wheel(viewport, { deltaY: -120 });
+    geometry.setTop(60);
+    fireEvent.scroll(viewport);
+    contentHeight = 400;
+    view.rerender(<Harness items={["one", "two", "three"]} followIdentity="actor-a" />);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    expect(geometry.readTop()).toBe(60);
+
+    const previousObserver = lastObserver();
+    previousObserver?.observe.mockClear();
+    contentHeight = 500;
+    view.rerender(<Harness items={["new actor"]} followIdentity="actor-b" />);
+    content = screen.getByTestId("content");
+    Object.defineProperty(content, "scrollHeight", {
+      configurable: true,
+      get: () => contentHeight,
+    });
+    content.getBoundingClientRect = () =>
+      ({
+        top: 100 - geometry.readTop(),
+        bottom: 100 - geometry.readTop() + contentHeight,
+        height: contentHeight,
+        left: 0,
+        right: 100,
+        width: 100,
+        x: 0,
+        y: 100 - geometry.readTop(),
+        toJSON() {},
+      }) as DOMRect;
+
+    await waitFor(() => expect(geometry.readTop()).toBe(400));
+    expect(lastObserver()).not.toBe(previousObserver);
+    expect(lastObserver()?.observe).toHaveBeenCalledWith(content);
   });
 });

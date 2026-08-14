@@ -14,6 +14,7 @@ golish-tools = { workspace = true }
 # AI subsystem
 golish-prompts = { workspace = true }
 golish-agent-kit = { workspace = true }
+golish-app-core = { workspace = true }
 golish-agent-runtime = { workspace = true }
 golish-events = { path = "../golish-events" }
 golish-context = { workspace = true }

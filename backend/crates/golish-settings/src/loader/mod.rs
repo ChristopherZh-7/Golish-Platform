@@ -98,6 +98,17 @@ impl SettingsManager {
         self.settings.read().await.clone()
     }
 
+    /// Replace the process-local cache without writing `settings.toml`.
+    ///
+    /// This is intentionally narrower than [`Self::update`]. Isolated CLI
+    /// fixtures use it to remove every external-service credential and route
+    /// the process to loopback transports without mutating the user's durable
+    /// configuration. Ordinary settings/UI writes must continue to use
+    /// [`Self::update`].
+    pub async fn replace_process_cache(&self, new_settings: GolishSettings) {
+        *self.settings.write().await = new_settings;
+    }
+
     /// Update settings and persist to disk.
     pub async fn update(&self, new_settings: GolishSettings) -> Result<()> {
         *self.settings.write().await = new_settings.clone();

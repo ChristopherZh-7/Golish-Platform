@@ -46,8 +46,23 @@ const VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND: &str = "vuln.nuclei_exhausted_termina
 const VULN_NUCLEI_GENERAL_TOOL: &str = "vuln_nuclei_general";
 const VULN_NUCLEI_TARGETED_TOOL: &str = "vuln_nuclei_fingerprint_targeted";
 const VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND: &str = "vuln.anonymous_access_observation";
+const VULN_ANONYMOUS_ACCESS_EXHAUSTED_EVIDENCE_KIND: &str =
+    "vuln.anonymous_access_exhausted_terminalization";
 const VULN_ANONYMOUS_ACCESS_TOOL: &str = "vuln_probe_anonymous_access";
 const INTEL_SEMANTIC_RECEIPT_KIND: &str = "intel.semantic_pivot_receipt.v1";
+
+fn strict_eas_evidence_outcome(
+    outcome: &str,
+) -> Option<golish_agent_kit::harness::EvidenceOutcome> {
+    use golish_agent_kit::harness::EvidenceOutcome;
+
+    match outcome {
+        "found" => Some(EvidenceOutcome::Found),
+        "empty" => Some(EvidenceOutcome::Empty),
+        "blocked" => Some(EvidenceOutcome::Blocked),
+        _ => None,
+    }
+}
 
 /// Concrete evidence-first receipt store for the explicit fake Target Intel
 /// Goal composition. Its operation/org/session identity is fixed at
@@ -443,7 +458,11 @@ fn vuln_terminal_evidence_kind_is_authoritative(
         || (matches!(outcome, "found" | "blocked")
             && evidence_kind == Some(VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND));
     match technique {
-        WSTG_ANONYMOUS_ACCESS => evidence_kind == Some(VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND),
+        WSTG_ANONYMOUS_ACCESS => {
+            evidence_kind == Some(VULN_ANONYMOUS_ACCESS_EVIDENCE_KIND)
+                || (matches!(outcome, "found" | "blocked")
+                    && evidence_kind == Some(VULN_ANONYMOUS_ACCESS_EXHAUSTED_EVIDENCE_KIND))
+        }
         GOLISH_NDAY => nuclei_kind_is_authoritative,
         technique if GENERAL_NUCLEI_TECHNIQUES.contains(&technique) => nuclei_kind_is_authoritative,
         _ => false,
@@ -516,6 +535,7 @@ fn is_eas_terminal_outcome(technique: &str, outcome: &str) -> bool {
             technique,
             golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
                 | golish_db::repo::coverage_truth::TECH_EAS_PORT
+                | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP
         ) && outcome == "blocked")
         || (technique == golish_db::repo::coverage_truth::TECH_EAS_WEB_FP && outcome == "blocked")
 }
@@ -534,6 +554,7 @@ fn eas_terminal_source_is_authoritative(
         technique,
         golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
             | golish_db::repo::coverage_truth::TECH_EAS_PORT
+            | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP
     ) && outcome == "blocked"
     {
         return source == Some(EAS_PORT_POLICY_BLOCKED_SOURCE);
@@ -693,6 +714,7 @@ fn row_has_trusted_eas_blocked_producer(
         row.evidence_technique.as_str(),
         golish_db::repo::coverage_truth::TECH_EAS_LIVENESS
             | golish_db::repo::coverage_truth::TECH_EAS_PORT
+            | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP
     ) || !matches!(
         (row.tool_name.as_deref(), row.evidence_kind.as_deref()),
         (
@@ -1328,8 +1350,7 @@ fn target_row_still_authorizes_eas_fact(
             .chain(open_port_urls(row))
             .filter_map(golish_agent_kit::harness::evidence_facts::eas_liveness_asset_key)
             .any(|candidate| candidate == evidence_key),
-        golish_db::repo::coverage_truth::TECH_EAS_PORT
-        | golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
+        golish_db::repo::coverage_truth::TECH_EAS_PORT => {
             let class = golish_agent_kit::harness::technique_resolver::classify_stage_asset(
                 golish_agent_kit::harness::StageKind::ExternalAttackSurface,
                 Some(&row.target_type),
@@ -1342,6 +1363,18 @@ fn target_row_still_authorizes_eas_fact(
                 .into_iter()
                 .filter_map(|candidate| golish_pentest_domain::canonical_asset_key(candidate))
                 .any(|candidate| candidate.key == evidence_key)
+        }
+        golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP => {
+            let class = golish_agent_kit::harness::technique_resolver::classify_stage_asset(
+                golish_agent_kit::harness::StageKind::ExternalAttackSurface,
+                Some(&row.target_type),
+                &row.target_value,
+            );
+            class == golish_pentest_domain::AssetClass::Ip
+                && [&row.target_name, &row.target_value]
+                    .into_iter()
+                    .filter_map(|candidate| golish_pentest_domain::canonical_asset_key(candidate))
+                    .any(|candidate| candidate.key == evidence_key)
         }
         golish_db::repo::coverage_truth::TECH_EAS_WEB_FP => [&row.target_name, &row.target_value]
             .into_iter()
@@ -2265,7 +2298,7 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
         organization_id: uuid::Uuid,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Vec<golish_agent_kit::harness::EvidenceFact> {
-        use golish_agent_kit::harness::{EvidenceFact, EvidenceOutcome};
+        use golish_agent_kit::harness::EvidenceFact;
         match self
             .eas_evidence_facts_for_session_org_fresh_impl(session_id, organization_id, since)
             .await
@@ -2273,11 +2306,7 @@ impl crate::ai::harness_submit_tool::EvidenceLedgerQuery for GolishDbRepoProvide
             Ok(rows) => rows
                 .into_iter()
                 .filter_map(|(asset, technique, outcome, evidence_id)| {
-                    let outcome = match outcome.as_str() {
-                        "found" => EvidenceOutcome::Found,
-                        "empty" => EvidenceOutcome::Empty,
-                        _ => return None,
-                    };
+                    let outcome = strict_eas_evidence_outcome(&outcome)?;
                     Some(EvidenceFact {
                         asset,
                         technique,
@@ -2594,12 +2623,24 @@ mod tests {
         dns_partial_outcome_hosts, eas_full_port_manifest_hash, eas_full_port_manifest_hash_v2,
         eas_full_port_manifest_hash_v3, eas_port_scan_output_hash, eas_target_bound_evidence_facts,
         enumeration_evidence_fact_set, enumeration_target_bound_evidence_fact_set,
-        projected_technique_outcome_evidence_id, terminal_materialization_asset_key,
-        vuln_target_bound_evidence_fact_set, VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND,
+        projected_technique_outcome_evidence_id, strict_eas_evidence_outcome,
+        terminal_materialization_asset_key, vuln_target_bound_evidence_fact_set,
+        VULN_ANONYMOUS_ACCESS_EXHAUSTED_EVIDENCE_KIND, VULN_NUCLEI_EXHAUSTED_EVIDENCE_KIND,
     };
     use std::collections::BTreeSet;
     use std::net::IpAddr;
     use uuid::Uuid;
+
+    #[test]
+    fn strict_eas_gate_projection_preserves_trusted_blocked_outcomes() {
+        use golish_agent_kit::harness::EvidenceOutcome;
+
+        assert_eq!(
+            strict_eas_evidence_outcome("blocked"),
+            Some(EvidenceOutcome::Blocked)
+        );
+        assert_eq!(strict_eas_evidence_outcome("error"), None);
+    }
 
     fn full_port_attestation(target_id: Uuid, ip: &str) -> String {
         let tool_args = "-n -Pn -sT --open -p- -T3 --max-rate 500 --max-retries 2 --host-timeout 30m -oX - -iL {input_file}";
@@ -2902,6 +2943,25 @@ mod tests {
             "not_applicable".to_string(),
             91,
         )));
+
+        let mut exhausted = row.clone();
+        exhausted.evidence_outcome = "blocked".to_string();
+        exhausted.evidence_kind = Some(VULN_ANONYMOUS_ACCESS_EXHAUSTED_EVIDENCE_KIND.to_string());
+        assert!(
+            vuln_target_bound_evidence_fact_set(org, vec![exhausted.clone()]).contains(&(
+                origin.to_string(),
+                "WSTG-ATHN-04".to_string(),
+                "blocked".to_string(),
+                91,
+            )),
+            "server-sealed timeout exhaustion must close the anonymous-access denominator"
+        );
+
+        exhausted.evidence_outcome = "not_applicable".to_string();
+        assert!(
+            vuln_target_bound_evidence_fact_set(org, vec![exhausted]).is_empty(),
+            "exhaustion evidence cannot manufacture a not-applicable conclusion"
+        );
 
         for forged in [
             {
@@ -3756,6 +3816,7 @@ mod tests {
         for technique in [
             golish_db::repo::coverage_truth::TECH_EAS_LIVENESS,
             golish_db::repo::coverage_truth::TECH_EAS_PORT,
+            golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
         ] {
             let mut row =
                 target_bound_row(org, "192.0.2.10", technique, "192.0.2.10", "ip_address");
@@ -3775,12 +3836,57 @@ mod tests {
                 .to_string(),
             );
 
+            let facts = super::eas_target_bound_evidence_fact_set(org, vec![row]);
             assert_eq!(
-                eas_target_bound_evidence_facts(org, vec![row]).len(),
+                facts.len(),
                 1,
                 "an exact exhausted producer is typed blocked truth, not permission to rescan"
             );
+            assert_eq!(
+                projected_technique_outcome_evidence_id(
+                    "192.0.2.10",
+                    technique,
+                    "blocked",
+                    &[91],
+                    &facts,
+                    Some("eas_discover_ports_policy"),
+                ),
+                Some(91),
+                "the guarded fact must survive the outcome-row source check"
+            );
         }
+    }
+
+    #[test]
+    fn eas_service_policy_block_rejects_cidr_even_with_trusted_producer() {
+        let org = Uuid::new_v4();
+        let mut row = target_bound_row(
+            org,
+            "192.0.2.0/24",
+            golish_db::repo::coverage_truth::TECH_EAS_SERVICE_FP,
+            "192.0.2.0/24",
+            "cidr",
+        );
+        row.evidence_outcome = "blocked".to_string();
+        row.tool_name = Some("eas_discover_ports".to_string());
+        row.evidence_kind = Some("eas.port_scan_policy_blocked".to_string());
+        row.evidence_raw_output = Some(
+            serde_json::json!({
+                "schema": "eas_port_scan_policy_blocked_v1",
+                "reason_code": "full_profile_host_budget_exceeded",
+                "scan_profile": "full",
+                "host_budget": 4,
+                "network_launched": false,
+                "target_id": row.target_id,
+                "requested": "192.0.2.0/24",
+            })
+            .to_string(),
+        );
+
+        assert!(
+            eas_target_bound_evidence_facts(org, vec![row]).is_empty(),
+            "a CIDR has no exact service endpoint and cannot close SERVICE-FINGERPRINT"
+        );
     }
 
     #[test]

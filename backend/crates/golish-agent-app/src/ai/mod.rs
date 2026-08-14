@@ -10,8 +10,6 @@ pub mod application_model_gate;
 pub(crate) mod application_understanding_projection;
 pub mod application_understanding_runtime;
 pub mod candidate_analysis_gate;
-pub mod candidate_analysis_projection;
-pub mod candidate_analysis_runtime;
 pub mod candidate_submit_tool;
 pub mod commands;
 pub mod db_bridge;

@@ -146,6 +146,8 @@ impl HypothesisRegistryRepository for FrozenSnapshotRegistry {
 #[derive(Clone)]
 struct Fixture {
     identity: UnifiedInvestigationUnitIdentity,
+    asset_lane_id: Uuid,
+    target_id: Uuid,
     work_id: Uuid,
     stable_request_id: Uuid,
     snapshot_id: Uuid,
@@ -156,10 +158,6 @@ struct Fixture {
     authority_chunk_id: Uuid,
     authority_source_hash: String,
     authority_body: String,
-}
-
-struct VerificationSubjectFixture {
-    task_id: Uuid,
 }
 
 async fn seed_fixture(pool: &PgPool) -> Fixture {
@@ -173,6 +171,11 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
     let stable_request_id = Uuid::new_v4();
     let snapshot_id = Uuid::new_v4();
     let analysis_attempt_id = Uuid::new_v4();
+    let asset_lane_id = Uuid::new_v4();
+    let asset_queue_id = Uuid::new_v4();
+    let company_queue_id = Uuid::new_v4();
+    let company_member_id = Uuid::new_v4();
+    let target_id = Uuid::new_v4();
     let owning_request_id = "analysis-host-pg-request".to_owned();
     let snapshot_hash = digest('8');
     let attempt_input_hash = digest('9');
@@ -260,12 +263,56 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
     .await
     .expect("seed Investigation run head");
     sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id,source)
+           VALUES($1,'selected.example','domain','selected.example','in','/fixture/project',$2,'manual')"#,
+    )
+    .bind(target_id)
+    .bind(organization_id)
+    .execute(&mut *tx)
+    .await
+    .expect("seed selected asset target");
+    sqlx::query(
+        r#"INSERT INTO targets(
+               id,name,target_type,value,scope,project_path,organization_id,source)
+           VALUES($1,'foreign.example','domain','foreign.example','in','/fixture/project',$2,'manual')"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(organization_id)
+    .execute(&mut *tx)
+    .await
+    .expect("seed foreign same-company target");
+    sqlx::query(
+        r#"INSERT INTO investigation_asset_lanes(
+               asset_lane_id,asset_queue_id,company_queue_id,company_member_id,
+               authority_id,operation_id,stage_execution_id,scope_snapshot_id,
+               organization_id,target_id,target_type_at_freeze,target_value_at_freeze,
+               target_source_at_freeze,target_created_at,target_identity_sha256,ordinal,
+               state,max_evolution_epochs)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'domain','selected.example',
+                  'manual',NOW(),$11,0,'analyzing',8)"#,
+    )
+    .bind(asset_lane_id)
+    .bind(asset_queue_id)
+    .bind(company_queue_id)
+    .bind(company_member_id)
+    .bind(authority_id)
+    .bind(operation_id)
+    .bind(stage_execution_id)
+    .bind(scope_snapshot_id)
+    .bind(organization_id)
+    .bind(target_id)
+    .bind(digest('0'))
+    .execute(&mut *tx)
+    .await
+    .expect("seed active asset lane");
+    sqlx::query(
         r#"INSERT INTO investigation_run_work_items(
                work_id,stable_work_key_sha256,authority_id,operation_id,
                stage_execution_id,owning_stage_run_request_id,stage_run_unit_id,
                scope_snapshot_id,organization_id,work_kind,external_identity_sha256,
-               current_state,observed_stop_epoch
-           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'analysis',$10,'running',0)"#,
+               current_state,observed_stop_epoch,asset_lane_id
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'analysis',$10,'running',0,$11)"#,
     )
     .bind(work_id)
     .bind(digest('1'))
@@ -277,6 +324,7 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
     .bind(scope_snapshot_id)
     .bind(organization_id)
     .bind(digest('2'))
+    .bind(asset_lane_id)
     .execute(&mut *tx)
     .await
     .expect("seed registered analysis work");
@@ -289,9 +337,10 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
                bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
                freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
                temporal_validity_policy_set_hash,target_state_epoch_set_hash,
-               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash
+               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash,
+               asset_lane_id
            ) VALUES($1,$2,$3,0,$4,TRUE,$5,$6,$7,$8,'sealed_ready',$9,$10,4,$11,4,$12,
-                    $13,$14,$15,$16,$17,$18,NOW(),$19)"#,
+                    $13,$14,$15,$16,$17,$18,NOW(),$19,$20)"#,
     )
     .bind(snapshot_id)
     .bind(operation_id)
@@ -312,6 +361,7 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
     .bind(digest('0'))
     .bind(digest('7'))
     .bind(digest('8'))
+    .bind(asset_lane_id)
     .execute(&mut *tx)
     .await
     .expect("seed Candidate snapshot");
@@ -321,8 +371,8 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
                attempt_input_hash,attack_class_checklist_version,
                attack_class_checklist_digest,trust_boundary_checklist_version,
                trust_boundary_checklist_digest,coverage_sampling_contract_version,
-               coverage_sampling_contract_digest,retry_limit
-           ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1)"#,
+               coverage_sampling_contract_digest,retry_limit,asset_lane_id
+           ) VALUES($1,$2,$3,$4,0,$5,'1',$6,'1',$7,'1',$8,1,$9)"#,
     )
     .bind(analysis_attempt_id)
     .bind(snapshot_id)
@@ -332,6 +382,7 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
     .bind(digest('a'))
     .bind(digest('b'))
     .bind(digest('c'))
+    .bind(asset_lane_id)
     .execute(&mut *tx)
     .await
     .expect("seed ordinal-zero attempt");
@@ -405,6 +456,8 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
             stage_run_unit_id,
             organization_id,
         },
+        asset_lane_id,
+        target_id,
         work_id,
         stable_request_id,
         snapshot_id,
@@ -418,109 +471,6 @@ async fn seed_fixture(pool: &PgPool) -> Fixture {
     }
 }
 
-async fn seed_verification_subject_fixture(
-    pool: &PgPool,
-    fixture: &Fixture,
-) -> VerificationSubjectFixture {
-    let task_id = Uuid::new_v4();
-    let assignment_set_id = Uuid::new_v4();
-    let revision_id = Uuid::new_v4();
-    let revision_sha256 = digest('2');
-    let plan_id = Uuid::new_v4();
-    let plan_sha256 = digest('3');
-    let generation_id = Uuid::new_v4();
-    let relevant_evidence_snapshot_id = Uuid::new_v4();
-    let campaigns = (0..2)
-        .map(|ordinal| InvestigationVerificationCampaignSubjectV1 {
-            campaign_id: Uuid::new_v4(),
-            plan_objective_id: Uuid::new_v4(),
-            objective_id: Uuid::new_v4(),
-            reservation_sha256: digest(if ordinal == 0 { '4' } else { '5' }),
-            capability_assessment_set_sha256: digest(if ordinal == 0 { '6' } else { '7' }),
-            available_capability_ids: Vec::new(),
-        })
-        .collect::<Vec<_>>();
-
-    let mut tx = pool.begin().await.expect("begin VerificationTask fixture");
-    sqlx::query("SET LOCAL session_replication_role='replica'")
-        .execute(&mut *tx)
-        .await
-        .expect("isolate VerificationTask authority fixture");
-    sqlx::query(
-        r#"INSERT INTO hypothesis_verification_tasks(
-               task_id,stable_task_key_sha256,operation_id,project_scope_id,
-               stage_execution_id,stage_run_unit_id,scope_snapshot_id,organization_id,
-               hypothesis_revision_id,hypothesis_revision_sha256,
-               verification_plan_id,verification_plan_sha256,
-               relevant_evidence_snapshot_id,semantic_evidence_set_sha256,
-               open_obligation_set_sha256,semantic_attempt_fingerprint,
-               task_contract_version,first_admission_generation_id
-           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                    'hypothesis_verification_task.v1',$17)"#,
-    )
-    .bind(task_id)
-    .bind(digest('1'))
-    .bind(fixture.identity.stage.operation_id)
-    .bind(Uuid::new_v4())
-    .bind(fixture.identity.stage.stage_execution_id)
-    .bind(fixture.identity.stage_run_unit_id)
-    .bind(fixture.identity.stage.scope_snapshot_id)
-    .bind(fixture.identity.organization_id)
-    .bind(revision_id)
-    .bind(&revision_sha256)
-    .bind(plan_id)
-    .bind(&plan_sha256)
-    .bind(relevant_evidence_snapshot_id)
-    .bind(digest('6'))
-    .bind(digest('7'))
-    .bind(digest('8'))
-    .bind(generation_id)
-    .execute(&mut *tx)
-    .await
-    .expect("seed VerificationTask");
-    sqlx::query(
-        r#"INSERT INTO hypothesis_verification_task_assignment_sets(
-               assignment_set_id,stable_request_id,task_id,hypothesis_revision_id,
-               verification_plan_id,status,member_count,member_set_sha256,row_version,sealed_at
-           ) VALUES($1,$2,$3,$4,$5,'sealed',$6,$7,1,NOW())"#,
-    )
-    .bind(assignment_set_id)
-    .bind(Uuid::new_v4())
-    .bind(task_id)
-    .bind(revision_id)
-    .bind(plan_id)
-    .bind(i64::try_from(campaigns.len()).expect("bounded fixture campaign count"))
-    .bind(digest('9'))
-    .execute(&mut *tx)
-    .await
-    .expect("seed sealed VerificationTask assignment");
-    for campaign in &campaigns {
-        sqlx::query(
-            r#"INSERT INTO hypothesis_verification_task_campaigns(
-                   campaign_id,assignment_set_id,task_id,hypothesis_revision_id,
-                   verification_plan_id,plan_objective_id,verification_objective_id,
-                   reservation_sha256)
-               VALUES($1,$2,$3,$4,$5,$6,$7,$8)"#,
-        )
-        .bind(campaign.campaign_id)
-        .bind(assignment_set_id)
-        .bind(task_id)
-        .bind(revision_id)
-        .bind(plan_id)
-        .bind(campaign.plan_objective_id)
-        .bind(campaign.objective_id)
-        .bind(&campaign.reservation_sha256)
-        .execute(&mut *tx)
-        .await
-        .expect("seed Campaign/objective reservation");
-    }
-    tx.commit()
-        .await
-        .expect("commit VerificationTask subject fixture");
-
-    VerificationSubjectFixture { task_id }
-}
-
 fn snapshot_view(fixture: &Fixture) -> CandidateAnalysisSnapshotView {
     CandidateAnalysisSnapshotView {
         snapshot_id: fixture.snapshot_id,
@@ -528,6 +478,7 @@ fn snapshot_view(fixture: &Fixture) -> CandidateAnalysisSnapshotView {
         operation_id: fixture.identity.stage.operation_id,
         scope_snapshot_id: fixture.identity.stage.scope_snapshot_id,
         organization_id: fixture.identity.organization_id,
+        asset_lane_id: Some(fixture.asset_lane_id),
         disposition: CandidateAnalysisSnapshotDispositionV1::SealedReady,
         snapshot_hash: fixture.snapshot_hash.clone(),
         candidate_snapshot_authority_hash: digest('1'),
@@ -574,6 +525,7 @@ async fn pg_host_freezes_binds_and_replays_exact_analysis_subject() {
             operation_id: fixture.identity.stage.operation_id,
             scope_snapshot_id: fixture.identity.stage.scope_snapshot_id,
             organization_id: fixture.identity.organization_id,
+            asset_lane_id: fixture.asset_lane_id,
         },
         snapshot: snapshot_view(&fixture),
         calls: calls.clone(),
@@ -584,6 +536,8 @@ async fn pg_host_freezes_binds_and_replays_exact_analysis_subject() {
         stable_request_id: fixture.stable_request_id,
         identity: fixture.identity.clone(),
         work_id: fixture.work_id,
+        asset_lane_id: fixture.asset_lane_id,
+        pending_evolution_authority_id: None,
     };
 
     let first = host
@@ -593,6 +547,7 @@ async fn pg_host_freezes_binds_and_replays_exact_analysis_subject() {
     assert!(!first.replayed);
     assert_eq!(first.analysis_attempt_id, fixture.analysis_attempt_id);
     assert_eq!(first.candidate_snapshot_id, fixture.snapshot_id);
+    assert_eq!(first.asset_lane_id, fixture.asset_lane_id);
     assert_eq!(first.candidate_snapshot_sha256, fixture.snapshot_hash);
     assert_eq!(first.subject_fingerprint_sha256, fixture.attempt_input_hash);
     assert_eq!(first.authority_inputs.len(), 1);
@@ -610,6 +565,9 @@ async fn pg_host_freezes_binds_and_replays_exact_analysis_subject() {
     );
     assert_eq!(first.authority_inputs[0].body, fixture.authority_body);
     assert_eq!(first.authority_inputs[0].chunks.len(), 1);
+    assert_eq!(first.subject_authorities.len(), 1);
+    assert_eq!(first.subject_authorities[0].subject_kind, "asset");
+    assert_eq!(first.subject_authorities[0].subject_id, fixture.target_id);
     assert_eq!(
         first.authority_inputs[0].chunks[0].chunk_id,
         fixture.authority_chunk_id
@@ -633,39 +591,4 @@ async fn pg_host_freezes_binds_and_replays_exact_analysis_subject() {
 
     let provider = GolishDbRepoProvider::new(Arc::new(db.pool().clone()));
     assert!(provider.investigation_analysis_host_repository().is_ok());
-}
-
-#[tokio::test]
-#[serial]
-async fn pg_host_rejects_reservation_only_verification_campaign_authority() {
-    let (db, _data_dir) = migrated_db("verification-campaign-mapping").await;
-    let fixture = seed_fixture(db.pool()).await;
-    let expected = seed_verification_subject_fixture(db.pool(), &fixture).await;
-    let host = PgInvestigationAnalysisHostRepository::new(Arc::new(db.pool().clone()));
-
-    let error = host
-        .prepare_verification_task_subject(PrepareInvestigationVerificationTaskSubject {
-            stable_request_id: Uuid::new_v4(),
-            identity: fixture.identity.clone(),
-            verification_task_id: expected.task_id,
-        })
-        .await
-        .expect_err("reservation-only fixture must not become executable Campaign authority");
-    assert!(matches!(
-        error,
-        InvestigationAnalysisHostError::SnapshotBlocked { .. }
-    ));
-    assert!(
-        error
-            .to_string()
-            .contains("Campaign reservation generation is incomplete"),
-        "unexpected fail-closed reason: {error}"
-    );
-    let campaign_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM verification_campaigns WHERE operation_id=$1")
-            .bind(fixture.identity.stage.operation_id)
-            .fetch_one(db.pool())
-            .await
-            .expect("count materialized Campaigns after rejected authority");
-    assert_eq!(campaign_count, 0);
 }

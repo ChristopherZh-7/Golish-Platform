@@ -33,6 +33,46 @@ fn persisted_url_query_names(url: &str) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AnonymousAccessReviewOrigin {
+    Exact(String),
+    Ambiguous(Vec<String>),
+    InvalidExplicit,
+    Missing,
+}
+
+fn select_anonymous_access_review_origin<'a>(
+    explicit_exact_origin: Option<&str>,
+    target_value: Option<&str>,
+    endpoint_urls: impl IntoIterator<Item = &'a str>,
+) -> AnonymousAccessReviewOrigin {
+    if let Some(explicit_exact_origin) = explicit_exact_origin
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return golish_pentest_domain::canonical_web_origin(explicit_exact_origin)
+            .map(|origin| AnonymousAccessReviewOrigin::Exact(origin.key))
+            .unwrap_or(AnonymousAccessReviewOrigin::InvalidExplicit);
+    }
+
+    if let Some(origin) = target_value.and_then(golish_pentest_domain::canonical_web_origin) {
+        return AnonymousAccessReviewOrigin::Exact(origin.key);
+    }
+
+    let exact_origins = endpoint_urls
+        .into_iter()
+        .filter_map(golish_pentest_domain::canonical_web_origin)
+        .map(|origin| origin.key)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    match exact_origins.as_slice() {
+        [exact_origin] => AnonymousAccessReviewOrigin::Exact(exact_origin.clone()),
+        [] => AnonymousAccessReviewOrigin::Missing,
+        _ => AnonymousAccessReviewOrigin::Ambiguous(exact_origins),
+    }
+}
+
 #[derive(Clone)]
 struct TargetIntelReceiptHostState {
     operation_id: Uuid,
@@ -1309,6 +1349,7 @@ impl GolishDbRepoProvider {
         operation_id: Option<Uuid>,
         target_id: Uuid,
         sections: &[String],
+        requested_exact_origin: Option<&str>,
     ) -> anyhow::Result<serde_json::Value> {
         let include_all = sections.contains(&"all".to_string());
         let mut data = json!({});
@@ -1346,31 +1387,34 @@ impl GolishDbRepoProvider {
                 .api_endpoints_list_by_target(target_id)
                 .await
             {
-                let anonymous_access_review = if let Some(origin) = target_row
-                    .as_ref()
-                    .and_then(|target| golish_pentest_domain::canonical_web_origin(&target.value))
-                {
-                    let manifest_endpoints = if let Some(operation_id) = operation_id {
-                        self.recon_scans
-                            .enumeration_list_endpoints_for_operation_target_origin(
-                                operation_id,
-                                target_id,
-                                &origin.key,
-                            )
-                            .await?
-                    } else {
-                        Vec::new()
-                    };
-                    let eligible_endpoint_ids =
+                let review_origin = select_anonymous_access_review_origin(
+                    requested_exact_origin,
+                    target_row.as_ref().map(|target| target.value.as_str()),
+                    endpoints.iter().map(|endpoint| endpoint.url.as_str()),
+                );
+                let anonymous_access_review = match review_origin {
+                    AnonymousAccessReviewOrigin::Exact(exact_origin) => {
+                        let manifest_endpoints = if let Some(operation_id) = operation_id {
+                            self.recon_scans
+                                .enumeration_list_endpoints_for_operation_target_origin(
+                                    operation_id,
+                                    target_id,
+                                    &exact_origin,
+                                )
+                                .await?
+                        } else {
+                            Vec::new()
+                        };
+                        let eligible_endpoint_ids =
                         golish_pentest_app::pentest_bridge::anonymous_access_eligible_endpoint_ids(
                             &manifest_endpoints,
-                            &origin.key,
+                            &exact_origin,
                         );
-                    let eligible_id_set = eligible_endpoint_ids
-                        .iter()
-                        .copied()
-                        .collect::<BTreeSet<_>>();
-                    let mut eligible_endpoint_query_contracts = manifest_endpoints
+                        let eligible_id_set = eligible_endpoint_ids
+                            .iter()
+                            .copied()
+                            .collect::<BTreeSet<_>>();
+                        let mut eligible_endpoint_query_contracts = manifest_endpoints
                         .iter()
                         .filter(|endpoint| eligible_id_set.contains(&endpoint.id))
                         .map(|endpoint| {
@@ -1386,30 +1430,50 @@ impl GolishDbRepoProvider {
                             })
                         })
                         .collect::<Vec<_>>();
-                    eligible_endpoint_query_contracts.sort_by(|left, right| {
-                        left["endpoint_id"]
-                            .as_str()
-                            .cmp(&right["endpoint_id"].as_str())
-                    });
-                    json!({
+                        eligible_endpoint_query_contracts.sort_by(|left, right| {
+                            left["endpoint_id"]
+                                .as_str()
+                                .cmp(&right["endpoint_id"].as_str())
+                        });
+                        json!({
+                            "schema": "anonymous_access_review_v1",
+                            "exact_origin": exact_origin,
+                            "eligible_count": eligible_endpoint_ids.len(),
+                            "eligible_endpoint_ids": eligible_endpoint_ids,
+                            "eligible_endpoint_query_contracts": eligible_endpoint_query_contracts,
+                            "selected_probes_rule": "choose a bounded sensitive subset only from eligible_endpoint_ids; query_values keys may only come from that endpoint's persisted_url_query_names, and must be {} when the list is empty",
+                            "authority": "operation_manifest_planning_projection_wrapper_reloads_before_send",
+                            "operation_bound": operation_id.is_some(),
+                        })
+                    }
+                    AnonymousAccessReviewOrigin::Ambiguous(available_exact_origins) => json!({
                         "schema": "anonymous_access_review_v1",
-                        "exact_origin": origin.key,
-                        "eligible_count": eligible_endpoint_ids.len(),
-                        "eligible_endpoint_ids": eligible_endpoint_ids,
-                        "eligible_endpoint_query_contracts": eligible_endpoint_query_contracts,
-                        "selected_probes_rule": "choose a bounded sensitive subset only from eligible_endpoint_ids; query_values keys may only come from that endpoint's persisted_url_query_names, and must be {} when the list is empty",
+                        "eligible_count": 0,
+                        "eligible_endpoint_ids": [],
+                        "error": "target_has_multiple_canonical_http_origins",
+                        "available_exact_origins": available_exact_origins,
+                        "next_action": "repeat query_target_data with exact_origin copied from the current Vuln work item's exact target_url",
                         "authority": "operation_manifest_planning_projection_wrapper_reloads_before_send",
                         "operation_bound": operation_id.is_some(),
-                    })
-                } else {
-                    json!({
+                    }),
+                    AnonymousAccessReviewOrigin::InvalidExplicit => json!({
+                        "schema": "anonymous_access_review_v1",
+                        "eligible_count": 0,
+                        "eligible_endpoint_ids": [],
+                        "error": "invalid_explicit_exact_origin",
+                        "next_action": "copy the exact absolute HTTP(S) target_url from the current Vuln work item into exact_origin",
+                        "authority": "operation_manifest_planning_projection_wrapper_reloads_before_send",
+                        "operation_bound": operation_id.is_some(),
+                    }),
+                    AnonymousAccessReviewOrigin::Missing => json!({
                         "schema": "anonymous_access_review_v1",
                         "eligible_count": 0,
                         "eligible_endpoint_ids": [],
                         "error": "target_has_no_canonical_http_origin",
+                        "next_action": "repeat query_target_data with exact_origin copied from the current Vuln work item's exact target_url",
                         "authority": "operation_manifest_planning_projection_wrapper_reloads_before_send",
                         "operation_bound": operation_id.is_some(),
-                    })
+                    }),
                 };
                 data["endpoints"] = serde_json::to_value(&endpoints)?;
                 data["endpoints_count"] = json!(endpoints.len());
@@ -2501,6 +2565,56 @@ mod tests {
         );
         assert!(persisted_url_query_names("https://app.example.test/search").is_empty());
         assert!(persisted_url_query_names("not a url").is_empty());
+    }
+
+    #[test]
+    fn anonymous_access_review_recovers_one_operation_origin_from_bare_domain_endpoints() {
+        assert_eq!(
+            select_anonymous_access_review_origin(
+                None,
+                Some("moresec.cn"),
+                [
+                    "https://moresec.cn/api/v1/verify",
+                    "https://moresec.cn/license/api/v1/mcdpCert?mcdp_code=",
+                ],
+            ),
+            AnonymousAccessReviewOrigin::Exact("https://moresec.cn:443".to_string())
+        );
+    }
+
+    #[test]
+    fn anonymous_access_review_prefers_the_explicit_work_item_origin() {
+        assert_eq!(
+            select_anonymous_access_review_origin(
+                Some("https://moresec.cn:443/path"),
+                Some("moresec.cn"),
+                ["http://moresec.cn/api", "https://moresec.cn/api"],
+            ),
+            AnonymousAccessReviewOrigin::Exact("https://moresec.cn:443".to_string())
+        );
+    }
+
+    #[test]
+    fn anonymous_access_review_never_guesses_between_multiple_endpoint_origins() {
+        assert_eq!(
+            select_anonymous_access_review_origin(
+                None,
+                Some("moresec.cn"),
+                ["http://moresec.cn/api", "https://moresec.cn/api"],
+            ),
+            AnonymousAccessReviewOrigin::Ambiguous(vec![
+                "http://moresec.cn:80".to_string(),
+                "https://moresec.cn:443".to_string(),
+            ])
+        );
+        assert_eq!(
+            select_anonymous_access_review_origin(
+                Some("not-an-origin"),
+                Some("moresec.cn"),
+                ["https://moresec.cn/api"],
+            ),
+            AnonymousAccessReviewOrigin::InvalidExplicit
+        );
     }
 
     #[test]

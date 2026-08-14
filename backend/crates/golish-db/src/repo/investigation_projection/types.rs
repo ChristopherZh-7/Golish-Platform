@@ -79,7 +79,9 @@ pub struct InvestigationOperationReadAuthority {
     pub cursor_salt: [u8; 32],
 }
 
-/// The four values that define one stable read/pagination snapshot.
+/// The stable read/pagination snapshot. `historical_terminal` is server-owned:
+/// it is set only when an exact terminal stage-run event predates the frozen
+/// authority expiry and must never be accepted from a client cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvestigationTemporalReadAuthority {
     pub projection_schema_version: i32,
@@ -87,6 +89,7 @@ pub struct InvestigationTemporalReadAuthority {
     pub as_of_temporal_cutoff: DateTime<Utc>,
     pub authority_epoch_set_hash: String,
     pub earliest_effective_valid_until: DateTime<Utc>,
+    pub historical_terminal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +122,7 @@ pub struct InvestigationStageRunReadAuthority {
     pub change_seq: i64,
     pub head_version: i64,
     pub head_sha256: String,
+    pub terminal_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

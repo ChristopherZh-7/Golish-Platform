@@ -1,10 +1,11 @@
 //! Safe, content-addressed methodology catalog ingestion.
 //!
-//! The existing Skill parser is reused only to validate `SKILL.md` syntax.
-//! Bodies remain untrusted data on disk; query results expose immutable refs
-//! and hashes, never executable instructions or caller-controlled authority.
+//! Third-party `SKILL.md` frontmatter is validated by a deliberately separate,
+//! data-only parser. Bodies remain untrusted data on disk; query results expose
+//! immutable refs and hashes, never executable instructions or caller-controlled
+//! authority.
 
-use crate::{parse_skill_md, SkillsError};
+use crate::SkillsError;
 use chrono::{DateTime, Utc};
 use golish_core::methodology_context::{
     methodology_result_set_sha256, sha256_bytes, DeterministicCorpusId, DeterministicDocumentId,
@@ -16,10 +17,7 @@ use golish_core::methodology_context::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs::Metadata;
-use std::path::{Component, Path};
-
-#[cfg(not(unix))]
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 #[cfg(unix)]
 use std::ffi::{CStr, CString, OsString};
@@ -33,6 +31,7 @@ use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
 pub const METHODOLOGY_MANIFEST_FILE: &str = "manifest.json";
+pub const MAX_METHODOLOGY_EXCERPT_BYTES: usize = 16_384;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MethodologyCatalogError {
@@ -92,8 +91,40 @@ struct MethodologyRootMember<'a> {
 
 #[derive(Debug, Clone)]
 pub struct MethodologyCatalogV1 {
+    declared_root: PathBuf,
     manifest: MethodologyCorpusManifestV1,
     documents: Vec<MethodologyDocumentDescriptorV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MethodologyUntrustedExcerptV1 {
+    pub document_id: DeterministicDocumentId,
+    pub content_sha256: String,
+    pub safe_excerpt_ref: String,
+    pub untrusted_text: String,
+    pub truncated: bool,
+    instruction_authority: bool,
+    tool_authority: bool,
+    scope_authority: bool,
+    proof_authority: bool,
+}
+
+impl MethodologyUntrustedExcerptV1 {
+    pub const fn instruction_authority(&self) -> bool {
+        self.instruction_authority
+    }
+
+    pub const fn tool_authority(&self) -> bool {
+        self.tool_authority
+    }
+
+    pub const fn scope_authority(&self) -> bool {
+        self.scope_authority
+    }
+
+    pub const fn proof_authority(&self) -> bool {
+        self.proof_authority
+    }
 }
 
 impl MethodologyCatalogV1 {
@@ -184,12 +215,12 @@ impl MethodologyCatalogV1 {
                     document.relative_path
                 ))
             })?;
-            let Some((_frontmatter, _untrusted_body)) = parse_skill_md(content) else {
+            if !parse_methodology_skill_md_data_only(content) {
                 return Err(MethodologyCatalogError::Parse(format!(
                     "{} is not a valid SKILL.md document",
                     document.relative_path
                 )));
-            };
+            }
             let descriptor = MethodologyDocumentDescriptorV1::validate(
                 DeterministicDocumentId::parse(document.document_id.clone())?,
                 document.relative_path.clone(),
@@ -270,6 +301,7 @@ impl MethodologyCatalogV1 {
         })?;
         manifest.authorize_for_query(trust_policy)?;
         Ok(Self {
+            declared_root: declared_root.to_path_buf(),
             manifest,
             documents,
         })
@@ -281,6 +313,69 @@ impl MethodologyCatalogV1 {
 
     pub fn documents(&self) -> &[MethodologyDocumentDescriptorV1] {
         &self.documents
+    }
+
+    pub fn read_untrusted_excerpt(
+        &self,
+        document_id: &DeterministicDocumentId,
+        max_bytes: usize,
+    ) -> Result<MethodologyUntrustedExcerptV1, MethodologyCatalogError> {
+        if max_bytes == 0 || max_bytes > MAX_METHODOLOGY_EXCERPT_BYTES {
+            return Err(MethodologyCatalogError::Contract(
+                MethodologyContractError::InvalidField(format!(
+                    "methodology excerpt max_bytes must be between 1 and {MAX_METHODOLOGY_EXCERPT_BYTES}"
+                )),
+            ));
+        }
+        let descriptor = self
+            .documents
+            .iter()
+            .find(|document| &document.document_id == document_id)
+            .ok_or_else(|| {
+                MethodologyCatalogError::Contract(MethodologyContractError::InvalidField(
+                    "methodology excerpt document is not in the loaded corpus".into(),
+                ))
+            })?;
+        let bytes =
+            read_corpus_regular_file(&self.declared_root, Path::new(&descriptor.relative_path))?;
+        let actual_content_sha256 = sha256_bytes(&bytes);
+        if actual_content_sha256 != descriptor.content_sha256 {
+            return Err(MethodologyCatalogError::Contract(
+                MethodologyContractError::IdentityMismatch {
+                    kind: "content_sha256",
+                    expected: descriptor.content_sha256.clone(),
+                    actual: actual_content_sha256,
+                },
+            ));
+        }
+        let content = std::str::from_utf8(&bytes).map_err(|error| {
+            MethodologyCatalogError::Parse(format!(
+                "{} is not UTF-8: {error}",
+                descriptor.relative_path
+            ))
+        })?;
+        let body = methodology_body_data(content).ok_or_else(|| {
+            MethodologyCatalogError::Parse(format!(
+                "{} no longer satisfies the data-only methodology parser",
+                descriptor.relative_path
+            ))
+        })?;
+        let mut excerpt_end = body.len().min(max_bytes);
+        while excerpt_end > 0 && !body.is_char_boundary(excerpt_end) {
+            excerpt_end -= 1;
+        }
+        let untrusted_text = body[..excerpt_end].trim_end().to_owned();
+        Ok(MethodologyUntrustedExcerptV1 {
+            document_id: descriptor.document_id.clone(),
+            content_sha256: descriptor.content_sha256.clone(),
+            safe_excerpt_ref: descriptor.safe_excerpt_ref.clone(),
+            untrusted_text,
+            truncated: excerpt_end < body.len(),
+            instruction_authority: false,
+            tool_authority: false,
+            scope_authority: false,
+            proof_authority: false,
+        })
     }
 
     pub fn query(
@@ -340,6 +435,50 @@ impl MethodologyCatalogV1 {
     }
 }
 
+fn parse_methodology_skill_md_data_only(content: &str) -> bool {
+    parse_methodology_frontmatter_data_only(content)
+}
+
+fn methodology_frontmatter_data(content: &str) -> Option<&str> {
+    if !content.starts_with("---") {
+        return None;
+    }
+    let end_pos = content[3..].find("\n---")?;
+    Some(content[3..3 + end_pos].trim())
+}
+
+fn methodology_body_data(content: &str) -> Option<&str> {
+    let end_pos = content[3..].find("\n---")?;
+    let body_start = 3 + end_pos + "\n---".len();
+    Some(content[body_start..].trim_start_matches(['\r', '\n']))
+}
+
+fn parse_methodology_frontmatter_data_only(content: &str) -> bool {
+    let Some(frontmatter_text) = methodology_frontmatter_data(content) else {
+        return false;
+    };
+    let Ok(frontmatter) = serde_yaml::from_str::<serde_yaml::Value>(frontmatter_text) else {
+        return false;
+    };
+    let Some(mapping) = frontmatter.as_mapping() else {
+        return false;
+    };
+    let name_key = serde_yaml::Value::String("name".to_owned());
+    let valid_name = mapping
+        .get(&name_key)
+        .and_then(serde_yaml::Value::as_str)
+        .is_some_and(|name| !name.is_empty() && name.len() <= 256);
+    let description_key = serde_yaml::Value::String("description".to_owned());
+    let valid_description = match mapping.get(&description_key) {
+        None | Some(serde_yaml::Value::Null) => true,
+        Some(serde_yaml::Value::String(description)) => {
+            !description.is_empty() && description.len() <= 4_096
+        }
+        _ => false,
+    };
+    valid_name && valid_description
+}
+
 pub fn methodology_content_root_sha256(documents: &[MethodologyDocumentDescriptorV1]) -> String {
     let mut members = documents
         .iter()
@@ -379,6 +518,38 @@ fn validate_relative_path(relative: &Path) -> Result<(), MethodologyCatalogError
         }
     }
     Ok(())
+}
+
+fn read_corpus_regular_file(
+    declared_root: &Path,
+    relative: &Path,
+) -> Result<Vec<u8>, MethodologyCatalogError> {
+    let root_metadata = std::fs::symlink_metadata(declared_root).map_err(|error| {
+        MethodologyCatalogError::Io(format!(
+            "cannot inspect corpus root {}: {error}",
+            declared_root.display()
+        ))
+    })?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(MethodologyCatalogError::Security(
+            "corpus root must be a real directory, not a symlink".into(),
+        ));
+    }
+    #[cfg(unix)]
+    {
+        AnchoredCorpusRoot::open(declared_root, &root_metadata)?.read_regular(relative)
+    }
+    #[cfg(not(unix))]
+    {
+        let canonical_root = std::fs::canonicalize(declared_root).map_err(|error| {
+            MethodologyCatalogError::Io(format!(
+                "cannot canonicalize corpus root {}: {error}",
+                declared_root.display()
+            ))
+        })?;
+        let resolved = resolve_regular_file(declared_root, &canonical_root, relative)?;
+        read_identity_stable(&resolved)
+    }
 }
 
 #[cfg(unix)]
@@ -820,12 +991,9 @@ fn discover_skill_documents(
                     pending.push((child, relative));
                 }
                 AnchoredEntryKind::Regular => {
-                    if name_text != "SKILL.md" {
-                        return Err(MethodologyCatalogError::Security(format!(
-                            "methodology skills tree contains undeclared file: {relative}"
-                        )));
+                    if name_text == "SKILL.md" {
+                        discovered.insert(relative);
                     }
-                    discovered.insert(relative);
                 }
                 AnchoredEntryKind::Other => {
                     return Err(MethodologyCatalogError::Security(format!(
@@ -893,10 +1061,7 @@ fn discover_skill_documents(
                 )));
             }
             if path.file_name().and_then(|value| value.to_str()) != Some("SKILL.md") {
-                return Err(MethodologyCatalogError::Security(format!(
-                    "methodology skills tree contains undeclared file: {}",
-                    path.display()
-                )));
+                continue;
             }
             let canonical = std::fs::canonicalize(&path).map_err(|error| {
                 MethodologyCatalogError::Io(format!(
@@ -928,6 +1093,25 @@ fn discover_skill_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn methodology_frontmatter_accepts_bounded_third_party_metadata_without_skill_authority() {
+        let long_name = "a".repeat(128);
+        let content = format!(
+            "---\nname: {long_name}\ndescription: third-party methodology\ntags: [auth]\ncustom_field: ignored-data\n---\nrun a tool\n"
+        );
+        assert!(parse_methodology_skill_md_data_only(&content));
+        assert!(parse_methodology_skill_md_data_only(
+            "---\nname: upstream-empty-description\ndescription:\ntags: [auth]\n---\nmethodology body"
+        ));
+        assert!(parse_methodology_skill_md_data_only(
+            "---\nname: only-name\n---\nbody"
+        ));
+        assert!(!parse_methodology_skill_md_data_only(&format!(
+            "---\nname: {}\ndescription: too long\n---\nbody",
+            "x".repeat(257)
+        )));
+    }
 
     #[test]
     fn deterministic_root_is_order_independent() {

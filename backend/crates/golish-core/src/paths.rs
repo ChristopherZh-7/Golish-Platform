@@ -10,19 +10,24 @@ pub fn app_data_base() -> Option<PathBuf> {
     golish_platform::paths::app_data_base("golish-platform")
 }
 
-static PROJECT_ROOT: OnceLock<Option<PathBuf>> = OnceLock::new();
+static PROJECT_RESOURCE_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
 
-/// Detect the project root by walking up from the current exe or CARGO_MANIFEST_DIR.
-/// Returns `<project_root>/resources` if found.
-fn project_resources_dir() -> Option<&'static PathBuf> {
-    PROJECT_ROOT
+/// Detect every usable resource root by walking up from `CARGO_MANIFEST_DIR`
+/// and the current executable. A built binary may have a partial
+/// `target/debug/resources` bundle (for example methodology only) while the
+/// source checkout still owns `resources/toolsconfig`; callers therefore must
+/// resolve each resource family independently instead of caching one global
+/// winner.
+fn project_resource_dirs() -> &'static [PathBuf] {
+    PROJECT_RESOURCE_DIRS
         .get_or_init(|| {
+            let mut roots = Vec::new();
             if let Ok(dir) = std::env::var("CARGO_MANIFEST_DIR") {
                 let mut p = PathBuf::from(dir);
                 while p.parent().is_some() {
                     let res = p.join("resources");
-                    if res.is_dir() {
-                        return Some(res);
+                    if res.is_dir() && !roots.contains(&res) {
+                        roots.push(res);
                     }
                     if !p.pop() {
                         break;
@@ -35,25 +40,27 @@ fn project_resources_dir() -> Option<&'static PathBuf> {
                     if !p.pop() {
                         break;
                     }
-                    let res = p.join("resources");
-                    if res.is_dir() && p.join("backend").is_dir() {
-                        return Some(res);
+                    for res in [p.join("resources"), p.join("Resources").join("resources")] {
+                        if res.is_dir() && !roots.contains(&res) {
+                            roots.push(res);
+                        }
                     }
                 }
             }
-            None
+            roots
         })
-        .as_ref()
+        .as_slice()
 }
 
 /// Resolve a shared resource path: project `resources/<name>` first,
 /// then fall back to `app_data_base/<name>`.
 fn resolve_shared_dir(name: &str) -> Option<PathBuf> {
-    if let Some(res) = project_resources_dir() {
-        let dir = res.join(name);
-        if dir.is_dir() {
-            return Some(dir);
-        }
+    if let Some(dir) = project_resource_dirs()
+        .iter()
+        .map(|resources| resources.join(name))
+        .find(|dir| dir.is_dir())
+    {
+        return Some(dir);
     }
     app_data_base().map(|b| b.join(name))
 }
@@ -104,6 +111,22 @@ pub fn skills_dir() -> Option<PathBuf> {
     resolve_shared_dir("skills")
 }
 
+/// Checked-in or application-resource CyberStrike methodology corpus.
+///
+/// This is a read-only, content-addressed knowledge corpus. Authorization to
+/// query it is enforced separately by the methodology manifest trust policy.
+pub fn bundled_methodology_corpus_dir() -> Option<PathBuf> {
+    project_resource_dirs()
+        .iter()
+        .map(|resources| {
+            resources
+                .join("methodology")
+                .join("corpora")
+                .join("cyberstrike")
+        })
+        .find(|corpus| corpus.join("manifest.json").is_file())
+}
+
 /// Embedded PostgreSQL data directory.
 pub fn pg_data_dir() -> Option<PathBuf> {
     app_data_base().map(|b| b.join("pgdata"))
@@ -123,11 +146,12 @@ pub fn wordlists_dir() -> Option<PathBuf> {
 /// Format: `{ "integrations": [{ "tool_id": "...", "schema": ... }] }`
 /// — see `resources/integrations/core.json`.
 pub fn integrations_core_file() -> Option<PathBuf> {
-    if let Some(res) = project_resources_dir() {
-        let p = res.join("integrations").join("core.json");
-        if p.is_file() {
-            return Some(p);
-        }
+    if let Some(path) = project_resource_dirs()
+        .iter()
+        .map(|resources| resources.join("integrations").join("core.json"))
+        .find(|path| path.is_file())
+    {
+        return Some(path);
     }
     app_data_base().map(|b| b.join("integrations").join("core.json"))
 }
@@ -215,5 +239,21 @@ mod tests {
             let p = home.join("proj").join("x");
             assert_eq!(super::contract_home_dir(&p), "~/proj/x");
         }
+    }
+
+    #[test]
+    fn bundled_cyberstrike_methodology_corpus_resolves_from_project_resources() {
+        let root = super::bundled_methodology_corpus_dir()
+            .expect("checked-in CyberStrike methodology corpus should resolve");
+        assert!(root.join("manifest.json").is_file());
+        assert!(root.join("skills/recon-methodology/SKILL.md").is_file());
+    }
+
+    #[test]
+    fn partial_binary_resource_bundle_does_not_shadow_checked_in_toolsconfig() {
+        let root = super::toolsconfig_dir()
+            .expect("checked-in toolsconfig should resolve independently of methodology");
+        assert!(root.join("httpx.json").is_file());
+        assert!(root.join("naabu.json").is_file());
     }
 }

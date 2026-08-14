@@ -18,12 +18,6 @@ vi.mock("@/components/Engagement/CandidateAttemptRows", () => ({
   ),
 }));
 
-vi.mock("@/components/Engagement/PendingPreparedActionPanel", () => ({
-  PendingPreparedActionPanel: (props: Record<string, unknown>) => (
-    <div data-testid="prepared-action-production-entry">{JSON.stringify(props)}</div>
-  ),
-}));
-
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));

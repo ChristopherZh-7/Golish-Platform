@@ -1,6 +1,6 @@
 {
   "$schema": "../../../../docs/design/2026-08-02-rag-first-unified-investigation-stage.md#5-stage-与operation-graph",
-  "$comment": "Unified analysis and automatic verification catalog entry. This schema-neutral resource does not install a production scheduler, database writer, or profile cutover.",
+  "$comment": "Mandatory company -> asset queue Investigation contract. Each active asset owns one durable Primary, a Primary-authored dynamic cognitive team, a dynamic hypothesis backlog and real operator execution.",
 
   "id": "investigation",
   "kind": "investigation",
@@ -10,36 +10,31 @@
   "allowed_next_stages": ["reporting"],
 
   "allowed_tool_types": [],
-  "operator_tool_catalog": {
-    "contract_version": "investigation_operator_tools_v1",
-    "resource": "resources/harness/stages/investigation/tool_catalog.json",
-    "canonical_sha256": "7471da63d3aaa16b24ddd26504e7c0977a61d8acd1a0942e1990b8102a808e1d"
-  },
   "deliverable_schema": "InvestigationRunClosureV1",
   "gate_validator": "validate_investigation_gate",
   "findings_allowed": false,
   "specialist": "investigation",
-  "$comment_team_scheduler": "The Investigation TeamPlan is only a durable governance envelope for one organization-bound Primary. The Primary owns and revises its own plan and returns through submit_result; it never receives the generic Company Controller dispatch/final routers. allowed_roles is a closed cognitive catalog, not a required roster or fixed set of consult lanes. Dynamic and nested work is admitted later by the Investigation TaskOrchestrator against typed task/dispatch receipts.",
+  "$comment_team_scheduler": "The TeamPlan is a company envelope. The current asset lane owns one durable Primary which may request zero to eight asset-bound cognitive or verification subtasks. Roles may repeat or be omitted and never form a business barrier. Analysis is read-only. Verification discovers the installed/ready inventory from the existing Tool Manager and runs it under the current asset-session authority; there is no Investigation-only tool catalog or per-hypothesis Primary fallback.",
   "team_scheduler": {
     "schema_version": 1,
     "enabled_in_v2_only": true,
     "coordination_mode": "investigation_task_orchestrator",
     "allowed_roles": [
       "investigation",
-      "pentester",
       "researcher",
       "browser",
+      "pentester",
+      "adviser",
       "coder",
       "installer",
       "enricher",
-      "memorist",
-      "adviser"
+      "memorist"
     ],
     "aggregator_kind": "investigation_primary",
     "aggregator_role": "investigation",
-    "max_company_units_active": 2,
+    "max_company_units_active": 1,
     "global_provider_cap": 4,
-    "max_workers": 4,
+    "max_workers": 8,
     "max_dynamic_requests": 64,
     "allowed_dynamic_request_kinds": [
       "analysis_task",
@@ -47,7 +42,7 @@
       "cognitive_support"
     ],
     "max_dynamic_subject_refs": 32,
-    "risk_lane": "cognitive_only"
+    "risk_lane": "asset_phase_bound"
   },
   "coverage_axis": ["HYPOTHESIS", "VERIFICATION_OBLIGATION"],
 

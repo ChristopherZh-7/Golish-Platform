@@ -51,6 +51,8 @@ pub trait WikiKbPort: Send + Sync {
 
     async fn wiki_search_by_tag(&self, tag: &str, limit: i64) -> anyhow::Result<Vec<WikiPage>>;
 
+    async fn wiki_get_page(&self, path: &str) -> anyhow::Result<Option<WikiPage>>;
+
     async fn wiki_list_cves_with_pocs(&self) -> anyhow::Result<Vec<CvePocSummary>>;
 
     async fn wiki_list_unresearched_cves(&self, limit: i64) -> anyhow::Result<Vec<CvePocSummary>>;
@@ -140,6 +142,10 @@ impl WikiKbPort for PgWikiKbAdapter {
 
     async fn wiki_search_by_tag(&self, tag: &str, limit: i64) -> anyhow::Result<Vec<WikiPage>> {
         Ok(golish_db::repo::wiki_kb::search_by_tag(self.pool.as_ref(), tag, limit).await?)
+    }
+
+    async fn wiki_get_page(&self, path: &str) -> anyhow::Result<Option<WikiPage>> {
+        Ok(golish_db::repo::wiki_kb::get_page(self.pool.as_ref(), path).await?)
     }
 
     async fn wiki_list_cves_with_pocs(&self) -> anyhow::Result<Vec<CvePocSummary>> {

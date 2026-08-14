@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { StageTeamReadModel } from "@/lib/api/stage-team";
-import type { ActiveSubAgent } from "@/store";
+import type { ActiveSubAgent, SubAgentEntry, SubAgentToolCall } from "@/store";
 import {
   STAGE_TRANSCRIPT_RENDER_LIMIT,
   StageTeamWorkspaceView,
@@ -250,6 +250,44 @@ function activities(): ActiveSubAgent[] {
   ];
 }
 
+function withWorkerTools(
+  toolCalls: SubAgentToolCall[],
+  entries: SubAgentEntry[] = toolCalls.map((toolCall) => ({
+    kind: "tool_call",
+    toolCallId: toolCall.id,
+  }))
+): ActiveSubAgent[] {
+  const result = activities();
+  const worker = result[1];
+  if (!worker) throw new Error("expected worker fixture");
+  result[1] = { ...worker, toolCalls, entries };
+  return result;
+}
+
+function backgroundedPortTool(): SubAgentToolCall {
+  return {
+    id: "ports-backgrounded",
+    name: "eas_discover_ports",
+    args: {
+      targets: ["192.0.2.10", "192.0.2.11"],
+      scan_profile: "standard",
+    },
+    status: "backgrounded",
+    result: {
+      status: "backgrounded",
+      completion_state: "backgrounded",
+      command: "naabu -list '/tmp/golish-input.txt' -iv 4 -top-ports 1000 -s c -Pn",
+      job_id: "job_c41a9755",
+      hint: "Managed process is still running",
+      capability: "eas.discover_ports",
+      generic_evidence_disabled: true,
+      automatic_kill: false,
+    },
+    streamingOutput: "192.0.2.10:443\n",
+    startedAt: "2026-08-02T01:00:03Z",
+  };
+}
+
 describe("StageTeamWorkspaceView", () => {
   it("bounds long transcript DOM while pinning the latest plan", () => {
     const model = readModel();
@@ -302,7 +340,11 @@ describe("StageTeamWorkspaceView", () => {
       "false"
     );
     expect(screen.queryByText("先建立模块依赖和 HTTP client 清单。")).not.toBeInTheDocument();
-    expect(screen.getByText("js_extract_apis")).toBeInTheDocument();
+    expect(screen.queryByText("js_extract_apis")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Using Js Extract Apis/ })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
     expect(screen.getByRole("region", { name: "Controller plan" })).toBeInTheDocument();
     expect(screen.getByText("定位 API 与主路径")).toBeInTheDocument();
     expect(screen.getByTestId("stage-team-workspace-layout")).toHaveClass(
@@ -376,6 +418,261 @@ describe("StageTeamWorkspaceView", () => {
       screen.getByText(/Durable worker state is available, but this session has no visible Agent transcript/)
     ).toBeInTheDocument();
     expect(screen.queryByText("确定性任务 · 无 LLM")).not.toBeInTheDocument();
+  });
+
+  it("groups consecutive tools into readable collapsed activities and stops at narrative boundaries", () => {
+    const portTool = backgroundedPortTool();
+    const serviceTool: SubAgentToolCall = {
+      id: "service-fingerprint",
+      name: "eas_fingerprint_services",
+      args: { targets: ["192.0.2.10"] },
+      status: "completed",
+      result: { command: "nmap -sV 192.0.2.10 -p 443", stdout: "443/tcp open https" },
+      startedAt: "2026-08-02T01:00:04Z",
+      completedAt: "2026-08-02T01:00:05Z",
+    };
+    const queryTool: SubAgentToolCall = {
+      id: "query-targets",
+      name: "query_target_data",
+      args: { target_ids: ["target-1"] },
+      status: "completed",
+      result: { targets: [], checked: true },
+      startedAt: "2026-08-02T01:00:06Z",
+      completedAt: "2026-08-02T01:00:06Z",
+    };
+    const agentActivities = withWorkerTools([portTool, serviceTool, queryTool], [
+      { kind: "tool_call", toolCallId: portTool.id },
+      { kind: "tool_call", toolCallId: serviceTool.id },
+      { kind: "text", text: "下一轮检查数据库状态" },
+      { kind: "tool_call", toolCallId: queryTool.id },
+    ]);
+
+    render(
+      <StageTeamWorkspaceView
+        model={readModel()}
+        agentActivities={agentActivities}
+        agentRequestIdsByWorker={{ "js-worker": "stage-run::worker:js-worker" }}
+        focusedAgentRequestId="stage-run::worker:js-worker"
+      />
+    );
+
+    expect(screen.getAllByTestId("tool-activity-group")).toHaveLength(2);
+    const firstActivity = screen.getByRole("button", {
+      name: /Scanning ports, probed services/,
+    });
+    expect(firstActivity).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("下一轮检查数据库状态")).toBeInTheDocument();
+    expect(screen.queryByText("eas_discover_ports")).not.toBeInTheDocument();
+    expect(screen.queryByText("eas_fingerprint_services")).not.toBeInTheDocument();
+    expect(screen.queryByText(/naabu -list/)).not.toBeInTheDocument();
+
+    fireEvent.click(firstActivity);
+    expect(screen.getByRole("button", { name: /Scanning ports.*Naabu.*Backgrounded/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Probed services.*Nmap.*Completed/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Read target data/ })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+  });
+
+  it("drills from activity to the backend command and output, then to raw AI Tool data", () => {
+    const portTool = backgroundedPortTool();
+    render(
+      <StageTeamWorkspaceView
+        model={readModel()}
+        agentActivities={withWorkerTools([portTool])}
+        agentRequestIdsByWorker={{ "js-worker": "stage-run::worker:js-worker" }}
+        focusedAgentRequestId="stage-run::worker:js-worker"
+      />
+    );
+
+    const activityToggle = screen.getByRole("button", { name: /Scanning ports/ });
+    expect(activityToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/naabu -list/)).not.toBeInTheDocument();
+    fireEvent.click(activityToggle);
+
+    const toolToggle = screen.getByRole("button", {
+      name: /Scanning ports.*Naabu.*Backgrounded/,
+    });
+    expect(toolToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toolToggle);
+
+    const terminal = screen.getByRole("region", {
+      name: "Scanning ports command and output",
+    });
+    expect(terminal).toHaveTextContent(
+      "$ naabu -list '/tmp/golish-input.txt' -iv 4 -top-ports 1000 -s c -Pn"
+    );
+    expect(terminal).toHaveTextContent("192.0.2.10:443");
+    expect(terminal).toHaveTextContent("job_c41a9755");
+    expect(terminal).toHaveTextContent("Managed process is still running");
+    expect(screen.queryByText("generic_evidence_disabled")).not.toBeInTheDocument();
+
+    const rawToggle = screen.getByRole("button", { name: "AI Tool raw data" });
+    expect(rawToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(rawToggle);
+
+    const rawData = screen.getByRole("region", { name: "Scanning ports raw tool data" });
+    expect(rawData).toHaveTextContent("Input");
+    expect(rawData).toHaveTextContent("Result");
+    expect(rawData).toHaveTextContent("scan_profile");
+    expect(rawData).toHaveTextContent("standard");
+    expect(rawData).toHaveTextContent("generic_evidence_disabled");
+    expect(rawData).toHaveTextContent("true");
+  });
+
+  it("drills into exact in-process HTTP observations without fabricating curl", () => {
+    const httpTool: SubAgentToolCall = {
+      id: "anonymous-access",
+      name: "vuln_probe_anonymous_access",
+      args: { target_id: "target-1", target_url: "https://api.example.test/" },
+      status: "completed",
+      result: {
+        exact_origin: "https://api.example.test:443",
+        selected_count: 2,
+        network_attempted: true,
+        completion_state: "complete",
+        observations: [
+          {
+            endpoint_id: "endpoint-1",
+            method: "GET",
+            path: "/admin",
+            query_bindings: [{ name: "tenant", value: "42" }],
+            network_attempted: true,
+            status_code: 200,
+            verdict: "suspicious",
+            response: {
+              content_type_family: "json",
+              declared_length: 4096,
+              captured_length: 1024,
+              prefix_sha256: "a".repeat(64),
+              truncated: true,
+            },
+          },
+          {
+            endpoint_id: "endpoint-2",
+            method: "HEAD",
+            path: "/profile",
+            query_bindings: [],
+            network_attempted: true,
+            status_code: null,
+            verdict: "inconclusive",
+            error_class: "request_timeout",
+            response: null,
+          },
+        ],
+      },
+      startedAt: "2026-08-11T02:12:03Z",
+      completedAt: "2026-08-11T02:12:13Z",
+    };
+    render(
+      <StageTeamWorkspaceView
+        model={readModel()}
+        agentActivities={withWorkerTools([httpTool])}
+        agentRequestIdsByWorker={{ "js-worker": "stage-run::worker:js-worker" }}
+        focusedAgentRequestId="stage-run::worker:js-worker"
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Probed anonymous access/ }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Probed anonymous access.*Golish HTTP client.*Completed/,
+      })
+    );
+
+    const requests = screen.getByRole("region", {
+      name: "Probing anonymous access HTTP requests",
+    });
+    expect(requests).toHaveTextContent("In process");
+    expect(requests).toHaveTextContent("https://api.example.test:443");
+    expect(requests).toHaveTextContent("GET");
+    expect(requests).toHaveTextContent("/admin");
+    expect(requests).toHaveTextContent("200");
+    expect(requests).toHaveTextContent("Suspicious");
+    expect(requests).toHaveTextContent("Request timeout");
+    expect(requests).toHaveTextContent("Inconclusive");
+    expect(screen.queryByText(/\$ curl/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "GET /admin HTTP observation" }));
+    const observation = screen.getByRole("region", { name: "GET /admin HTTP details" });
+    expect(observation).toHaveTextContent("Query overrides");
+    expect(observation).toHaveTextContent("tenant");
+    expect(observation).toHaveTextContent("42");
+    expect(observation).toHaveTextContent("1,024 bytes captured");
+    expect(observation).toHaveTextContent("SHA-256");
+    expect(observation).toHaveTextContent("Truncated");
+    expect(screen.getByRole("button", { name: "AI Tool raw data" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+  });
+
+  it("shows completed HTTP reviews that sent no network request", () => {
+    const httpTool: SubAgentToolCall = {
+      id: "anonymous-access-empty",
+      name: "vuln_probe_anonymous_access",
+      args: { target_id: "target-1", target_url: "https://api.example.test/" },
+      status: "completed",
+      result: {
+        selected_count: 0,
+        network_attempted: false,
+        completion_state: "complete",
+        observations: [],
+      },
+      startedAt: "2026-08-11T02:12:03Z",
+      completedAt: "2026-08-11T02:12:03Z",
+    };
+    render(
+      <StageTeamWorkspaceView
+        model={readModel()}
+        agentActivities={withWorkerTools([httpTool])}
+        agentRequestIdsByWorker={{ "js-worker": "stage-run::worker:js-worker" }}
+        focusedAgentRequestId="stage-run::worker:js-worker"
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Probed anonymous access/ }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Probed anonymous access.*Golish HTTP client.*Completed/,
+      })
+    );
+
+    expect(screen.getByText("No HTTP requests were sent")).toBeVisible();
+    expect(screen.getByText("0 endpoints selected")).toBeVisible();
+    expect(screen.queryByText(/\$ curl/)).not.toBeInTheDocument();
+  });
+
+  it("does not invent a command for tools without a backend command", () => {
+    const queryTool: SubAgentToolCall = {
+      id: "query-target",
+      name: "query_target_data",
+      args: { target_ids: ["target-1"] },
+      status: "completed",
+      result: { targets: [], checked: true },
+      startedAt: "2026-08-02T01:00:03Z",
+      completedAt: "2026-08-02T01:00:04Z",
+    };
+    render(
+      <StageTeamWorkspaceView
+        model={readModel()}
+        agentActivities={withWorkerTools([queryTool])}
+        agentRequestIdsByWorker={{ "js-worker": "stage-run::worker:js-worker" }}
+        focusedAgentRequestId="stage-run::worker:js-worker"
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Read target data/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Read target data · AI Tool · Completed" })
+    );
+    expect(screen.queryByRole("region", { name: /command and output/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$ query_target_data/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "AI Tool raw data" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
   });
 
   it("expands only the live tail Thought even when its latest chunk has an endedAt timestamp", () => {

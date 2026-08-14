@@ -42,6 +42,7 @@
 - 模块标 `#![allow(dead_code)]`（部分为未来集成）。
 - 两级配置：project 覆盖 global；full-auto 是放开所有 prompt——安全敏感，别误开。
 - 与 `hitl/`（审批学习）互补：policy 是声明式，hitl 是行为学习。
+- `list_in_scope_targets` 是 server-scoped、无网络和无写入的 harness census，属于 dynamic 默认 `Allow` 且包含在 planning allowlist；它不代表目标授权，也不能扩大 operation/org scope。shell、probe、scope mutation 仍使用各自 Prompt/Deny policy。
 
 ## 测试入口
 

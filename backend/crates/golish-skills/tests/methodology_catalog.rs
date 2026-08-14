@@ -119,6 +119,29 @@ fn methodology_skill_body_is_data_only_and_cannot_inject_tools_or_scope() {
 }
 
 #[test]
+fn methodology_hit_can_read_a_hash_bound_bounded_untrusted_excerpt() {
+    let catalog = load_fixture();
+    let query = MethodologyQueryV1::new(["auth".into()], 1).unwrap();
+    let result = catalog.query(&query, &policy()).unwrap();
+
+    let excerpt = catalog
+        .read_untrusted_excerpt(&result.hits[0].document_id, 180)
+        .unwrap();
+
+    assert_eq!(excerpt.document_id, result.hits[0].document_id);
+    assert_eq!(excerpt.content_sha256, result.hits[0].content_sha256);
+    assert!(excerpt.untrusted_text.len() <= 180);
+    assert!(excerpt
+        .untrusted_text
+        .contains("Authentication boundary review"));
+    assert!(excerpt.truncated);
+    assert!(!excerpt.instruction_authority());
+    assert!(!excerpt.tool_authority());
+    assert!(!excerpt.scope_authority());
+    assert!(!excerpt.proof_authority());
+}
+
+#[test]
 fn methodology_same_content_produces_same_document_and_corpus_hashes() {
     let catalog_a = load_fixture();
     let catalog_b = load_fixture();

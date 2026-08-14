@@ -795,104 +795,44 @@ pub struct ReviewEnumerationCoverageV2 {
     pub resolution_receipts: Vec<EnumerationLaneClosureReceiptV2>,
 }
 
-/// Result of the application-owned Candidate -> Plan C admission compound.
-/// The runtime receives only committed Campaign identities; all plan,
-/// objective, capability-registry, Tool Truth and denominator authority is
-/// selected and persisted by the host repository.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CandidateCampaignAdmissionBatchView {
-    pub generation_seal_id: Uuid,
-    pub objective_count: u32,
-    pub campaign_ids: Vec<Uuid>,
-    pub replayed_campaign_count: u32,
-}
-
-/// Host-owned progress snapshot for the authoritative Plan C scheduler. The
-/// runtime receives only durable state counts and review-safe action IDs; URL,
-/// credentials, policy, budgets, private manifests and oracle inputs remain
-/// behind the application repository boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerificationCampaignSchedulerView {
-    pub campaign_count: u32,
-    pub pending_authorization_count: u32,
-    pub authorized_count: u32,
-    pub started_count: u32,
-    pub awaiting_oracle_count: u32,
-    pub terminal_count: u32,
-    pub blocked_count: u32,
-    pub wave_count: u32,
-    pub fixed_point_wave_count: u32,
-    pub revision_count: u32,
-    pub adjudicated_revision_count: u32,
-    pub pending_prepared_action_ids: Vec<Uuid>,
-}
-
-/// One server-frozen, redacted Verification Campaign consult lane. The
-/// provider receives this projection only after the complete 1..=3 lane
-/// census has committed; raw targets, credentials, request bodies and action
-/// authority never cross this boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerificationConsultWorkItemView {
-    pub operation_id: Uuid,
-    pub campaign_id: Uuid,
-    pub round_id: Uuid,
-    pub consult_lane_id: Uuid,
-    pub objective_id: Uuid,
-    pub role_id: String,
-    pub input_projection_hash: String,
-    pub request_packet: serde_json::Value,
-}
-
-/// Append-only terminal disposition for a frozen consult lane. A failed,
-/// timed-out or cancelled provider call is evidence, not a completed proposal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VerificationConsultTerminalState {
-    Completed,
-    Failed,
-    TimedOut,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordVerificationConsultTerminal {
-    pub stable_request_id: Uuid,
-    pub operation_id: Uuid,
-    pub campaign_id: Uuid,
-    pub round_id: Uuid,
-    pub consult_lane_id: Uuid,
-    pub role_id: String,
-    pub input_projection_hash: String,
-    pub state: VerificationConsultTerminalState,
-    pub response_artifact: Option<serde_json::Value>,
-    pub reason_code: Option<String>,
-}
-
-impl VerificationCampaignSchedulerView {
-    pub const fn is_terminal(&self) -> bool {
-        self.campaign_count > 0
-            && self.terminal_count == self.campaign_count
-            && self.pending_authorization_count == 0
-            && self.authorized_count == 0
-            && self.started_count == 0
-            && self.awaiting_oracle_count == 0
-            && self.blocked_count == 0
-            && self.wave_count > 0
-            && self.fixed_point_wave_count == self.wave_count
-            && self.revision_count > 0
-            && self.adjudicated_revision_count == self.revision_count
-    }
-
-    pub const fn waits_for_authorization(&self) -> bool {
-        self.pending_authorization_count > 0
-    }
-}
-
 /// Provides all database repository operations that golish-ai needs.
 ///
 /// The application layer implements this trait. golish-ai callers access
 /// it through `DbTracker::repo()`.
 #[async_trait]
 pub trait DbRepoProvider: Send + Sync {
+    /// Resolve the durable company -> asset queue authority. Missing app
+    /// wiring is a typed fail-closed capability; runtimes must never rebuild
+    /// the queue from live targets after the initial freeze.
+    fn investigation_asset_queue_repository(
+        &self,
+    ) -> super::investigation_asset_queue::InvestigationAssetQueueResult<
+        std::sync::Arc<dyn super::investigation_asset_queue::InvestigationAssetQueueRepository>,
+    > {
+        Err(
+            super::investigation_asset_queue::InvestigationAssetQueueRepositoryError::Unavailable {
+                operation: "resolve_investigation_asset_queue_repository",
+            },
+        )
+    }
+
+    /// Resolve the asset-bound dynamic Tool Manager verification authority.
+    /// Missing wiring is fail-closed and never falls back to the historical
+    /// one-tool execution assignment path.
+    fn investigation_asset_verification_repository(
+        &self,
+    ) -> super::investigation_asset_verification::InvestigationAssetVerificationResult<
+        std::sync::Arc<
+            dyn super::investigation_asset_verification::InvestigationAssetVerificationRepository,
+        >,
+    > {
+        Err(
+            super::investigation_asset_verification::InvestigationAssetVerificationRepositoryError::Unavailable {
+                operation: "resolve_investigation_asset_verification_repository",
+            },
+        )
+    }
+
     /// Resolve the compound nested-worker lifecycle. Missing wiring is a
     /// typed fail-closed capability, never a fallback to the two independent
     /// StageTeam and PentAGI repositories.
@@ -934,36 +874,6 @@ pub trait DbRepoProvider: Send + Sync {
         Err(
             super::unified_investigation::UnifiedInvestigationRepositoryError::Unavailable {
                 operation: "resolve_unified_investigation_repository",
-            },
-        )
-    }
-
-    /// Resolve the canonical Plan C persistence port. Legacy and lightweight
-    /// test providers inherit a typed unavailable result, so the scheduler
-    /// stops before consult/provider/adapter dispatch instead of treating a
-    /// missing repository as empty Campaign work.
-    fn verification_campaign_repository(
-        &self,
-    ) -> super::verification_campaign::RepoResult<
-        std::sync::Arc<dyn super::verification_campaign::VerificationCampaignRepository>,
-    > {
-        Err(
-            super::verification_campaign::VerificationCampaignRepositoryError::Unavailable {
-                operation: "resolve_verification_campaign_repository",
-            },
-        )
-    }
-
-    /// Resolve the isolated shadow evaluation port. Its type graph has no
-    /// execution, credential, authorization, lease, or budget capability.
-    fn verification_campaign_shadow_repository(
-        &self,
-    ) -> super::verification_campaign::RepoResult<
-        std::sync::Arc<dyn super::verification_campaign::VerificationCampaignShadowRepository>,
-    > {
-        Err(
-            super::verification_campaign::VerificationCampaignRepositoryError::Unavailable {
-                operation: "resolve_verification_campaign_shadow_repository",
             },
         )
     }
@@ -1045,6 +955,12 @@ pub trait DbRepoProvider: Send + Sync {
         limit: i64,
     ) -> anyhow::Result<serde_json::Value>;
     async fn wiki_search_by_tag(&self, tag: &str, limit: i64) -> anyhow::Result<serde_json::Value>;
+    /// Read the exact wiki row addressed by the same logical path returned by
+    /// the search projections. Implementations must not reinterpret the path
+    /// as an application working-directory filesystem path.
+    async fn wiki_get_page(&self, _path: &str) -> anyhow::Result<Option<serde_json::Value>> {
+        Err(anyhow::anyhow!("wiki exact page reader is unavailable"))
+    }
     async fn wiki_list_cves_with_pocs(&self) -> anyhow::Result<serde_json::Value>;
     async fn wiki_list_unresearched_cves(&self, limit: i64) -> anyhow::Result<serde_json::Value>;
     async fn wiki_poc_stats(&self) -> anyhow::Result<serde_json::Value>;
@@ -1152,6 +1068,22 @@ pub trait DbRepoProvider: Send + Sync {
     ) -> anyhow::Result<serde_json::Value> {
         let _ = operation_id;
         self.query_target_data(target_id, sections).await
+    }
+
+    /// Operation-bound planning projection with an optional exact HTTP(S)
+    /// origin copied from the current server-authored work item. The origin is
+    /// a selector only: production still reloads the frozen operation manifest
+    /// before returning endpoint identities and again before network send.
+    async fn query_target_data_for_operation_origin(
+        &self,
+        operation_id: Option<Uuid>,
+        target_id: Uuid,
+        sections: &[String],
+        exact_origin: Option<&str>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let _ = exact_origin;
+        self.query_target_data_for_operation(operation_id, target_id, sections)
+            .await
     }
 
     /// In-scope recon assets (`targets.scope='in'` values) for the current
@@ -1469,52 +1401,6 @@ pub trait DbRepoProvider: Send + Sync {
         _request: ReviewEnumerationCoverageV2,
     ) -> anyhow::Result<EnumerationLaneClosureReceiptV2> {
         anyhow::bail!("ENUMERATION_V2_COVERAGE_REPOSITORY_UNAVAILABLE")
-    }
-
-    /// Atomically-authoritative, replay-safe Candidate -> Plan C handoff. The
-    /// concrete app implementation derives every sealed verification plan and
-    /// objective in the generation, records the closed four-capability census,
-    /// seals the exact Wave denominator and admits one Campaign per objective
-    /// through a fresh Tool Truth callback. Missing implementations fail
-    /// closed; callers must never substitute a Reporting placeholder.
-    async fn admit_candidate_generation_campaigns(
-        &self,
-        _stable_request_id: Uuid,
-        _operation_id: Uuid,
-        _organization_id: Uuid,
-        _generation_seal_id: Uuid,
-    ) -> anyhow::Result<CandidateCampaignAdmissionBatchView> {
-        anyhow::bail!("Candidate verification Campaign admission repository is unavailable")
-    }
-
-    /// Advance every nonterminal authoritative Campaign through the
-    /// deterministic host state machine as far as current durable authority
-    /// permits. In particular, compilation stops at the JIT authorization
-    /// boundary; a model-authored deliverable can neither authorize nor forge
-    /// execution/oracle completion.
-    async fn drive_authoritative_verification_campaigns(
-        &self,
-        _operation_id: Uuid,
-    ) -> anyhow::Result<VerificationCampaignSchedulerView> {
-        anyhow::bail!("Authoritative verification Campaign scheduler is unavailable")
-    }
-
-    /// Freeze every newly admitted Campaign's bounded consult census and
-    /// return only lanes that do not yet have an append-only terminal record.
-    async fn prepare_authoritative_verification_consults(
-        &self,
-        _operation_id: Uuid,
-    ) -> anyhow::Result<Vec<VerificationConsultWorkItemView>> {
-        anyhow::bail!("Authoritative verification consult scheduler is unavailable")
-    }
-
-    /// Record exactly one terminal outcome for an already-frozen consult lane.
-    /// Implementations must validate the owner tuple and typed artifact again.
-    async fn record_authoritative_verification_consult_terminal(
-        &self,
-        _command: RecordVerificationConsultTerminal,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("Authoritative verification consult terminal repository is unavailable")
     }
 
     // ── Tasks & Subtasks ────────────────────────────────────────────────
@@ -2536,35 +2422,5 @@ mod enumeration_occurrence_gate_tests {
             ..snapshot()
         };
         assert!(!invalid.allows_closeout());
-    }
-
-    #[test]
-    fn verification_scheduler_requires_campaign_and_wave_fixed_point_terminal_truth() {
-        let terminal = VerificationCampaignSchedulerView {
-            campaign_count: 2,
-            pending_authorization_count: 0,
-            authorized_count: 0,
-            started_count: 0,
-            awaiting_oracle_count: 0,
-            terminal_count: 2,
-            blocked_count: 0,
-            wave_count: 1,
-            fixed_point_wave_count: 1,
-            revision_count: 2,
-            adjudicated_revision_count: 2,
-            pending_prepared_action_ids: Vec::new(),
-        };
-        assert!(terminal.is_terminal());
-        assert!(!VerificationCampaignSchedulerView {
-            fixed_point_wave_count: 0,
-            ..terminal.clone()
-        }
-        .is_terminal());
-        assert!(!VerificationCampaignSchedulerView {
-            pending_authorization_count: 1,
-            pending_prepared_action_ids: vec![Uuid::new_v4()],
-            ..terminal
-        }
-        .is_terminal());
     }
 }

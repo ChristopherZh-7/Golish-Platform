@@ -887,16 +887,21 @@ fn coverage_complete(
                     cell_status(CoverageStatus::CheckedEmpty)
                         || (derive_from_evidence && has_fact(EvidenceOutcome::Empty))
                 };
-            // Enumeration, VulnTriage, and the exact EAS Web transport terminal
-            // are producer-owned blocked states. They close a cell only when
-            // the trusted upstream projector emitted a current-run
-            // evidence-backed Blocked fact; a model-authored coverage row cannot
-            // mint or mirror any of these states into truth. Other EAS
-            // techniques retain their previous noted-cell contract.
+            // Enumeration, VulnTriage, and EAS guarded producers own their
+            // blocked states. They close a cell only when the trusted upstream
+            // projector emitted a current-run evidence-backed Blocked fact; a
+            // model-authored coverage row cannot mint or mirror any of these
+            // states into truth.
             let producer_owned_blocked =
                 matches!(spec.kind, StageKind::Enumeration | StageKind::VulnTriage)
                     || (spec.kind == StageKind::ExternalAttackSurface
-                        && tech == "GOLISH-EAS-WEB-FINGERPRINT");
+                        && matches!(
+                            tech.as_str(),
+                            "GOLISH-EAS-LIVENESS"
+                                | "GOLISH-EAS-PORT"
+                                | "GOLISH-EAS-SERVICE-FINGERPRINT"
+                                | "GOLISH-EAS-WEB-FINGERPRINT"
+                        ));
             let trusted_blocked_ok = producer_owned_blocked
                 && terminal.contains(&CoverageStatus::Blocked)
                 && derive_from_evidence
@@ -3666,7 +3671,7 @@ mod tests {
     }
 
     #[test]
-    fn eas_web_accepts_only_producer_projected_blocked_without_generalizing_eas() {
+    fn eas_web_accepts_only_producer_projected_blocked() {
         let web = "GOLISH-EAS-WEB-FINGERPRINT";
         let spec = host_aware_spec("external_attack_surface", "external_attack_surface", true);
         let web_ctx = GateContext {
@@ -3716,24 +3721,60 @@ mod tests {
             .is_pass(),
             "a deliverable-authored EAS Web Blocked cell must not mint terminal truth"
         );
+    }
 
-        let port = "GOLISH-EAS-PORT";
-        let port_ctx = GateContext {
-            in_scope_assets: Some(vec!["192.0.2.10".to_string()]),
-            expected_techniques: Some(vec![port.to_string()]),
-            evidence_facts: Some(vec![fact("192.0.2.10", port, EvidenceOutcome::Blocked, 82)]),
-            ..GateContext::default()
-        };
-        assert!(
-            !eval_with_context(
-                &deliverable_with_coverage(vec![]),
-                &host_aware_spec("external_attack_surface", "external_attack_surface", false),
-                &[evidence_derive_rule(None)],
-                &port_ctx,
-            )[0]
-            .is_pass(),
-            "producer-derived Blocked trust must stay scoped to the EAS Web technique"
-        );
+    #[test]
+    fn eas_port_policy_blocked_fact_closes_ip_cells_but_model_authored_blocked_does_not() {
+        let spec = host_aware_spec("external_attack_surface", "external_attack_surface", false);
+        for technique in [
+            "GOLISH-EAS-LIVENESS",
+            "GOLISH-EAS-PORT",
+            "GOLISH-EAS-SERVICE-FINGERPRINT",
+        ] {
+            let context = GateContext {
+                in_scope_assets: Some(vec!["61.130.180.110".to_string()]),
+                asset_types: Some(std::collections::HashMap::from([(
+                    "61.130.180.110".to_string(),
+                    "ip".to_string(),
+                )])),
+                expected_techniques: Some(vec![technique.to_string()]),
+                evidence_facts: Some(vec![fact(
+                    "61.130.180.110",
+                    technique,
+                    EvidenceOutcome::Blocked,
+                    81,
+                )]),
+                ..GateContext::default()
+            };
+            assert!(
+                eval_with_context(
+                    &deliverable_with_coverage(vec![]),
+                    &spec,
+                    &[evidence_derive_rule(None)],
+                    &context,
+                )[0]
+                .is_pass(),
+                "trusted producer-projected {technique} blocked must be terminal"
+            );
+
+            let mut no_fact = context;
+            no_fact.evidence_facts = None;
+            assert!(
+                !eval_with_context(
+                    &deliverable_with_coverage(vec![cov_cell_noted(
+                        "61.130.180.110",
+                        technique,
+                        CoverageStatus::Blocked,
+                        "model-authored blocked claim",
+                    )]),
+                    &spec,
+                    &[evidence_derive_rule(None)],
+                    &no_fact,
+                )[0]
+                .is_pass(),
+                "model-authored {technique} blocked must not mint terminal truth"
+            );
+        }
     }
 
     #[test]

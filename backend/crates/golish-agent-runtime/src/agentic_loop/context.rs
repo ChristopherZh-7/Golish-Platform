@@ -187,18 +187,15 @@ pub struct AgenticLoopContext<'a> {
     pub sidecar_state: Option<&'a Arc<dyn SessionCaptureBackend>>,
     pub chain_persistence: Option<Arc<dyn golish_sub_agents::SubAgentChainPersistence>>,
     pub runtime_memory: Option<Arc<dyn golish_agent_kit::db_traits::RuntimeMemoryRepository>>,
+    /// Product-composed dynamic Tool Manager host for asset-bound
+    /// Investigation verification. It is absent outside the desktop/CLI
+    /// composition root and never falls back to raw shell execution.
+    pub investigation_asset_verification_tools:
+        Option<Arc<dyn golish_app_core::ports::pentest::InvestigationAssetVerificationToolHost>>,
     /// Product-composed Application Understanding controller invoked only by
     /// the visible Primary Agent's `stage_run` call.
     pub application_understanding_runtime:
         Option<Arc<dyn golish_agent_kit::task_orchestrator::ApplicationUnderstandingStageRuntime>>,
-    /// Optional host-owned Plan B Candidate analysis runtime. The bridge only
-    /// snapshots this capability; repository construction and authorization
-    /// remain in the production composition root.
-    pub hypothesis_analysis_runtime: Option<
-        Arc<
-            dyn golish_agent_kit::task_orchestrator::hypothesis_analysis::HypothesisAnalysisStageRuntime,
-        >,
-    >,
     /// Whole-record source selected once by a trusted resume preflight. Every
     /// graph/worker/chain read in this request must honor the same value.
     pub resume_runtime_memory_source:
@@ -232,8 +229,7 @@ pub struct AgenticLoopContext<'a> {
     pub web_fetcher: Option<Arc<dyn golish_core::WebFetchProvider>>,
     /// Explicit eval/fixture-only Goal Loop selector. Production operation
     /// state and profile names can never synthesize this authority.
-    pub target_intel_goal_shadow:
-        Option<&'a crate::eval_support::TargetIntelGoalShadowFixture>,
+    pub target_intel_goal_shadow: Option<&'a crate::eval_support::TargetIntelGoalShadowFixture>,
     /// Shared host-owned evidence adapter used by both root and SubAgent paths
     /// while the fixture selector above is active.
     pub intel_public_adapter:
@@ -434,8 +430,10 @@ fn validate_bound_scoped_context_identity(
 fn scoped_context_request(
     query: String,
     include_mutable_runtime: bool,
+    target_id: Option<uuid::Uuid>,
 ) -> golish_memory_domain::ContextRequest {
     let mut request = golish_memory_domain::ContextRequest::for_harness(query, 2_048);
+    request.target_id = target_id;
     if !include_mutable_runtime {
         request
             .requested_classes
@@ -451,6 +449,7 @@ async fn retrieve_scoped_context_receipt_data_with_runtime_policy(
     worker_run_id: Option<uuid::Uuid>,
     bound_identity: Option<BoundScopedContextIdentity>,
     include_mutable_runtime: bool,
+    target_id: Option<uuid::Uuid>,
 ) -> Result<Option<RetrievedScopedContextData>, String> {
     let Some(provider) = ctx.knowledge_context.as_ref() else {
         return Ok(None);
@@ -509,7 +508,7 @@ async fn retrieve_scoped_context_receipt_data_with_runtime_policy(
     let pack = provider
         .retrieve(
             subject,
-            scoped_context_request(query, include_mutable_runtime),
+            scoped_context_request(query, include_mutable_runtime, target_id),
         )
         .await
         .map_err(|error| {
@@ -559,28 +558,6 @@ async fn retrieve_scoped_context_receipt_data_with_runtime_policy(
     }))
 }
 
-/// Retrieve the immutable input census sealed by the unified Investigation
-/// read-session authority. The current Unit/Worker rows are deliberately not
-/// members: their attempt/checkpoint fields change as soon as the Primary
-/// executes and would make response-loss replay fail by construction.
-pub(crate) async fn retrieve_scoped_context_receipt_data(
-    ctx: &AgenticLoopContext<'_>,
-    query: &str,
-    organization_id: Option<uuid::Uuid>,
-    worker_run_id: Option<uuid::Uuid>,
-    bound_identity: Option<BoundScopedContextIdentity>,
-) -> Result<Option<RetrievedScopedContextData>, String> {
-    retrieve_scoped_context_receipt_data_with_runtime_policy(
-        ctx,
-        query,
-        organization_id,
-        worker_run_id,
-        bound_identity,
-        false,
-    )
-    .await
-}
-
 pub(crate) async fn retrieve_scoped_context_data(
     ctx: &AgenticLoopContext<'_>,
     query: &str,
@@ -595,6 +572,7 @@ pub(crate) async fn retrieve_scoped_context_data(
         worker_run_id,
         bound_identity,
         true,
+        None,
     )
     .await
     .map(|data| data.map(|data| data.rendered))
@@ -764,7 +742,7 @@ mod stage_run_reentry_guard_tests {
 
     #[test]
     fn investigation_read_snapshot_excludes_its_mutating_runtime_rows() {
-        let sealed = scoped_context_request("investigation".to_string(), false);
+        let sealed = scoped_context_request("investigation".to_string(), false, None);
         assert!(!sealed
             .requested_classes
             .contains(&golish_memory_domain::KnowledgeClass::RuntimeState));
@@ -772,8 +750,20 @@ mod stage_run_reentry_guard_tests {
             .requested_classes
             .contains(&golish_memory_domain::KnowledgeClass::PassedHandoff));
 
-        let live = scoped_context_request("supervisor".to_string(), true);
+        let live = scoped_context_request("supervisor".to_string(), true, None);
         assert!(live
+            .requested_classes
+            .contains(&golish_memory_domain::KnowledgeClass::RuntimeState));
+    }
+
+    #[test]
+    fn investigation_asset_context_request_carries_the_exact_server_target() {
+        let target_id = uuid::Uuid::new_v4();
+        let request =
+            scoped_context_request("investigation asset".to_string(), false, Some(target_id));
+
+        assert_eq!(request.target_id, Some(target_id));
+        assert!(!request
             .requested_classes
             .contains(&golish_memory_domain::KnowledgeClass::RuntimeState));
     }

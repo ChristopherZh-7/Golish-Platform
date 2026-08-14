@@ -10,6 +10,7 @@ description = "High-level agent runtime (renamed from golish-agent-runtime in A2
 # (tool_executors / tool_definitions / system_hooks / tool_policy / hitl /
 #  loop_detection / sidecar_trait / planner / db_* / memory_*).
 golish-agent-kit = { workspace = true }
+golish-app-core = { workspace = true }
 
 # Foundation crates (kept as direct deps because the loop body itself
 # touches their public types in numerous places).

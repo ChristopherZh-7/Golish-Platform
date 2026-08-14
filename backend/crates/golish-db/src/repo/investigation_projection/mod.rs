@@ -100,6 +100,59 @@ async fn ensure_registry_authority_exact_on(
                  FROM investigation_projection_entity_versions entity
                 WHERE entity.operation_id=$1 AND entity.entity_kind='hypothesis'
                   AND entity.change_seq<=$2 AND entity.invalidation_reason IS NULL
+           ), sealed_unavailable_feed_authorities AS MATERIALIZED (
+               SELECT denominator.snapshot_id
+                 FROM candidate_analysis_knowledge_feed_denominators denominator
+                 JOIN candidate_analysis_knowledge_feed_snapshots feed_snapshot
+                   ON feed_snapshot.denominator_id=denominator.denominator_id
+                  AND feed_snapshot.snapshot_id=denominator.snapshot_id
+                WHERE denominator.required_source_count=5
+                  AND denominator.required_member_count=5
+                  AND feed_snapshot.member_count=denominator.required_member_count
+                  AND (SELECT COUNT(*)
+                         FROM candidate_analysis_knowledge_feed_denominator_members expected
+                        WHERE expected.denominator_id=denominator.denominator_id
+                          AND expected.snapshot_id=denominator.snapshot_id)=
+                      denominator.required_member_count
+                  AND (SELECT COUNT(*)
+                         FROM candidate_analysis_knowledge_feed_snapshot_members member
+                        WHERE member.feed_snapshot_id=feed_snapshot.feed_snapshot_id
+                          AND member.denominator_id=denominator.denominator_id
+                          AND member.snapshot_id=denominator.snapshot_id)=
+                      denominator.required_member_count
+                  AND NOT EXISTS(
+                       SELECT 1
+                         FROM candidate_analysis_knowledge_feed_denominator_members expected
+                         LEFT JOIN candidate_analysis_knowledge_feed_snapshot_members member
+                           ON member.feed_snapshot_id=feed_snapshot.feed_snapshot_id
+                          AND member.denominator_id=expected.denominator_id
+                          AND member.snapshot_id=expected.snapshot_id
+                          AND member.expected_member_id=expected.expected_member_id
+                          AND member.ordinal=expected.ordinal
+                          AND member.feed_schema=expected.schema_name
+                          AND member.member_hash=expected.member_hash
+                          AND member.disposition='unavailable'
+                          AND member.effective_valid_until IS NULL
+                        WHERE expected.denominator_id=denominator.denominator_id
+                          AND expected.snapshot_id=denominator.snapshot_id
+                          AND member.feed_snapshot_member_id IS NULL)
+                  AND (SELECT COUNT(*)
+                         FROM candidate_analysis_knowledge_feed_snapshot_members member
+                         JOIN candidate_analysis_knowledge_feed_denominator_members expected
+                           ON expected.expected_member_id=member.expected_member_id
+                          AND expected.denominator_id=member.denominator_id
+                          AND expected.snapshot_id=member.snapshot_id
+                         JOIN candidate_analysis_enrichment_obligations obligation
+                           ON obligation.snapshot_id=member.snapshot_id
+                          AND obligation.feed_snapshot_member_id=member.feed_snapshot_member_id
+                          AND obligation.obligation_kind='feed_refresh'
+                          AND obligation.affected_checklist_member_key=
+                              concat('feed:',expected.source_kind)
+                          AND btrim(obligation.reason_code)<>''
+                        WHERE member.feed_snapshot_id=feed_snapshot.feed_snapshot_id
+                          AND member.denominator_id=denominator.denominator_id
+                          AND member.snapshot_id=denominator.snapshot_id)=
+                      denominator.required_member_count
            )
            SELECT
              NOT EXISTS(
@@ -155,25 +208,29 @@ async fn ensure_registry_authority_exact_on(
                                 SELECT COUNT(*)
                                   FROM candidate_analysis_knowledge_feed_snapshot_members member
                                  WHERE member.feed_snapshot_id=feed_snapshot.feed_snapshot_id))
-                    OR NOT EXISTS(
-                         SELECT 1
-                           FROM candidate_operation_managed_feed_contracts contract
-                           JOIN candidate_managed_feed_catalog_head catalog_head
-                             ON catalog_head.singleton
-                            AND catalog_head.catalog_id=contract.catalog_id
-                           JOIN candidate_managed_feed_trust_store_head trust_head
-                             ON trust_head.singleton
-                           JOIN candidate_analysis_knowledge_feed_denominators denominator
-                             ON denominator.snapshot_id=snapshot.snapshot_id
-                            AND denominator.catalog_id=contract.catalog_id
-                            AND denominator.catalog_hash=contract.catalog_hash
-                            AND denominator.trust_store_hash=trust_head.trust_store_hash
-                            AND denominator.key_revocation_epoch=trust_head.key_revocation_epoch
-                          WHERE contract.operation_id=$1
-                            AND contract.required_member_count=(
-                                SELECT COUNT(*)
-                                  FROM candidate_managed_feed_store_member_heads member_head
-                                 WHERE member_head.catalog_id=contract.catalog_id))
+                    OR (NOT EXISTS(
+                            SELECT 1
+                              FROM candidate_operation_managed_feed_contracts contract
+                              JOIN candidate_managed_feed_catalog_head catalog_head
+                                ON catalog_head.singleton
+                               AND catalog_head.catalog_id=contract.catalog_id
+                              JOIN candidate_managed_feed_trust_store_head trust_head
+                                ON trust_head.singleton
+                              JOIN candidate_analysis_knowledge_feed_denominators denominator
+                                ON denominator.snapshot_id=snapshot.snapshot_id
+                               AND denominator.catalog_id=contract.catalog_id
+                               AND denominator.catalog_hash=contract.catalog_hash
+                               AND denominator.trust_store_hash=trust_head.trust_store_hash
+                               AND denominator.key_revocation_epoch=trust_head.key_revocation_epoch
+                             WHERE contract.operation_id=$1
+                               AND contract.required_member_count=(
+                                   SELECT COUNT(*)
+                                     FROM candidate_managed_feed_store_member_heads member_head
+                                    WHERE member_head.catalog_id=contract.catalog_id))
+                        AND NOT EXISTS(
+                            SELECT 1
+                              FROM sealed_unavailable_feed_authorities unavailable
+                             WHERE unavailable.snapshot_id=snapshot.snapshot_id))
              )"#,
     )
     .bind(operation_id)
@@ -198,6 +255,17 @@ impl<'a> InvestigationProjectionReadSnapshot<'a> {
     pub(super) async fn begin(
         pool: &'a PgPool,
         operation_id: Uuid,
+    ) -> InvestigationProjectionResult<Self> {
+        Self::begin_with_temporal_expiry_policy(pool, operation_id, false).await
+    }
+
+    /// Capture the immutable projection authority before applying the exact
+    /// stage-run terminal-history policy. No caller outside
+    /// `begin_for_stage_run` may observe an already-expired snapshot.
+    async fn begin_with_temporal_expiry_policy(
+        pool: &'a PgPool,
+        operation_id: Uuid,
+        defer_temporal_expiry: bool,
     ) -> InvestigationProjectionResult<Self> {
         let mut tx = pool.begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
@@ -359,7 +427,7 @@ impl<'a> InvestigationProjectionReadSnapshot<'a> {
                 "authority epoch exact-set hash is malformed",
             ));
         }
-        if header.read_at > earliest_effective_valid_until {
+        if !defer_temporal_expiry && header.read_at > earliest_effective_valid_until {
             return Err(InvestigationProjectionError::Stale {
                 code: INVESTIGATION_PROJECTION_STALE,
                 current_change_seq: header.change_seq,
@@ -385,6 +453,7 @@ impl<'a> InvestigationProjectionReadSnapshot<'a> {
                     as_of_temporal_cutoff: header.read_at,
                     authority_epoch_set_hash,
                     earliest_effective_valid_until,
+                    historical_terminal: false,
                 },
             },
         })
@@ -400,11 +469,50 @@ impl<'a> InvestigationProjectionReadSnapshot<'a> {
         operation_id: Uuid,
         selector: &InvestigationStageRunSelector,
     ) -> InvestigationProjectionResult<(Self, InvestigationStageRunReadAuthority)> {
-        let mut snapshot = Self::begin(pool, operation_id).await?;
+        let mut snapshot =
+            Self::begin_with_temporal_expiry_policy(pool, operation_id, true).await?;
         let stage_run =
             validate_exact_stage_run_on(&mut snapshot.tx, operation_id, selector).await?;
+        apply_stage_run_temporal_expiry_policy(&mut snapshot, &stage_run)?;
         Ok((snapshot, stage_run))
     }
+}
+
+fn terminal_historical_cutoff(
+    read_at: DateTime<Utc>,
+    earliest_effective_valid_until: DateTime<Utc>,
+    stage_run: &InvestigationStageRunReadAuthority,
+) -> Option<DateTime<Utc>> {
+    let terminal_at = stage_run.terminal_at?;
+    (matches!(stage_run.run_state.as_str(), "closed" | "abandoned")
+        && !stage_run.admission_open
+        && terminal_at <= read_at
+        && terminal_at <= earliest_effective_valid_until)
+        .then_some(terminal_at)
+}
+
+fn apply_stage_run_temporal_expiry_policy(
+    snapshot: &mut InvestigationProjectionReadSnapshot<'_>,
+    stage_run: &InvestigationStageRunReadAuthority,
+) -> InvestigationProjectionResult<()> {
+    let temporal = &mut snapshot.authority.temporal;
+    if temporal.as_of_temporal_cutoff <= temporal.earliest_effective_valid_until {
+        return Ok(());
+    }
+    let Some(terminal_at) = terminal_historical_cutoff(
+        temporal.as_of_temporal_cutoff,
+        temporal.earliest_effective_valid_until,
+        stage_run,
+    ) else {
+        return Err(InvestigationProjectionError::Stale {
+            code: INVESTIGATION_PROJECTION_STALE,
+            current_change_seq: temporal.as_of_change_seq,
+            reason: ProjectionStaleReason::TemporalCutoffExpired,
+        });
+    };
+    temporal.as_of_temporal_cutoff = terminal_at;
+    temporal.historical_terminal = true;
+    Ok(())
 }
 
 async fn validate_exact_stage_run_on(
@@ -436,15 +544,24 @@ async fn validate_exact_stage_run_on(
             i64,
             i64,
             String,
+            Option<DateTime<Utc>>,
         ),
     >(
-        r#"SELECT authority_id,operation_id,stage_execution_id,
-                  owning_stage_run_request_id,scope_snapshot_id,run_state,
-                  admission_open,stop_epoch,change_seq,head_version,head_sha256
-             FROM investigation_run_heads
-            WHERE operation_id=$1 AND stage_execution_id=$2
-              AND owning_stage_run_request_id=$3 AND scope_snapshot_id=$4
-            ORDER BY authority_id
+        r#"SELECT head.authority_id,head.operation_id,head.stage_execution_id,
+                  head.owning_stage_run_request_id,head.scope_snapshot_id,head.run_state,
+                  head.admission_open,head.stop_epoch,head.change_seq,head.head_version,
+                  head.head_sha256,
+                  CASE WHEN head.run_state IN ('closed','abandoned')
+                         AND event.to_state=head.run_state
+                       THEN event.created_at END AS terminal_at
+             FROM investigation_run_heads head
+             LEFT JOIN investigation_run_state_events event
+               ON event.event_id=head.latest_event_id
+              AND event.authority_id=head.authority_id
+              AND event.event_ordinal=head.head_version
+            WHERE head.operation_id=$1 AND head.stage_execution_id=$2
+              AND head.owning_stage_run_request_id=$3 AND head.scope_snapshot_id=$4
+            ORDER BY head.authority_id
             LIMIT 2"#,
     )
     .bind(operation_id)
@@ -470,6 +587,7 @@ async fn validate_exact_stage_run_on(
         change_seq,
         head_version,
         head_sha256,
+        terminal_at,
     ) = rows.into_iter().next().expect("one exact stage-run row");
     Ok(InvestigationStageRunReadAuthority {
         authority_id,
@@ -483,6 +601,7 @@ async fn validate_exact_stage_run_on(
         change_seq,
         head_version,
         head_sha256,
+        terminal_at,
     })
 }
 
@@ -496,6 +615,13 @@ fn apply_expected_page_authority(
         ));
     }
     let current = &snapshot.authority.temporal;
+    if current.historical_terminal
+        && current.as_of_temporal_cutoff != expected.as_of_temporal_cutoff
+    {
+        return Err(types::invalid_payload(
+            "terminal historical cursor cutoff does not match the terminal event",
+        ));
+    }
     if current.as_of_temporal_cutoff < expected.as_of_temporal_cutoff {
         return Err(types::invalid_payload(
             "cursor temporal cutoff is in the database future",
@@ -604,4 +730,85 @@ pub async fn enqueue_projection_batch_on(
         member_set_hash: view.member_set_hash,
         replayed: view.replayed,
     })
+}
+
+#[cfg(test)]
+mod temporal_policy_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn stage_run(
+        run_state: &str,
+        admission_open: bool,
+        terminal_at: Option<DateTime<Utc>>,
+    ) -> InvestigationStageRunReadAuthority {
+        InvestigationStageRunReadAuthority {
+            authority_id: Uuid::new_v4(),
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_request_id: "stage_run:test".to_owned(),
+            scope_snapshot_id: Uuid::new_v4(),
+            run_state: run_state.to_owned(),
+            admission_open,
+            stop_epoch: 0,
+            change_seq: 1,
+            head_version: 1,
+            head_sha256: format!("sha256:{}", "a".repeat(64)),
+            terminal_at,
+        }
+    }
+
+    #[test]
+    fn terminal_historical_read_uses_the_exact_pre_expiry_terminal_event() {
+        let terminal_at = Utc
+            .with_ymd_and_hms(2026, 8, 11, 11, 11, 8)
+            .single()
+            .expect("terminal time");
+        let valid_until = Utc
+            .with_ymd_and_hms(2026, 8, 11, 16, 12, 31)
+            .single()
+            .expect("valid until");
+        let read_at = Utc
+            .with_ymd_and_hms(2026, 8, 11, 21, 5, 52)
+            .single()
+            .expect("read time");
+
+        assert_eq!(
+            terminal_historical_cutoff(
+                read_at,
+                valid_until,
+                &stage_run("closed", false, Some(terminal_at)),
+            ),
+            Some(terminal_at)
+        );
+    }
+
+    #[test]
+    fn active_or_post_expiry_terminal_runs_cannot_be_read_as_history() {
+        let valid_until = Utc
+            .with_ymd_and_hms(2026, 8, 11, 16, 12, 31)
+            .single()
+            .expect("valid until");
+        let read_at = Utc
+            .with_ymd_and_hms(2026, 8, 11, 21, 5, 52)
+            .single()
+            .expect("read time");
+        let after_expiry = Utc
+            .with_ymd_and_hms(2026, 8, 11, 17, 0, 0)
+            .single()
+            .expect("post-expiry terminal time");
+
+        assert_eq!(
+            terminal_historical_cutoff(read_at, valid_until, &stage_run("running", true, None)),
+            None
+        );
+        assert_eq!(
+            terminal_historical_cutoff(
+                read_at,
+                valid_until,
+                &stage_run("closed", false, Some(after_expiry)),
+            ),
+            None
+        );
+    }
 }

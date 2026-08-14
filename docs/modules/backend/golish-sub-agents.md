@@ -30,6 +30,7 @@
 | `PromptRegistry` / `PromptContext` / `SubAgentPromptContributor` | prompt 注册/上下文/贡献者 |
 | `StageToolGuard` / `StageToolHider` / `SubAgentToolRouter` / `SubAgentToolResultHook` / `SubAgentToolObserver` / `PostShellHook` / `SubAgentChainPersistence` | 阶段工具守卫/路由/工具结果后处理/telemetry observer/持久化（executor_types） |
 | `BoundWorkerChainContext` / `BoundWorkerToolLifecycle` / `StageTeamLeaderBinding` | V2 stage worker 的 server-owned prebound chain、lease/version witness 与 awaited tool fence；只有 exact Company Controller claim 带 trusted leader binding |
+| `InvestigationAssetVerificationActorBinding` / `InvestigationAssetVerificationActorObservationV2` | dynamic Asset Verification actor 的 exact session/call/lane/target/revision/worker identity 与 closed typed observation；公共 `validate(binding)` 在进入 runtime/DB durable consumer 前拒绝 foreign identity、重复/非法 evidence id 和越界 discovery proposal |
 | `STAGE_TEAM_UPDATE_PLAN_TOOL_NAME` / `STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME` / `STAGE_TEAM_PREPARE_FINAL_SUBMISSION_TOOL_NAME` | trusted Controller-only 工具；`update_plan` 是本地计划普通工具，后两者才分别形成 durable dispatch 与关闭 request epoch/准备 final turn 的 coordination barrier |
 | `SubmitRepairMode` / `SubmitRepairKind` / `StageCapabilitySuggestion` | StageRefiner 产出的 repair directive 在 executor 内的兼容投影；负责 resume repair lock、capability-first gap action 展示与 allowed/forbidden tools |
 | Plan B static roles | `candidate_hypothesis_controller`、`candidate_hypothesis_analyst`、`merge_conflict_critic`；均readonly、submit-result-only、无网络/扫描/delegation |

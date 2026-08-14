@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
 #[derive(Debug, thiserror::Error)]
@@ -236,6 +236,7 @@ pub struct StartInvestigationRunInput {
 #[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
 pub struct InvestigationRunWorkRow {
     pub work_id: Uuid,
+    pub asset_lane_id: Uuid,
     pub stable_work_key_sha256: String,
     pub authority_id: Uuid,
     pub operation_id: Uuid,
@@ -256,11 +257,30 @@ pub struct InvestigationRunWorkRow {
 pub struct RegisterInvestigationWorkInput {
     pub identity: InvestigationUnitIdentity,
     pub work_id: Uuid,
+    pub asset_lane_id: Uuid,
     pub stable_work_key_sha256: String,
     pub work_kind: InvestigationWorkKind,
     pub external_identity_sha256: String,
     pub initial_state: InvestigationWorkState,
     pub observed_stop_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureDynamicAssetAnalysisWorkInput {
+    pub identity: InvestigationUnitIdentity,
+    pub stable_cutover_request_id: Uuid,
+    pub asset_lane_id: Uuid,
+    pub legacy_stable_work_key_sha256: String,
+    pub dynamic_work_id: Uuid,
+    pub dynamic_stable_work_key_sha256: String,
+    pub dynamic_external_identity_sha256: String,
+    pub observed_stop_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsuredDynamicAssetAnalysisWorkRow {
+    pub work: InvestigationRunWorkRow,
+    pub cutover_authority_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,6 +519,108 @@ pub struct CreateInvestigationRefinerPlanLedgerInput {
     pub generator_manifest: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationGeneratorSubtaskInput {
+    pub subtask_id: Uuid,
+    pub subtask_ordinal: u32,
+    pub label: String,
+    pub runnable: bool,
+    pub input_manifest_sha256: String,
+    pub expected_output_schema: String,
+    pub member_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationGeneratorConsumerFenceInput {
+    pub current_consumer_work_item_id: Uuid,
+    pub current_consumer_worker_run_id: Uuid,
+    pub current_consumer_lease_token: Uuid,
+    pub expected_consumer_attempt_epoch: u64,
+    pub expected_consumer_checkpoint_version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializeInvestigationGeneratorInput {
+    pub identity: InvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+    pub ledger_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub generator_pipeline_event_id: Uuid,
+    pub source_receipt_id: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub consumer_fence: InvestigationGeneratorConsumerFenceInput,
+    pub subtasks: Vec<InvestigationGeneratorSubtaskInput>,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
+pub struct InvestigationFinishedSubmitResultCandidateRow {
+    pub source_tool_call_id: Uuid,
+    pub source_provider_call_id: String,
+    pub source_attempt_epoch: i64,
+    pub source_work_item_id: Uuid,
+    pub source_worker_run_id: Uuid,
+    pub canonical_result: Value,
+    pub canonical_result_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInvestigationGeneratorRecoveryRow {
+    pub task_plan_id: Uuid,
+    pub primary_dispatch_receipt_id: Uuid,
+    pub primary_work_item_id: Uuid,
+    pub primary_worker_run_id: Uuid,
+    pub existing_subtasks: Vec<PentagiSubtaskRow>,
+    pub candidates: Vec<InvestigationFinishedSubmitResultCandidateRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptInvestigationOrphanGeneratorInput {
+    pub identity: InvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+    pub adoption_receipt_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub ledger_id: Uuid,
+    pub ledger_stable_request_id: Uuid,
+    pub generator_pipeline_event_id: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub consumer_fence: InvestigationGeneratorConsumerFenceInput,
+    pub expected_existing_subtask_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationGeneratorMaterializationRow {
+    pub ledger: InvestigationRefinerPlanLedgerRow,
+    pub subtasks: Vec<PentagiSubtaskRow>,
+    pub source: InvestigationFinishedSubmitResultCandidateRow,
+    pub source_receipt_id: Uuid,
+    pub adoption_receipt_id: Option<Uuid>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct InvestigationGeneratorSourceReceiptRow {
+    source_receipt_id: Uuid,
+    stable_request_id: Uuid,
+    task_plan_id: Uuid,
+    ledger_id: Uuid,
+    generator_pipeline_event_id: Uuid,
+    source_tool_call_id: Uuid,
+    source_provider_call_id: String,
+    source_attempt_epoch: i64,
+    source_work_item_id: Uuid,
+    source_worker_run_id: Uuid,
+    current_consumer_work_item_id: Uuid,
+    current_consumer_worker_run_id: Uuid,
+    current_consumer_lease_token: Uuid,
+    current_consumer_attempt_epoch: i64,
+    current_consumer_checkpoint_version: i64,
+    canonical_result_sha256: String,
+    adopted_subtask_count: i64,
+    adopted_subtask_set_sha256: String,
+    receipt_kind: String,
+    receipt_sha256: String,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
 pub struct InvestigationRefinerPlanPatchRow {
     pub patch_id: Uuid,
@@ -528,6 +650,19 @@ pub struct AppendInvestigationRefinerPlanPatchInput {
     pub active_realized_subtask_ids: Vec<Uuid>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendInvestigationDynamicRefinerPlanPatchInput {
+    pub identity: InvestigationUnitIdentity,
+    pub patch_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub ledger_id: Uuid,
+    pub task_plan_id: Uuid,
+    pub refiner_pipeline_event_id: Uuid,
+    pub expected_previous_state_sha256: String,
+    pub remaining_plan_payload: Value,
+    pub ordered_active_subtask_ids: Vec<Uuid>,
+}
+
 #[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
 pub struct InvestigationRefinerPlanLedgerSealRow {
     pub seal_id: Uuid,
@@ -548,6 +683,17 @@ pub struct InvestigationRefinerPlanLedgerSealRow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealInvestigationRefinerPlanLedgerInput {
+    pub identity: InvestigationUnitIdentity,
+    pub seal_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub ledger_id: Uuid,
+    pub task_plan_id: Uuid,
+    pub result_barrier_pipeline_event_id: Uuid,
+    pub expected_final_patch_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealInvestigationDynamicRefinerPlanLedgerInput {
     pub identity: InvestigationUnitIdentity,
     pub seal_id: Uuid,
     pub stable_request_id: Uuid,
@@ -840,7 +986,7 @@ impl PgUnifiedInvestigationRuntimeRepository {
         input: &RegisterInvestigationWorkInput,
     ) -> UnifiedInvestigationRuntimeStoreResult<InvestigationRunWorkRow> {
         validate_unit_identity(&input.identity)?;
-        validate_ids(&[input.work_id])?;
+        validate_ids(&[input.work_id, input.asset_lane_id])?;
         validate_hashes(&[
             &input.stable_work_key_sha256,
             &input.external_identity_sha256,
@@ -848,14 +994,15 @@ impl PgUnifiedInvestigationRuntimeRepository {
         let stop_epoch = to_i64(input.observed_stop_epoch, "observed_stop_epoch")?;
         sqlx::query(
             r#"INSERT INTO investigation_run_work_items(
-                   work_id,stable_work_key_sha256,authority_id,operation_id,
+                   work_id,asset_lane_id,stable_work_key_sha256,authority_id,operation_id,
                    stage_execution_id,owning_stage_run_request_id,stage_run_unit_id,
                    scope_snapshot_id,organization_id,work_kind,external_identity_sha256,
                    current_state,observed_stop_epoch
-               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+               ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                ON CONFLICT(authority_id,stable_work_key_sha256) DO NOTHING"#,
         )
         .bind(input.work_id)
+        .bind(input.asset_lane_id)
         .bind(&input.stable_work_key_sha256)
         .bind(input.identity.stage.authority_id)
         .bind(input.identity.stage.operation_id)
@@ -877,6 +1024,7 @@ impl PgUnifiedInvestigationRuntimeRepository {
                 "work_replay_missing",
             ))?;
         if row.work_id != input.work_id
+            || row.asset_lane_id != input.asset_lane_id
             || row.work_kind != input.work_kind.as_str()
             || row.external_identity_sha256 != input.external_identity_sha256
             || row.observed_stop_epoch != stop_epoch
@@ -887,6 +1035,86 @@ impl PgUnifiedInvestigationRuntimeRepository {
             ));
         }
         Ok(row)
+    }
+
+    pub async fn ensure_dynamic_asset_analysis_work(
+        &self,
+        input: &EnsureDynamicAssetAnalysisWorkInput,
+    ) -> UnifiedInvestigationRuntimeStoreResult<EnsuredDynamicAssetAnalysisWorkRow> {
+        validate_unit_identity(&input.identity)?;
+        validate_ids(&[
+            input.stable_cutover_request_id,
+            input.asset_lane_id,
+            input.dynamic_work_id,
+        ])?;
+        validate_hashes(&[
+            &input.legacy_stable_work_key_sha256,
+            &input.dynamic_stable_work_key_sha256,
+            &input.dynamic_external_identity_sha256,
+        ])?;
+        if input.legacy_stable_work_key_sha256 == input.dynamic_stable_work_key_sha256 {
+            return Err(UnifiedInvestigationRuntimeStoreError::InvalidInput(
+                "dynamic_analysis_work_key",
+            ));
+        }
+        let stop_epoch = to_i64(input.observed_stop_epoch, "observed_stop_epoch")?;
+        let returned_work_id: Uuid = sqlx::query_scalar(
+            r#"SELECT ensure_investigation_dynamic_asset_analysis_work_v2(
+                   $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)"#,
+        )
+        .bind(input.stable_cutover_request_id)
+        .bind(input.identity.stage.authority_id)
+        .bind(input.identity.stage.operation_id)
+        .bind(input.identity.stage.stage_execution_id)
+        .bind(&input.identity.stage.owning_stage_run_request_id)
+        .bind(input.identity.stage_run_unit_id)
+        .bind(input.identity.stage.scope_snapshot_id)
+        .bind(input.identity.organization_id)
+        .bind(input.asset_lane_id)
+        .bind(&input.legacy_stable_work_key_sha256)
+        .bind(input.dynamic_work_id)
+        .bind(&input.dynamic_stable_work_key_sha256)
+        .bind(&input.dynamic_external_identity_sha256)
+        .bind(stop_epoch)
+        .fetch_one(&*self.pool)
+        .await?;
+        if returned_work_id != input.dynamic_work_id {
+            return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+                "dynamic_analysis_work_replay_mismatch",
+            ));
+        }
+        let work = self
+            .load_work_by_key(&input.identity, &input.dynamic_stable_work_key_sha256)
+            .await?
+            .ok_or(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+                "dynamic_analysis_work_missing",
+            ))?;
+        if work.work_id != input.dynamic_work_id
+            || work.asset_lane_id != input.asset_lane_id
+            || work.work_kind != InvestigationWorkKind::Analysis.as_str()
+            || work.external_identity_sha256 != input.dynamic_external_identity_sha256
+            || work.current_state != InvestigationWorkState::Running.as_str()
+            || work.observed_stop_epoch != stop_epoch
+            || work.head_version != 0
+            || work.latest_event_id.is_some()
+        {
+            return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+                "dynamic_analysis_work_replay_mismatch",
+            ));
+        }
+        let cutover_authority_id = sqlx::query_scalar::<_, Uuid>(
+            r#"SELECT cutover_authority_id
+                 FROM investigation_dynamic_analysis_work_cutovers
+                WHERE stable_request_id=$1 AND dynamic_work_id=$2 AND status='applied'"#,
+        )
+        .bind(input.stable_cutover_request_id)
+        .bind(input.dynamic_work_id)
+        .fetch_optional(&*self.pool)
+        .await?;
+        Ok(EnsuredDynamicAssetAnalysisWorkRow {
+            work,
+            cutover_authority_id,
+        })
     }
 
     pub async fn transition_work(
@@ -1392,7 +1620,7 @@ impl PgUnifiedInvestigationRuntimeRepository {
             r#"SELECT ledger_id,stable_request_id,task_plan_id,generator_pipeline_event_id,
                       generator_manifest,generator_manifest_sha256,generator_subtask_count,
                       generator_subtask_set_sha256,ledger_sha256
-                 FROM create_investigation_refiner_plan_ledger_v1($1,$2,$3,$4,$5)"#,
+                 FROM create_investigation_refiner_plan_ledger_v2($1,$2,$3,$4,$5)"#,
         )
         .bind(input.ledger_id)
         .bind(input.stable_request_id)
@@ -1401,6 +1629,225 @@ impl PgUnifiedInvestigationRuntimeRepository {
         .bind(&input.generator_manifest)
         .fetch_one(&*self.pool)
         .await?)
+    }
+
+    pub async fn load_pending_generator_recovery(
+        &self,
+        identity: &InvestigationUnitIdentity,
+        task_plan_id: Uuid,
+    ) -> UnifiedInvestigationRuntimeStoreResult<Option<PendingInvestigationGeneratorRecoveryRow>>
+    {
+        validate_unit_identity(identity)?;
+        validate_ids(&[task_plan_id])?;
+        let mut tx = self.pool.begin().await?;
+        let plan_exists: bool = sqlx::query_scalar(
+            r#"SELECT EXISTS(
+                   SELECT 1 FROM investigation_pentagi_task_plans plan
+                    WHERE plan.task_plan_id=$1 AND plan.authority_id=$2
+                      AND plan.operation_id=$3 AND plan.stage_execution_id=$4
+                      AND plan.owning_stage_run_request_id=$5
+                      AND plan.stage_run_unit_id=$6 AND plan.scope_snapshot_id=$7
+                      AND plan.organization_id=$8 AND plan.status='open')"#,
+        )
+        .bind(task_plan_id)
+        .bind(identity.stage.authority_id)
+        .bind(identity.stage.operation_id)
+        .bind(identity.stage.stage_execution_id)
+        .bind(&identity.stage.owning_stage_run_request_id)
+        .bind(identity.stage_run_unit_id)
+        .bind(identity.stage.scope_snapshot_id)
+        .bind(identity.organization_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !plan_exists {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let dispatch: Option<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+            r#"SELECT dispatch.dispatch_receipt_id,dispatch.stage_work_item_id,
+                      dispatch.worker_run_id
+                 FROM pentagi_logical_dispatch_receipts dispatch
+                WHERE dispatch.task_plan_id=$1 AND dispatch.actor_kind='primary'
+                  AND investigation_refiner_primary_source_is_current_v3(
+                      $1,dispatch.stage_work_item_id,dispatch.worker_run_id)
+                ORDER BY dispatch.dispatch_ordinal DESC,dispatch.dispatch_receipt_id
+                LIMIT 1"#,
+        )
+        .bind(task_plan_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((primary_dispatch_receipt_id, primary_work_item_id, primary_worker_run_id)) =
+            dispatch
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let existing_subtasks = load_generator_subtasks_on(&mut tx, identity, task_plan_id).await?;
+        let candidates =
+            load_generator_candidates_on(&mut tx, identity, task_plan_id, None).await?;
+        tx.commit().await?;
+        Ok(Some(PendingInvestigationGeneratorRecoveryRow {
+            task_plan_id,
+            primary_dispatch_receipt_id,
+            primary_work_item_id,
+            primary_worker_run_id,
+            existing_subtasks,
+            candidates,
+        }))
+    }
+
+    pub async fn materialize_generator(
+        &self,
+        input: &MaterializeInvestigationGeneratorInput,
+    ) -> UnifiedInvestigationRuntimeStoreResult<InvestigationGeneratorMaterializationRow> {
+        validate_generator_materialization_input(input)?;
+        let mut tx = self.pool.begin().await?;
+        lock_generator_consumer_on(
+            &mut tx,
+            &input.identity,
+            input.task_plan_id,
+            &input.consumer_fence,
+        )
+        .await?;
+        let source = load_generator_source_on(
+            &mut tx,
+            &input.identity,
+            input.task_plan_id,
+            input.source_tool_call_id,
+        )
+        .await?;
+        let replayed = load_generator_source_receipt_on(&mut tx, input.stable_request_id)
+            .await?
+            .is_some();
+        if !replayed
+            && sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM investigation_refiner_plan_ledgers WHERE task_plan_id=$1)",
+            )
+            .bind(input.task_plan_id)
+            .fetch_one(&mut *tx)
+            .await?
+        {
+            return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+                "generator_materialization_requires_adoption",
+            ));
+        }
+        for member in &input.subtasks {
+            insert_generator_subtask_on(&mut tx, &input.identity, input.task_plan_id, member)
+                .await?;
+        }
+        let subtasks =
+            load_generator_subtasks_on(&mut tx, &input.identity, input.task_plan_id).await?;
+        ensure_generator_subtask_request_exact(&subtasks, &input.subtasks)?;
+        let ledger = create_generator_ledger_on(
+            &mut tx,
+            input.ledger_id,
+            input.stable_request_id,
+            input.task_plan_id,
+            input.generator_pipeline_event_id,
+            &source.canonical_result,
+        )
+        .await?;
+        insert_generator_source_receipt_on(
+            &mut tx,
+            input.source_receipt_id,
+            input.stable_request_id,
+            &input.identity,
+            &ledger,
+            &source,
+            &input.consumer_fence,
+            "materialized",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(InvestigationGeneratorMaterializationRow {
+            ledger,
+            subtasks,
+            source,
+            source_receipt_id: input.source_receipt_id,
+            adoption_receipt_id: None,
+            replayed,
+        })
+    }
+
+    pub async fn adopt_orphan_generator(
+        &self,
+        input: &AdoptInvestigationOrphanGeneratorInput,
+    ) -> UnifiedInvestigationRuntimeStoreResult<InvestigationGeneratorMaterializationRow> {
+        validate_unit_identity(&input.identity)?;
+        validate_ids(&[
+            input.task_plan_id,
+            input.adoption_receipt_id,
+            input.stable_request_id,
+            input.ledger_id,
+            input.ledger_stable_request_id,
+            input.generator_pipeline_event_id,
+            input.source_tool_call_id,
+        ])?;
+        validate_ids(&input.expected_existing_subtask_ids)?;
+        if input.expected_existing_subtask_ids.is_empty() {
+            return Err(UnifiedInvestigationRuntimeStoreError::InvalidInput(
+                "orphan_generator_subtasks_empty",
+            ));
+        }
+        validate_generator_consumer_fence(&input.consumer_fence)?;
+        let mut tx = self.pool.begin().await?;
+        lock_generator_consumer_on(
+            &mut tx,
+            &input.identity,
+            input.task_plan_id,
+            &input.consumer_fence,
+        )
+        .await?;
+        let source = load_generator_source_on(
+            &mut tx,
+            &input.identity,
+            input.task_plan_id,
+            input.source_tool_call_id,
+        )
+        .await?;
+        let replayed = load_generator_source_receipt_on(&mut tx, input.stable_request_id)
+            .await?
+            .is_some();
+        let subtasks =
+            load_generator_subtasks_on(&mut tx, &input.identity, input.task_plan_id).await?;
+        let actual_ids = subtasks
+            .iter()
+            .map(|row| row.subtask_id)
+            .collect::<Vec<_>>();
+        if actual_ids != input.expected_existing_subtask_ids {
+            return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+                "orphan_generator_subtask_census_mismatch",
+            ));
+        }
+        let ledger = create_generator_ledger_on(
+            &mut tx,
+            input.ledger_id,
+            input.ledger_stable_request_id,
+            input.task_plan_id,
+            input.generator_pipeline_event_id,
+            &source.canonical_result,
+        )
+        .await?;
+        insert_generator_source_receipt_on(
+            &mut tx,
+            input.adoption_receipt_id,
+            input.stable_request_id,
+            &input.identity,
+            &ledger,
+            &source,
+            &input.consumer_fence,
+            "orphan_adoption",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(InvestigationGeneratorMaterializationRow {
+            ledger,
+            subtasks,
+            source,
+            source_receipt_id: input.adoption_receipt_id,
+            adoption_receipt_id: Some(input.adoption_receipt_id),
+            replayed,
+        })
     }
 
     pub async fn load_refiner_plan_ledger(
@@ -1421,6 +1868,73 @@ impl PgUnifiedInvestigationRuntimeRepository {
         .bind(task_plan_id)
         .fetch_optional(&*self.pool)
         .await?)
+    }
+
+    pub async fn load_logical_dispatch(
+        &self,
+        identity: &InvestigationUnitIdentity,
+        task_plan_id: Uuid,
+        dispatch_receipt_id: Uuid,
+    ) -> UnifiedInvestigationRuntimeStoreResult<Option<PentagiLogicalDispatchRow>> {
+        validate_unit_identity(identity)?;
+        validate_ids(&[task_plan_id, dispatch_receipt_id])?;
+        self.load_plan_exact(identity, task_plan_id).await?;
+        Ok(
+            sqlx::query_as::<_, PentagiLogicalDispatchRow>(DISPATCH_ROW_SELECT_BY_ID)
+                .bind(dispatch_receipt_id)
+                .bind(task_plan_id)
+                .bind(identity.stage.operation_id)
+                .bind(identity.stage.stage_execution_id)
+                .bind(identity.stage_run_unit_id)
+                .bind(identity.stage.scope_snapshot_id)
+                .bind(identity.organization_id)
+                .bind(identity.stage.authority_id)
+                .bind(&identity.stage.owning_stage_run_request_id)
+                .fetch_optional(&*self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn load_latest_refiner_plan_patch(
+        &self,
+        identity: &InvestigationUnitIdentity,
+        task_plan_id: Uuid,
+    ) -> UnifiedInvestigationRuntimeStoreResult<Option<InvestigationRefinerPlanPatchRow>> {
+        validate_unit_identity(identity)?;
+        validate_ids(&[task_plan_id])?;
+        self.load_plan_exact(identity, task_plan_id).await?;
+        let patch = sqlx::query_as::<_, InvestigationRefinerPlanPatchRow>(
+            r#"SELECT patch.patch_id,patch.stable_request_id,patch.ledger_id,
+                      patch.task_plan_id,patch.patch_ordinal,patch.refiner_pipeline_event_id,
+                      patch.expected_previous_state_sha256,patch.remaining_plan_payload,
+                      patch.remaining_plan_payload_sha256,patch.active_realized_subtask_count,
+                      patch.active_realized_subtask_set_sha256,patch.patch_sha256
+                 FROM investigation_refiner_plan_patches patch
+                 JOIN investigation_refiner_plan_ledgers ledger
+                   ON ledger.ledger_id=patch.ledger_id
+                  AND ledger.task_plan_id=patch.task_plan_id
+                WHERE patch.task_plan_id=$1
+                ORDER BY patch.patch_ordinal DESC
+                LIMIT 1"#,
+        )
+        .bind(task_plan_id)
+        .fetch_optional(&*self.pool)
+        .await?;
+        if let Some(patch) = &patch {
+            let payload_hash_exact: bool = sqlx::query_scalar(
+                "SELECT $1=investigation_refiner_payload_hash_v1('remaining_plan_patch',$2)",
+            )
+            .bind(&patch.remaining_plan_payload_sha256)
+            .bind(&patch.remaining_plan_payload)
+            .fetch_one(&*self.pool)
+            .await?;
+            if !payload_hash_exact {
+                return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+                    "investigation_refiner_plan_patch_payload_hash",
+                ));
+            }
+        }
+        Ok(patch)
     }
 
     pub async fn append_refiner_plan_patch(
@@ -1464,6 +1978,47 @@ impl PgUnifiedInvestigationRuntimeRepository {
         .await?)
     }
 
+    pub async fn append_dynamic_refiner_plan_patch(
+        &self,
+        input: &AppendInvestigationDynamicRefinerPlanPatchInput,
+    ) -> UnifiedInvestigationRuntimeStoreResult<InvestigationRefinerPlanPatchRow> {
+        validate_unit_identity(&input.identity)?;
+        validate_ids(&[
+            input.patch_id,
+            input.stable_request_id,
+            input.ledger_id,
+            input.task_plan_id,
+            input.refiner_pipeline_event_id,
+        ])?;
+        validate_ids(&input.ordered_active_subtask_ids)?;
+        validate_hashes(&[&input.expected_previous_state_sha256])?;
+        if input.remaining_plan_payload.as_object().is_none() {
+            return Err(UnifiedInvestigationRuntimeStoreError::InvalidInput(
+                "remaining_plan_payload",
+            ));
+        }
+        self.load_plan_exact(&input.identity, input.task_plan_id)
+            .await?;
+        Ok(sqlx::query_as::<_, InvestigationRefinerPlanPatchRow>(
+            r#"SELECT patch_id,stable_request_id,ledger_id,task_plan_id,patch_ordinal,
+                      refiner_pipeline_event_id,expected_previous_state_sha256,
+                      remaining_plan_payload,remaining_plan_payload_sha256,
+                      active_realized_subtask_count,active_realized_subtask_set_sha256,
+                      patch_sha256
+                 FROM append_investigation_refiner_plan_patch_v2($1,$2,$3,$4,$5,$6,$7,$8)"#,
+        )
+        .bind(input.patch_id)
+        .bind(input.stable_request_id)
+        .bind(input.ledger_id)
+        .bind(input.task_plan_id)
+        .bind(input.refiner_pipeline_event_id)
+        .bind(&input.expected_previous_state_sha256)
+        .bind(&input.remaining_plan_payload)
+        .bind(&input.ordered_active_subtask_ids)
+        .fetch_one(&*self.pool)
+        .await?)
+    }
+
     pub async fn seal_refiner_plan_ledger(
         &self,
         input: &SealInvestigationRefinerPlanLedgerInput,
@@ -1487,6 +2042,40 @@ impl PgUnifiedInvestigationRuntimeRepository {
                       final_active_realized_subtask_set_sha256,generator_subtask_count,
                       generator_subtask_set_sha256,seal_sha256
                  FROM seal_investigation_refiner_plan_ledger_v1($1,$2,$3,$4,$5,$6)"#,
+        )
+        .bind(input.seal_id)
+        .bind(input.stable_request_id)
+        .bind(input.ledger_id)
+        .bind(input.task_plan_id)
+        .bind(input.result_barrier_pipeline_event_id)
+        .bind(&input.expected_final_patch_sha256)
+        .fetch_one(&*self.pool)
+        .await?)
+    }
+
+    pub async fn seal_dynamic_refiner_plan_ledger(
+        &self,
+        input: &SealInvestigationDynamicRefinerPlanLedgerInput,
+    ) -> UnifiedInvestigationRuntimeStoreResult<InvestigationRefinerPlanLedgerSealRow> {
+        validate_unit_identity(&input.identity)?;
+        validate_ids(&[
+            input.seal_id,
+            input.stable_request_id,
+            input.ledger_id,
+            input.task_plan_id,
+            input.result_barrier_pipeline_event_id,
+        ])?;
+        validate_hashes(&[&input.expected_final_patch_sha256])?;
+        self.load_plan_exact(&input.identity, input.task_plan_id)
+            .await?;
+        Ok(sqlx::query_as::<_, InvestigationRefinerPlanLedgerSealRow>(
+            r#"SELECT seal_id,stable_request_id,ledger_id,task_plan_id,
+                      result_barrier_pipeline_event_id,patch_count,patch_set_sha256,
+                      final_patch_id,final_patch_sha256,
+                      final_active_realized_subtask_count,
+                      final_active_realized_subtask_set_sha256,generator_subtask_count,
+                      generator_subtask_set_sha256,seal_sha256
+                 FROM seal_investigation_refiner_plan_ledger_v2($1,$2,$3,$4,$5,$6)"#,
         )
         .bind(input.seal_id)
         .bind(input.stable_request_id)
@@ -1542,37 +2131,19 @@ impl PgUnifiedInvestigationRuntimeRepository {
             return Ok(existing);
         }
         sqlx::query(
-            r#"WITH runnable AS (
-                   SELECT COUNT(*) AS member_count,
-                          unified_investigation_exact_set_hash(
-                              'investigation_pentagi_runnable_subtasks.v1',
-                              COALESCE(array_agg(member_sha256 ORDER BY subtask_ordinal),ARRAY[]::TEXT[])
-                          ) AS member_hash
-                     FROM investigation_pentagi_subtasks WHERE task_plan_id=$3 AND runnable
-               ), dispatch AS (
-                   SELECT COUNT(*) AS member_count,
-                          unified_investigation_exact_set_hash(
-                              'pentagi_logical_dispatch_receipts.v1',
-                              COALESCE(array_agg(receipt_sha256 ORDER BY dispatch_receipt_id),ARRAY[]::TEXT[])
-                          ) AS member_hash
-                     FROM pentagi_logical_dispatch_receipts WHERE task_plan_id=$3
-               ), pipeline AS (
-                   SELECT COUNT(*) AS member_count,
-                          unified_investigation_exact_set_hash(
-                              'investigation_pentagi_pipeline_events.v1',
-                              COALESCE(array_agg(event_sha256 ORDER BY pipeline_event_id),ARRAY[]::TEXT[])
-                          ) AS member_hash
-                     FROM investigation_pentagi_pipeline_events WHERE task_plan_id=$3
+            r#"WITH census AS (
+                   SELECT * FROM investigation_effective_delegation_census_v2($3)
                )
                INSERT INTO investigation_pentagi_delegation_census_seals(
                    census_seal_id,stable_request_id,task_plan_id,primary_dispatch_receipt_id,
                    primary_worker_run_id,runnable_subtask_count,runnable_subtask_set_sha256,
                    dispatch_count,dispatch_set_sha256,pipeline_event_count,
                    pipeline_event_set_sha256,seal_sha256
-               ) SELECT $1,$2,$3,$4,$5,runnable.member_count,runnable.member_hash,
-                        dispatch.member_count,dispatch.member_hash,pipeline.member_count,
-                        pipeline.member_hash,$6
-                   FROM runnable,dispatch,pipeline"#,
+               ) SELECT $1,$2,$3,$4,$5,census.runnable_subtask_count,
+                        census.runnable_subtask_set_sha256,census.dispatch_count,
+                        census.dispatch_set_sha256,census.pipeline_event_count,
+                        census.pipeline_event_set_sha256,$6
+                   FROM census"#,
         )
         .bind(input.census_seal_id)
         .bind(input.stable_request_id)
@@ -2314,13 +2885,13 @@ struct WorkStateEventRow {
 }
 
 #[cfg(test)]
-const WORK_ROW_COLUMNS: &str = r#"work.work_id,work.stable_work_key_sha256,
+const WORK_ROW_COLUMNS: &str = r#"work.work_id,work.asset_lane_id,work.stable_work_key_sha256,
     work.authority_id,work.operation_id,work.stage_execution_id,
     work.owning_stage_run_request_id,work.stage_run_unit_id,work.scope_snapshot_id,
     work.organization_id,work.work_kind,work.external_identity_sha256,
     work.current_state,work.observed_stop_epoch,work.head_version,work.latest_event_id"#;
 
-const WORK_ROW_SELECT_BY_KEY: &str = r#"SELECT work.work_id,work.stable_work_key_sha256,
+const WORK_ROW_SELECT_BY_KEY: &str = r#"SELECT work.work_id,work.asset_lane_id,work.stable_work_key_sha256,
     work.authority_id,work.operation_id,work.stage_execution_id,
     work.owning_stage_run_request_id,work.stage_run_unit_id,work.scope_snapshot_id,
     work.organization_id,work.work_kind,work.external_identity_sha256,
@@ -2331,7 +2902,7 @@ const WORK_ROW_SELECT_BY_KEY: &str = r#"SELECT work.work_id,work.stable_work_key
       AND work.scope_snapshot_id=$6 AND work.organization_id=$7
       AND work.stable_work_key_sha256=$8"#;
 
-const WORK_ROW_SELECT_BY_ID: &str = r#"SELECT work.work_id,work.stable_work_key_sha256,
+const WORK_ROW_SELECT_BY_ID: &str = r#"SELECT work.work_id,work.asset_lane_id,work.stable_work_key_sha256,
     work.authority_id,work.operation_id,work.stage_execution_id,
     work.owning_stage_run_request_id,work.stage_run_unit_id,work.scope_snapshot_id,
     work.organization_id,work.work_kind,work.external_identity_sha256,
@@ -2341,6 +2912,483 @@ const WORK_ROW_SELECT_BY_ID: &str = r#"SELECT work.work_id,work.stable_work_key_
       AND work.stage_execution_id=$4 AND work.owning_stage_run_request_id=$5
       AND work.stage_run_unit_id=$6 AND work.scope_snapshot_id=$7
       AND work.organization_id=$8"#;
+
+fn validate_generator_consumer_fence(
+    fence: &InvestigationGeneratorConsumerFenceInput,
+) -> UnifiedInvestigationRuntimeStoreResult<()> {
+    validate_ids(&[
+        fence.current_consumer_work_item_id,
+        fence.current_consumer_worker_run_id,
+        fence.current_consumer_lease_token,
+    ])?;
+    to_i64(
+        fence.expected_consumer_attempt_epoch,
+        "generator_consumer_attempt_epoch",
+    )?;
+    to_i64(
+        fence.expected_consumer_checkpoint_version,
+        "generator_consumer_checkpoint_version",
+    )?;
+    Ok(())
+}
+
+fn validate_generator_materialization_input(
+    input: &MaterializeInvestigationGeneratorInput,
+) -> UnifiedInvestigationRuntimeStoreResult<()> {
+    validate_unit_identity(&input.identity)?;
+    validate_ids(&[
+        input.task_plan_id,
+        input.ledger_id,
+        input.stable_request_id,
+        input.generator_pipeline_event_id,
+        input.source_receipt_id,
+        input.source_tool_call_id,
+    ])?;
+    validate_generator_consumer_fence(&input.consumer_fence)?;
+    if input.subtasks.len() > 8 {
+        return Err(UnifiedInvestigationRuntimeStoreError::InvalidInput(
+            "generator_subtask_count",
+        ));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut ordinals = std::collections::BTreeSet::new();
+    for member in &input.subtasks {
+        validate_ids(&[member.subtask_id])?;
+        validate_hashes(&[&member.input_manifest_sha256, &member.member_sha256])?;
+        validate_bounded(&member.label, 512, "subtask_label")?;
+        validate_bounded(
+            &member.expected_output_schema,
+            512,
+            "expected_output_schema",
+        )?;
+        if !ids.insert(member.subtask_id)
+            || !ordinals.insert(member.subtask_ordinal)
+            || member.subtask_ordinal as usize >= input.subtasks.len()
+        {
+            return Err(UnifiedInvestigationRuntimeStoreError::InvalidInput(
+                "generator_subtask_census",
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn lock_generator_consumer_on(
+    tx: &mut Transaction<'_, Postgres>,
+    identity: &InvestigationUnitIdentity,
+    task_plan_id: Uuid,
+    fence: &InvestigationGeneratorConsumerFenceInput,
+) -> UnifiedInvestigationRuntimeStoreResult<(Uuid, Uuid, Uuid)> {
+    let attempt_epoch = to_i64(
+        fence.expected_consumer_attempt_epoch,
+        "generator_consumer_attempt_epoch",
+    )?;
+    let checkpoint_version = to_i64(
+        fence.expected_consumer_checkpoint_version,
+        "generator_consumer_checkpoint_version",
+    )?;
+    sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
+        r#"SELECT current_authority.source_schedule_receipt_id,
+                  current_authority.primary_work_item_id,
+                  current_authority.primary_worker_run_id
+             FROM investigation_pentagi_task_plans plan
+             JOIN investigation_asset_primary_current_authorities current_authority
+               ON current_authority.stage_team_plan_id=plan.stage_team_plan_id
+              AND current_authority.operation_id=plan.operation_id
+              AND current_authority.stage_execution_id=plan.stage_execution_id
+              AND current_authority.stage_run_unit_id=plan.stage_run_unit_id
+              AND current_authority.scope_snapshot_id=plan.scope_snapshot_id
+              AND current_authority.organization_id=plan.organization_id
+             JOIN stage_work_items consumer_item
+               ON consumer_item.id=current_authority.primary_work_item_id
+              AND consumer_item.team_plan_id=current_authority.stage_team_plan_id
+              AND consumer_item.operation_id=current_authority.operation_id
+              AND consumer_item.stage_execution_id=current_authority.stage_execution_id
+              AND consumer_item.stage_run_unit_id=current_authority.stage_run_unit_id
+              AND consumer_item.organization_id=current_authority.organization_id
+             JOIN stage_worker_runs consumer_worker
+               ON consumer_worker.id=current_authority.primary_worker_run_id
+              AND consumer_worker.work_item_id=consumer_item.id
+              AND consumer_worker.operation_id=current_authority.operation_id
+              AND consumer_worker.stage_execution_id=current_authority.stage_execution_id
+              AND consumer_worker.stage_run_unit_id=current_authority.stage_run_unit_id
+              AND consumer_worker.organization_id=current_authority.organization_id
+            WHERE plan.task_plan_id=$1 AND plan.authority_id=$2
+              AND plan.operation_id=$3 AND plan.stage_execution_id=$4
+              AND plan.owning_stage_run_request_id=$5 AND plan.stage_run_unit_id=$6
+              AND plan.scope_snapshot_id=$7 AND plan.organization_id=$8
+              AND plan.status='open'
+              AND consumer_item.id=$9 AND consumer_item.status='running'
+              AND consumer_worker.id=$10 AND consumer_worker.status='running'
+              AND consumer_worker.lease_token=$11
+              AND consumer_worker.attempt_epoch=$12
+              AND consumer_worker.checkpoint_version=$13
+              AND consumer_worker.active_tool_call_id IS NULL
+            FOR UPDATE OF plan,consumer_item,consumer_worker"#,
+    )
+    .bind(task_plan_id)
+    .bind(identity.stage.authority_id)
+    .bind(identity.stage.operation_id)
+    .bind(identity.stage.stage_execution_id)
+    .bind(&identity.stage.owning_stage_run_request_id)
+    .bind(identity.stage_run_unit_id)
+    .bind(identity.stage.scope_snapshot_id)
+    .bind(identity.organization_id)
+    .bind(fence.current_consumer_work_item_id)
+    .bind(fence.current_consumer_worker_run_id)
+    .bind(fence.current_consumer_lease_token)
+    .bind(attempt_epoch)
+    .bind(checkpoint_version)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(UnifiedInvestigationRuntimeStoreError::from)
+}
+
+async fn load_generator_candidates_on(
+    tx: &mut Transaction<'_, Postgres>,
+    identity: &InvestigationUnitIdentity,
+    task_plan_id: Uuid,
+    source_tool_call_id: Option<Uuid>,
+) -> UnifiedInvestigationRuntimeStoreResult<Vec<InvestigationFinishedSubmitResultCandidateRow>> {
+    Ok(
+        sqlx::query_as::<_, InvestigationFinishedSubmitResultCandidateRow>(
+            r#"SELECT source_call.id AS source_tool_call_id,
+                  source_call.call_id AS source_provider_call_id,
+                  source_call.attempt_epoch AS source_attempt_epoch,
+                  source_worker.work_item_id AS source_work_item_id,
+                  source_worker.id AS source_worker_run_id,
+                  source_call.args->'result' AS canonical_result,
+                  tool_truth_sha256((source_call.args->'result')::TEXT)
+                      AS canonical_result_sha256
+             FROM investigation_pentagi_task_plans plan
+             JOIN pentagi_logical_dispatch_receipts dispatch
+               ON dispatch.task_plan_id=plan.task_plan_id AND dispatch.actor_kind='primary'
+             JOIN stage_worker_runs source_worker
+               ON source_worker.id=dispatch.worker_run_id
+              AND source_worker.work_item_id=dispatch.stage_work_item_id
+              AND source_worker.operation_id=plan.operation_id
+              AND source_worker.stage_execution_id=plan.stage_execution_id
+              AND source_worker.stage_run_unit_id=plan.stage_run_unit_id
+              AND source_worker.organization_id=plan.organization_id
+             JOIN tool_calls source_call
+               ON source_call.worker_run_id=source_worker.id
+              AND source_call.operation_id=plan.operation_id
+              AND source_call.stage_execution_id=plan.stage_execution_id
+              AND source_call.stage_run_unit_id=plan.stage_run_unit_id
+              AND source_call.organization_id=plan.organization_id
+            WHERE plan.task_plan_id=$1 AND plan.authority_id=$2
+              AND plan.operation_id=$3 AND plan.stage_execution_id=$4
+              AND plan.owning_stage_run_request_id=$5 AND plan.stage_run_unit_id=$6
+              AND plan.scope_snapshot_id=$7 AND plan.organization_id=$8
+              AND plan.status='open'
+              AND investigation_refiner_primary_source_is_current_v3(
+                  plan.task_plan_id,dispatch.stage_work_item_id,dispatch.worker_run_id)
+              AND source_call.name='submit_result' AND source_call.status='finished'
+              AND source_call.result IS NOT NULL
+              AND source_call.result::JSONB->>'status'='result submitted'
+              AND source_call.args ? 'result'
+              AND ($9::UUID IS NULL OR source_call.id=$9)
+            ORDER BY source_call.created_at,source_call.id"#,
+        )
+        .bind(task_plan_id)
+        .bind(identity.stage.authority_id)
+        .bind(identity.stage.operation_id)
+        .bind(identity.stage.stage_execution_id)
+        .bind(&identity.stage.owning_stage_run_request_id)
+        .bind(identity.stage_run_unit_id)
+        .bind(identity.stage.scope_snapshot_id)
+        .bind(identity.organization_id)
+        .bind(source_tool_call_id)
+        .fetch_all(&mut **tx)
+        .await?,
+    )
+}
+
+async fn load_generator_source_on(
+    tx: &mut Transaction<'_, Postgres>,
+    identity: &InvestigationUnitIdentity,
+    task_plan_id: Uuid,
+    source_tool_call_id: Uuid,
+) -> UnifiedInvestigationRuntimeStoreResult<InvestigationFinishedSubmitResultCandidateRow> {
+    load_generator_candidates_on(tx, identity, task_plan_id, Some(source_tool_call_id))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+            "generator_source_authority_mismatch",
+        ))
+}
+
+async fn load_generator_subtasks_on(
+    tx: &mut Transaction<'_, Postgres>,
+    identity: &InvestigationUnitIdentity,
+    task_plan_id: Uuid,
+) -> UnifiedInvestigationRuntimeStoreResult<Vec<PentagiSubtaskRow>> {
+    Ok(sqlx::query_as::<_, PentagiSubtaskRow>(
+        r#"SELECT subtask.subtask_id,subtask.task_plan_id,subtask.authority_id,
+                  subtask.operation_id,subtask.stage_execution_id,
+                  subtask.stage_run_unit_id,subtask.organization_id,
+                  subtask.subtask_ordinal,subtask.label,subtask.runnable,
+                  subtask.input_manifest_sha256,subtask.expected_output_schema,
+                  subtask.member_sha256
+             FROM investigation_pentagi_subtasks subtask
+             JOIN investigation_pentagi_task_plans plan
+               ON plan.task_plan_id=subtask.task_plan_id
+            WHERE subtask.task_plan_id=$1 AND subtask.authority_id=$2
+              AND subtask.operation_id=$3 AND subtask.stage_execution_id=$4
+              AND subtask.stage_run_unit_id=$5 AND subtask.organization_id=$6
+              AND plan.owning_stage_run_request_id=$7 AND plan.scope_snapshot_id=$8
+            ORDER BY subtask.subtask_ordinal,subtask.subtask_id"#,
+    )
+    .bind(task_plan_id)
+    .bind(identity.stage.authority_id)
+    .bind(identity.stage.operation_id)
+    .bind(identity.stage.stage_execution_id)
+    .bind(identity.stage_run_unit_id)
+    .bind(identity.organization_id)
+    .bind(&identity.stage.owning_stage_run_request_id)
+    .bind(identity.stage.scope_snapshot_id)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
+async fn insert_generator_subtask_on(
+    tx: &mut Transaction<'_, Postgres>,
+    identity: &InvestigationUnitIdentity,
+    task_plan_id: Uuid,
+    member: &InvestigationGeneratorSubtaskInput,
+) -> UnifiedInvestigationRuntimeStoreResult<()> {
+    let ordinal = i32::try_from(member.subtask_ordinal)
+        .map_err(|_| UnifiedInvestigationRuntimeStoreError::InvalidInput("subtask_ordinal"))?;
+    sqlx::query(
+        r#"INSERT INTO investigation_pentagi_subtasks(
+               subtask_id,task_plan_id,authority_id,operation_id,stage_execution_id,
+               stage_run_unit_id,organization_id,subtask_ordinal,label,runnable,
+               input_manifest_sha256,expected_output_schema,member_sha256)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           ON CONFLICT(subtask_id) DO NOTHING"#,
+    )
+    .bind(member.subtask_id)
+    .bind(task_plan_id)
+    .bind(identity.stage.authority_id)
+    .bind(identity.stage.operation_id)
+    .bind(identity.stage.stage_execution_id)
+    .bind(identity.stage_run_unit_id)
+    .bind(identity.organization_id)
+    .bind(ordinal)
+    .bind(&member.label)
+    .bind(member.runnable)
+    .bind(&member.input_manifest_sha256)
+    .bind(&member.expected_output_schema)
+    .bind(&member.member_sha256)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn ensure_generator_subtask_request_exact(
+    actual: &[PentagiSubtaskRow],
+    requested: &[InvestigationGeneratorSubtaskInput],
+) -> UnifiedInvestigationRuntimeStoreResult<()> {
+    if actual.len() != requested.len()
+        || actual.iter().zip(requested).any(|(row, member)| {
+            row.subtask_id != member.subtask_id
+                || row.subtask_ordinal != member.subtask_ordinal as i32
+                || row.label != member.label
+                || row.runnable != member.runnable
+                || row.input_manifest_sha256 != member.input_manifest_sha256
+                || row.expected_output_schema != member.expected_output_schema
+                || row.member_sha256 != member.member_sha256
+        })
+    {
+        return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+            "generator_subtask_request_mismatch",
+        ));
+    }
+    Ok(())
+}
+
+async fn create_generator_ledger_on(
+    tx: &mut Transaction<'_, Postgres>,
+    ledger_id: Uuid,
+    stable_request_id: Uuid,
+    task_plan_id: Uuid,
+    generator_pipeline_event_id: Uuid,
+    generator_manifest: &Value,
+) -> UnifiedInvestigationRuntimeStoreResult<InvestigationRefinerPlanLedgerRow> {
+    Ok(sqlx::query_as::<_, InvestigationRefinerPlanLedgerRow>(
+        r#"SELECT ledger_id,stable_request_id,task_plan_id,generator_pipeline_event_id,
+                  generator_manifest,generator_manifest_sha256,generator_subtask_count,
+                  generator_subtask_set_sha256,ledger_sha256
+             FROM create_investigation_refiner_plan_ledger_v2($1,$2,$3,$4,$5)"#,
+    )
+    .bind(ledger_id)
+    .bind(stable_request_id)
+    .bind(task_plan_id)
+    .bind(generator_pipeline_event_id)
+    .bind(generator_manifest)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn load_generator_source_receipt_on(
+    tx: &mut Transaction<'_, Postgres>,
+    stable_request_id: Uuid,
+) -> UnifiedInvestigationRuntimeStoreResult<Option<InvestigationGeneratorSourceReceiptRow>> {
+    Ok(sqlx::query_as::<_, InvestigationGeneratorSourceReceiptRow>(
+        r#"SELECT source_receipt_id,stable_request_id,task_plan_id,ledger_id,
+                  generator_pipeline_event_id,source_tool_call_id,source_provider_call_id,
+                  source_attempt_epoch,source_work_item_id,source_worker_run_id,
+                  current_consumer_work_item_id,current_consumer_worker_run_id,
+                  current_consumer_lease_token,current_consumer_attempt_epoch,
+                  current_consumer_checkpoint_version,
+                  canonical_result_sha256,adopted_subtask_count,
+                  adopted_subtask_set_sha256,receipt_kind,receipt_sha256
+             FROM investigation_generator_source_receipts WHERE stable_request_id=$1"#,
+    )
+    .bind(stable_request_id)
+    .fetch_optional(&mut **tx)
+    .await?)
+}
+
+async fn insert_generator_source_receipt_on(
+    tx: &mut Transaction<'_, Postgres>,
+    source_receipt_id: Uuid,
+    stable_request_id: Uuid,
+    identity: &InvestigationUnitIdentity,
+    ledger: &InvestigationRefinerPlanLedgerRow,
+    source: &InvestigationFinishedSubmitResultCandidateRow,
+    fence: &InvestigationGeneratorConsumerFenceInput,
+    receipt_kind: &str,
+) -> UnifiedInvestigationRuntimeStoreResult<()> {
+    let (subtask_count, subtask_set_sha256): (i64, String) = sqlx::query_as(
+        r#"SELECT COUNT(*),unified_investigation_exact_set_hash(
+               'investigation_generator_adopted_subtasks.v1',
+               COALESCE(array_agg(subtask.subtask_id::TEXT || ':' || subtask.member_sha256
+                                  ORDER BY subtask.subtask_ordinal),ARRAY[]::TEXT[]))
+             FROM investigation_pentagi_subtasks subtask WHERE subtask.task_plan_id=$1"#,
+    )
+    .bind(ledger.task_plan_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let receipt_sha256: String = sqlx::query_scalar(
+        r#"SELECT investigation_generator_source_receipt_sha256_v1(
+               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+               $19,$20,$21,$22,$23,$24)"#,
+    )
+    .bind(source_receipt_id)
+    .bind(stable_request_id)
+    .bind(ledger.task_plan_id)
+    .bind(ledger.ledger_id)
+    .bind(ledger.generator_pipeline_event_id)
+    .bind(source.source_tool_call_id)
+    .bind(&source.source_provider_call_id)
+    .bind(source.source_attempt_epoch)
+    .bind(source.source_work_item_id)
+    .bind(source.source_worker_run_id)
+    .bind(fence.current_consumer_work_item_id)
+    .bind(fence.current_consumer_worker_run_id)
+    .bind(fence.current_consumer_lease_token)
+    .bind(to_i64(
+        fence.expected_consumer_attempt_epoch,
+        "generator_consumer_attempt_epoch",
+    )?)
+    .bind(to_i64(
+        fence.expected_consumer_checkpoint_version,
+        "generator_consumer_checkpoint_version",
+    )?)
+    .bind(identity.stage.operation_id)
+    .bind(identity.stage.stage_execution_id)
+    .bind(identity.stage_run_unit_id)
+    .bind(identity.stage.scope_snapshot_id)
+    .bind(identity.organization_id)
+    .bind(&source.canonical_result_sha256)
+    .bind(subtask_count)
+    .bind(&subtask_set_sha256)
+    .bind(receipt_kind)
+    .fetch_one(&mut **tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO investigation_generator_source_receipts(
+               source_receipt_id,stable_request_id,task_plan_id,ledger_id,
+               generator_pipeline_event_id,source_tool_call_id,source_provider_call_id,
+               source_attempt_epoch,source_work_item_id,source_worker_run_id,
+               current_consumer_work_item_id,current_consumer_worker_run_id,
+               current_consumer_lease_token,current_consumer_attempt_epoch,
+               current_consumer_checkpoint_version,
+               operation_id,stage_execution_id,stage_run_unit_id,scope_snapshot_id,
+               organization_id,canonical_result_sha256,adopted_subtask_count,
+               adopted_subtask_set_sha256,receipt_kind,receipt_sha256,status)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                  $18,$19,$20,$21,$22,$23,$24,$25,'applied')
+           ON CONFLICT(stable_request_id) DO NOTHING"#,
+    )
+    .bind(source_receipt_id)
+    .bind(stable_request_id)
+    .bind(ledger.task_plan_id)
+    .bind(ledger.ledger_id)
+    .bind(ledger.generator_pipeline_event_id)
+    .bind(source.source_tool_call_id)
+    .bind(&source.source_provider_call_id)
+    .bind(source.source_attempt_epoch)
+    .bind(source.source_work_item_id)
+    .bind(source.source_worker_run_id)
+    .bind(fence.current_consumer_work_item_id)
+    .bind(fence.current_consumer_worker_run_id)
+    .bind(fence.current_consumer_lease_token)
+    .bind(to_i64(
+        fence.expected_consumer_attempt_epoch,
+        "generator_consumer_attempt_epoch",
+    )?)
+    .bind(to_i64(
+        fence.expected_consumer_checkpoint_version,
+        "generator_consumer_checkpoint_version",
+    )?)
+    .bind(identity.stage.operation_id)
+    .bind(identity.stage.stage_execution_id)
+    .bind(identity.stage_run_unit_id)
+    .bind(identity.stage.scope_snapshot_id)
+    .bind(identity.organization_id)
+    .bind(&source.canonical_result_sha256)
+    .bind(subtask_count)
+    .bind(&subtask_set_sha256)
+    .bind(receipt_kind)
+    .bind(&receipt_sha256)
+    .execute(&mut **tx)
+    .await?;
+    let receipt = load_generator_source_receipt_on(tx, stable_request_id)
+        .await?
+        .ok_or(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+            "generator_source_receipt_missing",
+        ))?;
+    if receipt.source_receipt_id != source_receipt_id
+        || receipt.stable_request_id != stable_request_id
+        || receipt.task_plan_id != ledger.task_plan_id
+        || receipt.ledger_id != ledger.ledger_id
+        || receipt.generator_pipeline_event_id != ledger.generator_pipeline_event_id
+        || receipt.source_tool_call_id != source.source_tool_call_id
+        || receipt.source_provider_call_id != source.source_provider_call_id
+        || receipt.source_attempt_epoch != source.source_attempt_epoch
+        || receipt.source_work_item_id != source.source_work_item_id
+        || receipt.source_worker_run_id != source.source_worker_run_id
+        || receipt.current_consumer_work_item_id != fence.current_consumer_work_item_id
+        || receipt.current_consumer_worker_run_id != fence.current_consumer_worker_run_id
+        || receipt.current_consumer_lease_token != fence.current_consumer_lease_token
+        || receipt.current_consumer_attempt_epoch != fence.expected_consumer_attempt_epoch as i64
+        || receipt.current_consumer_checkpoint_version
+            != fence.expected_consumer_checkpoint_version as i64
+        || receipt.canonical_result_sha256 != source.canonical_result_sha256
+        || receipt.adopted_subtask_count != subtask_count
+        || receipt.adopted_subtask_set_sha256 != subtask_set_sha256
+        || receipt.receipt_kind != receipt_kind
+        || receipt.receipt_sha256 != receipt_sha256
+    {
+        return Err(UnifiedInvestigationRuntimeStoreError::IdentityConflict(
+            "generator_source_receipt_replay_mismatch",
+        ));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 const PLAN_ROW_COLUMNS: &str = r#"plan.task_plan_id,plan.stable_request_id,

@@ -15,93 +15,17 @@ use crate::definition::SubAgentDefinition;
 
 use super::prompts::{
     build_adviser_prompt, build_application_understanding_company_synthesizer_prompt,
-    build_application_understanding_shard_modeler_prompt, build_attack_analyst_prompt,
-    build_browser_prompt, build_candidate_hypothesis_analyst_prompt,
-    build_candidate_hypothesis_controller_prompt, build_candidate_verifier_prompt,
-    build_coder_prompt, build_enricher_prompt, build_enumerator_prompt, build_installer_prompt,
-    build_memorist_prompt, build_merge_conflict_critic_prompt, build_orchestrator_prompt,
-    build_pentester_prompt, build_planner_prompt, build_post_exploit_operator_prompt,
-    build_prober_prompt, build_recon_prompt, build_refiner_prompt, build_reflector_prompt,
-    build_reporter_prompt, build_researcher_prompt, build_resolution_analyst_prompt,
-    build_verification_campaign_prompt, build_vuln_scanner_prompt, VerificationCampaignRole,
+    build_application_understanding_shard_modeler_prompt, build_browser_prompt, build_coder_prompt,
+    build_enricher_prompt, build_enumerator_prompt, build_installer_prompt, build_memorist_prompt,
+    build_orchestrator_prompt, build_pentester_prompt, build_planner_prompt,
+    build_post_exploit_operator_prompt, build_prober_prompt, build_recon_prompt,
+    build_refiner_prompt, build_reflector_prompt, build_reporter_prompt, build_researcher_prompt,
+    build_resolution_analyst_prompt, build_vuln_scanner_prompt,
 };
-
-pub(super) fn verification_campaign_agent_definitions() -> Vec<SubAgentDefinition> {
-    use VerificationCampaignRole::*;
-    [
-        ("verification_lead", "Verification Lead", Lead),
-        (
-            "verification_pentester",
-            "Verification Pentester",
-            Pentester,
-        ),
-        (
-            "verification_researcher",
-            "Verification Researcher",
-            Researcher,
-        ),
-        (
-            "verification_poc_designer",
-            "Verification PoC Designer",
-            PocDesigner,
-        ),
-        (
-            "verification_auth_specialist",
-            "Verification Auth Specialist",
-            AuthSpecialist,
-        ),
-        (
-            "verification_api_specialist",
-            "Verification API Specialist",
-            ApiSpecialist,
-        ),
-        (
-            "verification_business_logic_specialist",
-            "Verification Business Logic Specialist",
-            BusinessLogicSpecialist,
-        ),
-        (
-            "verification_injection_specialist",
-            "Verification Injection Specialist",
-            InjectionSpecialist,
-        ),
-        (
-            "verification_evidence_analyst",
-            "Verification Evidence Analyst",
-            EvidenceAnalyst,
-        ),
-        (
-            "verification_independent_critic",
-            "Verification Independent Critic",
-            IndependentCritic,
-        ),
-        ("verification_refiner", "Verification Refiner", Refiner),
-        ("verification_adviser", "Verification Adviser", Adviser),
-        (
-            "verification_reflector",
-            "Verification Reflector",
-            Reflector,
-        ),
-    ]
-    .into_iter()
-    .map(|(id, name, role)| {
-        SubAgentDefinition::new(
-            id,
-            name,
-            "Closed, durable Verification Campaign reasoning role; no execution authority.",
-            build_verification_campaign_prompt(role),
-        )
-        .with_tools(vec!["submit_result".to_string()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180)
-    })
-    .collect()
-}
 
 /// Create default sub-agents for common tasks.
 pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
-    let mut agents = vec![
+    let agents = vec![
         SubAgentDefinition::new(
             "coder",
             "Coder",
@@ -276,19 +200,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_max_iterations(4)
         .with_idle_timeout(120),
         SubAgentDefinition::new(
-            "attack_analyst",
-            "Attack Analyst",
-            "Reasoning-only attack_candidate specialist. Produces bounded Candidate plans from durable facts and evidence; it never executes verification actions.",
-            build_attack_analyst_prompt(),
-        )
-        .with_tools(vec![
-            "query_target_data".to_string(),
-            "list_recent_evidence".to_string(),
-            "submit_stage_deliverable".to_string(),
-        ])
-        .with_max_iterations(30)
-        .with_idle_timeout(180),
-        SubAgentDefinition::new(
             "application_understanding_shard_modeler",
             "Application Understanding Shard Modeler",
             "Closed semantic modeler for one host-frozen application shard. It cannot collect data or cross identity boundaries.",
@@ -310,49 +221,6 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         .with_max_iterations(8)
         .with_max_tokens(32_768)
         .with_idle_timeout(180),
-        SubAgentDefinition::new(
-            "candidate_hypothesis_controller",
-            "Candidate Hypothesis Controller",
-            "Read-only Controller over one server-frozen Candidate snapshot; the unique final submitter for the closed analysis team.",
-            build_candidate_hypothesis_controller_prompt(),
-        )
-        .with_tools(vec!["submit_result".to_string()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180),
-        SubAgentDefinition::new(
-            "candidate_hypothesis_analyst",
-            "Candidate Hypothesis Analyst",
-            "Read-only analyst over one server-frozen Candidate microbatch.",
-            build_candidate_hypothesis_analyst_prompt(),
-        )
-        .with_tools(vec!["submit_result".to_string()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180),
-        SubAgentDefinition::new(
-            "merge_conflict_critic",
-            "Merge Conflict Critic",
-            "Read-only critic for closed proposal-conflict, coverage-subreview, and synthesis artifacts.",
-            build_merge_conflict_critic_prompt(),
-        )
-        .with_tools(vec!["submit_result".to_string()])
-        .with_readonly(true)
-        .with_max_iterations(8)
-        .with_idle_timeout(180),
-        SubAgentDefinition::new(
-            "candidate_verifier",
-            "Candidate Verifier",
-            "Foreground-only verifier for one scheduler-bound CandidateAttempt. Executes only canonical DB-authorized action ordinals.",
-            build_candidate_verifier_prompt(),
-        )
-        .with_tools(vec![
-            "verify_execute_candidate_action".to_string(),
-            "list_recent_evidence".to_string(),
-            "submit_candidate_attempt".to_string(),
-        ])
-        .with_max_iterations(30)
-        .with_idle_timeout(300),
         SubAgentDefinition::new(
             "post_exploit_operator",
             "Post-Exploit Operator",
@@ -606,6 +474,5 @@ pub fn create_default_sub_agents() -> Vec<SubAgentDefinition> {
         ])
         .as_pipeline_only(),
     ];
-    agents.extend(verification_campaign_agent_definitions());
     agents
 }

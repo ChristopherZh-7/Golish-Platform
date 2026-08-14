@@ -156,11 +156,33 @@ pub struct UnifiedInvestigationRunHead {
 pub struct RegisterUnifiedInvestigationWork {
     pub identity: UnifiedInvestigationUnitIdentity,
     pub work_id: Uuid,
+    pub asset_lane_id: Uuid,
     pub stable_work_key_sha256: String,
     pub work_kind: UnifiedInvestigationWorkKind,
     pub external_identity_sha256: String,
     pub initial_state: UnifiedInvestigationWorkState,
     pub observed_stop_epoch: u64,
+}
+
+/// Atomically adopts a new dynamic Asset-Primary Analysis work or, when the
+/// exact legacy fixed-roster authority still exists and has never executed,
+/// cuts that authority over before installing the new work.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureDynamicAssetAnalysisWork {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub stable_cutover_request_id: Uuid,
+    pub asset_lane_id: Uuid,
+    pub legacy_stable_work_key_sha256: String,
+    pub dynamic_work_id: Uuid,
+    pub dynamic_stable_work_key_sha256: String,
+    pub dynamic_external_identity_sha256: String,
+    pub observed_stop_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsuredDynamicAssetAnalysisWork {
+    pub work: UnifiedInvestigationWork,
+    pub cutover_authority_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,6 +202,7 @@ pub struct TransitionUnifiedInvestigationWork {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnifiedInvestigationWork {
     pub work_id: Uuid,
+    pub asset_lane_id: Uuid,
     pub stable_work_key_sha256: String,
     pub authority_id: Uuid,
     pub operation_id: Uuid,
@@ -345,6 +368,13 @@ pub struct UnifiedInvestigationDispatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadUnifiedInvestigationDispatch {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+    pub dispatch_receipt_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertUnifiedInvestigationDispatchAttempt {
     pub identity: UnifiedInvestigationUnitIdentity,
     pub task_plan_id: Uuid,
@@ -426,6 +456,95 @@ pub struct LoadUnifiedInvestigationRefinerPlanLedger {
     pub task_plan_id: Uuid,
 }
 
+/// One canonical Generator member written in the same transaction as the
+/// Generator event and Refiner ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedInvestigationGeneratorSubtaskInput {
+    pub subtask_id: Uuid,
+    pub subtask_ordinal: u32,
+    pub label: String,
+    pub runnable: bool,
+    pub input_manifest_sha256: String,
+    pub expected_output_schema: String,
+    pub member_sha256: String,
+}
+
+/// Exact current-consumer fence.  The durable `submit_result` may belong to
+/// the current Primary or to its exact rearm predecessor, while this fence
+/// always names the current Primary that is consuming the Generator result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedInvestigationGeneratorConsumerFence {
+    pub current_consumer_work_item_id: Uuid,
+    pub current_consumer_worker_run_id: Uuid,
+    pub current_consumer_lease_token: Uuid,
+    pub expected_consumer_attempt_epoch: u64,
+    pub expected_consumer_checkpoint_version: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializeUnifiedInvestigationGenerator {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+    pub ledger_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub generator_pipeline_event_id: Uuid,
+    pub source_receipt_id: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub consumer_fence: UnifiedInvestigationGeneratorConsumerFence,
+    pub subtasks: Vec<UnifiedInvestigationGeneratorSubtaskInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedInvestigationFinishedSubmitResultCandidate {
+    pub source_tool_call_id: Uuid,
+    pub source_provider_call_id: String,
+    pub source_attempt_epoch: i64,
+    pub source_work_item_id: Uuid,
+    pub source_worker_run_id: Uuid,
+    pub canonical_result: Value,
+    pub canonical_result_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadPendingUnifiedInvestigationGeneratorRecovery {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUnifiedInvestigationGeneratorRecovery {
+    pub task_plan_id: Uuid,
+    pub primary_dispatch_receipt_id: Uuid,
+    pub primary_work_item_id: Uuid,
+    pub primary_worker_run_id: Uuid,
+    pub existing_subtasks: Vec<UnifiedInvestigationSubtask>,
+    pub candidates: Vec<UnifiedInvestigationFinishedSubmitResultCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptUnifiedInvestigationOrphanGenerator {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+    pub adoption_receipt_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub ledger_id: Uuid,
+    pub ledger_stable_request_id: Uuid,
+    pub generator_pipeline_event_id: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub consumer_fence: UnifiedInvestigationGeneratorConsumerFence,
+    pub expected_existing_subtask_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedInvestigationGeneratorMaterialization {
+    pub ledger: UnifiedInvestigationRefinerPlanLedger,
+    pub subtasks: Vec<UnifiedInvestigationSubtask>,
+    pub source: UnifiedInvestigationFinishedSubmitResultCandidate,
+    pub source_receipt_id: Uuid,
+    pub adoption_receipt_id: Option<Uuid>,
+    pub replayed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendUnifiedInvestigationRefinerPlanPatch {
     pub identity: UnifiedInvestigationUnitIdentity,
@@ -437,6 +556,22 @@ pub struct AppendUnifiedInvestigationRefinerPlanPatch {
     pub expected_previous_state_sha256: String,
     pub remaining_plan_payload: Value,
     pub active_realized_subtask_ids: Vec<Uuid>,
+}
+
+/// Dynamic Asset Primary Refiner patch. The ordered active set is the new
+/// denominator: members may be added, dropped, retried, or reordered between
+/// patches. The repository derives all member/asset authority server-side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendUnifiedInvestigationDynamicRefinerPlanPatch {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub patch_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub ledger_id: Uuid,
+    pub task_plan_id: Uuid,
+    pub refiner_pipeline_event_id: Uuid,
+    pub expected_previous_state_sha256: String,
+    pub remaining_plan_payload: Value,
+    pub ordered_active_subtask_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,7 +591,24 @@ pub struct UnifiedInvestigationRefinerPlanPatch {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadLatestUnifiedInvestigationRefinerPlanPatch {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub task_plan_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SealUnifiedInvestigationRefinerPlanLedger {
+    pub identity: UnifiedInvestigationUnitIdentity,
+    pub seal_id: Uuid,
+    pub stable_request_id: Uuid,
+    pub ledger_id: Uuid,
+    pub task_plan_id: Uuid,
+    pub result_barrier_pipeline_event_id: Uuid,
+    pub expected_final_patch_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealUnifiedInvestigationDynamicRefinerPlanLedger {
     pub identity: UnifiedInvestigationUnitIdentity,
     pub seal_id: Uuid,
     pub stable_request_id: Uuid,
@@ -757,6 +909,11 @@ pub trait UnifiedInvestigationRepository: Send + Sync {
         request: RegisterUnifiedInvestigationWork,
     ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationWork>;
 
+    async fn ensure_dynamic_asset_analysis_work(
+        &self,
+        request: EnsureDynamicAssetAnalysisWork,
+    ) -> UnifiedInvestigationRepoResult<EnsuredDynamicAssetAnalysisWork>;
+
     async fn transition_work(
         &self,
         request: TransitionUnifiedInvestigationWork,
@@ -782,6 +939,16 @@ pub trait UnifiedInvestigationRepository: Send + Sync {
         request: InsertUnifiedInvestigationDispatch,
     ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationDispatch>;
 
+    async fn load_dispatch(
+        &self,
+        request: LoadUnifiedInvestigationDispatch,
+    ) -> UnifiedInvestigationRepoResult<Option<UnifiedInvestigationDispatch>> {
+        let _ = request;
+        Err(UnifiedInvestigationRepositoryError::Unavailable {
+            operation: "load_dispatch",
+        })
+    }
+
     async fn insert_dispatch_attempt(
         &self,
         request: InsertUnifiedInvestigationDispatchAttempt,
@@ -796,6 +963,21 @@ pub trait UnifiedInvestigationRepository: Send + Sync {
         &self,
         request: CreateUnifiedInvestigationRefinerPlanLedger,
     ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanLedger>;
+
+    async fn materialize_generator(
+        &self,
+        request: MaterializeUnifiedInvestigationGenerator,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationGeneratorMaterialization>;
+
+    async fn load_pending_generator_recovery(
+        &self,
+        request: LoadPendingUnifiedInvestigationGeneratorRecovery,
+    ) -> UnifiedInvestigationRepoResult<Option<PendingUnifiedInvestigationGeneratorRecovery>>;
+
+    async fn adopt_orphan_generator(
+        &self,
+        request: AdoptUnifiedInvestigationOrphanGenerator,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationGeneratorMaterialization>;
 
     async fn load_refiner_plan_ledger(
         &self,
@@ -812,9 +994,29 @@ pub trait UnifiedInvestigationRepository: Send + Sync {
         request: AppendUnifiedInvestigationRefinerPlanPatch,
     ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanPatch>;
 
+    async fn append_dynamic_refiner_plan_patch(
+        &self,
+        request: AppendUnifiedInvestigationDynamicRefinerPlanPatch,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanPatch>;
+
+    async fn load_latest_refiner_plan_patch(
+        &self,
+        request: LoadLatestUnifiedInvestigationRefinerPlanPatch,
+    ) -> UnifiedInvestigationRepoResult<Option<UnifiedInvestigationRefinerPlanPatch>> {
+        let _ = request;
+        Err(UnifiedInvestigationRepositoryError::Unavailable {
+            operation: "load_latest_refiner_plan_patch",
+        })
+    }
+
     async fn seal_refiner_plan_ledger(
         &self,
         request: SealUnifiedInvestigationRefinerPlanLedger,
+    ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanLedgerSeal>;
+
+    async fn seal_dynamic_refiner_plan_ledger(
+        &self,
+        request: SealUnifiedInvestigationDynamicRefinerPlanLedger,
     ) -> UnifiedInvestigationRepoResult<UnifiedInvestigationRefinerPlanLedgerSeal>;
 
     async fn load_refiner_plan_ledger_seal(

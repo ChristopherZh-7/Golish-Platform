@@ -26,11 +26,12 @@
 | `GolishRuntime` / `RuntimeEvent` / `ApprovalResult` | 运行时抽象 |
 | `TaskPlan` / `PlanStep` / `StepStatus` | 计划系统类型 |
 | `AttackExecutionContract` | operation-frozen Candidate 执行 rollout 枚举；稳定值为 `legacy` / `dual_write_read_legacy` / `dual_write_read_v2_fallback` / `v2_only` |
-| `InvestigationContractVersion` / `InvestigationRolloutMode` / `InvestigationModePolicy` | Candidate/Hypothesis Registry 的 operation-frozen contract、五态 rollout 与唯一纯 policy matrix；未知 wire 值严格拒绝，不 fallback |
+| `InvestigationContractVersion` / `InvestigationRolloutMode` / `InvestigationModePolicy` | Candidate/Hypothesis Registry 的 operation-frozen contract、五态 rollout 与唯一纯 policy matrix；PreparedAction JIT 已从 policy/IPC 契约物理删除，未知 wire 值严格拒绝且不 fallback |
 | `InvestigationErrorCode` | Investigation read/write/authority 边界使用的 8 个稳定错误码闭集 |
 | `hypothesis_semantic_key::*` | Plan B/C 共用的 canonical JSON、claim polarity、semantic-key SHA-256、Candidate 非终态闭集以及 initial/split/merge/derive/revision UUIDv5 公式 |
 | `verification_contract::*` | 唯一 host-compiled `VerificationContractV1`；四种 combinator、predicate/control/pair/order exact sets 与 persisted replay validator |
 | `hypothesis_verification::*` | revision claim-component/objective/proof-path seal、typed VerificationContract binding、outer truth reducer，以及 Plan C 无环 adjudication/transition authority DTO；完整只读 getters 供 repo 精确持久化 |
+| `HypothesisVerificationTaskHeaderV1::host_create_dynamic` | 为每个canonical root派生`hypothesis_verification_task.dynamic_v2`稳定task key/UUID；contract discriminator进入identity material，历史v1 task不能被重放为dynamic authority |
 | `investigation_projection::*` | Projection/Timeline closed catalogs、Plan B verification-plan exact-one route、Plan C same-revision terminal exact-five manifest，以及支持 bounded opaque string entity id 的 typed source/entity records；Report authority revoke 使用 closed `Report + Invalidate + ReportInvalidated` route。共享 `projection_entity_hash_v1` / `projection_change_hash_v1` / `projection_event_id_v1` 让 projector 与 Timeline reader重算完整 body/source/change identity，四个 public enum 是 ts-rs 唯一 Rust 来源 |
 | `investigation_comparison::*` | `comparison_record.v1` whole-record canonical compiler与 `compare_whole_records_v1`；authority basis只接受 `plan_b_checked` 或 `grandfathered_legacy`，跨 basis、缺任一侧或不完整记录一律 `incomplete`，绝不逐字段混读 |
 | `CandidateAttemptContextRef` / `check_candidate_tool_boundary` | opaque verifier identity 与 dependency-floor closed-tool/foreground guard；不携带 plan/action/budget/scope |
@@ -74,9 +75,14 @@
 - `AgentToolCancellation` 是 sticky task-local取消通道：wrapper/runner在 inline scope捕获 clone，Stop 后所有观察者都能看到同一状态；等待实现必须在注册 `Notify` 前后都重查 flag，避免 cancel 与 waiter注册竞态。它只传递取消，不替代具体工具的 kill/await/landing责任。
 - direct/bridge 工具如果要让前端实时看到“工具现在在看什么”，用 `emit_current_agent_tool_output_chunk` 发 chunk；主 loop / sub-agent executor 会注入 `with_agent_tool_output_sender`。如果工具自己 `tokio::spawn` 读子进程 stderr/stdout，必须先在 inline scope capture `current_agent_tool_context()` 和 `current_agent_tool_output_sender()`，spawn 里不能再读 task-local。
 - 改动牵一发动全身：优先在子模块内部小改，避免改公共 `pub` 签名。
+- `RiskLevel::for_tool` 是 headless/GUI 共用的通用 HITL 风险标签。`list_in_scope_targets` 只读取 server-scoped 当前资产 census，不发网络、不修改 scope，固定为 `Low`；tool policy 同时把它列为 `Allow`，因此 headless 不会等待人工输入。未知或真实执行类工具仍保持 fail-closed 的 `High` 默认值与 Prompt policy。
 
 ## 测试入口
 
 ```bash
 cd backend && cargo nextest run -p golish-core
 ```
+
+## Bundled methodology authority（2026-08-12）
+
+`methodology_context` 支持 `ContentAddressed` 第三方语料，只接受显式 allowlist 中的 exact content root，且 provenance 必须是 `ThirdParty`。`paths` 只在 exact CyberStrike manifest 存在时解析开发树或 Tauri/macOS bundle 下的语料目录；路径存在本身不授予信任，hash/license/provenance 漂移继续 fail closed。

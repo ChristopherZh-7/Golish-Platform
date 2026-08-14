@@ -1,7 +1,12 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useStore } from "@/store";
 import { AIChatPanel } from "./AIChatPanel";
+
+const chatMocks = vi.hoisted(() => ({
+  dismissAskHumanRequest: vi.fn(),
+  handleStop: vi.fn(),
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -32,7 +37,7 @@ vi.mock("./hooks/useChatSessionInit", () => ({
   useChatSessionInit: () => ({ initializeSession: vi.fn(), generateTitleRef: { current: null } }),
 }));
 vi.mock("./hooks/useChatSend", () => ({
-  useChatSend: () => ({ handleSend: vi.fn(), handleStop: vi.fn() }),
+  useChatSend: () => ({ handleSend: vi.fn(), handleStop: chatMocks.handleStop }),
 }));
 vi.mock("./hooks/useChatConversationOps", () => ({
   useChatConversationOps: () => ({ handleNewChat: vi.fn(), handleCloseTab: vi.fn() }),
@@ -70,6 +75,7 @@ vi.mock("./hooks/useAiChatEvents", () => ({
     planMessageIdRef: { current: null },
     handleAskHumanSubmit: vi.fn(),
     handleAskHumanSkip: vi.fn(),
+    dismissAskHumanRequest: chatMocks.dismissAskHumanRequest,
   }),
 }));
 vi.mock("./hooks/useTaskPlanState", () => ({
@@ -111,6 +117,7 @@ const TERMINAL_ID = "reporting-terminal";
 
 describe("AIChatPanel Reporting production entry", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     useStore.setState({
       conversations: {
         [CONVERSATION_ID]: {
@@ -189,5 +196,35 @@ describe("AIChatPanel Reporting production entry", () => {
       useStore.getState().setReportingReadModelHint(TERMINAL_ID, null);
     });
     expect(screen.queryByTestId("ai-chat-report-read-model")).not.toBeInTheDocument();
+  });
+
+  it("dismisses every visible ask_human projection when the stop button is clicked", () => {
+    useStore.setState((state) => {
+      state.conversations[CONVERSATION_ID].isStreaming = true;
+      state.pendingAskHuman["ai-reporting-session"] = {
+        requestId: "ask-stop-1",
+        sessionId: "ai-reporting-session",
+        question: "请选择范围",
+        inputType: "choice",
+        options: ["root_only", "include_51"],
+        context: '{"decision":"subsidiary_scope"}',
+      };
+      state.pendingAskHuman[TERMINAL_ID] = {
+        requestId: "ask-stop-1",
+        sessionId: "ai-reporting-session",
+        question: "请选择范围",
+        inputType: "choice",
+        options: ["root_only", "include_51"],
+        context: '{"decision":"subsidiary_scope"}',
+      };
+    });
+
+    render(<AIChatPanel />);
+    fireEvent.click(screen.getByTitle("Stop"));
+
+    expect(chatMocks.handleStop).toHaveBeenCalledTimes(1);
+    expect(chatMocks.dismissAskHumanRequest).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().pendingAskHuman["ai-reporting-session"]).toBeNull();
+    expect(useStore.getState().pendingAskHuman[TERMINAL_ID]).toBeNull();
   });
 });

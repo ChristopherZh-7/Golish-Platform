@@ -49,7 +49,6 @@ fn campaign_repository_modules_are_public_typed_ports() {
         std::any::type_name::<repo::verification_campaign_coverage::SealWaveCoverageDenominator>(),
         std::any::type_name::<repo::verification_capability_assessments::RecordCapabilityAssessment>(
         ),
-        std::any::type_name::<repo::verification_campaign_shadow::RecordShadowEvaluation>(),
         std::any::type_name::<repo::hypothesis_objective_outcomes::SealObjectiveOutcomeSet>(),
         std::any::type_name::<repo::hypothesis_revision_adjudications::AdjudicateRevision>(),
         std::any::type_name::<repo::hypothesis_consolidations::RecordFactDeltaConsumption>(),
@@ -684,7 +683,7 @@ async fn semantic_landing_repairs_a_finalized_receipt_and_replays_exactly() {
         .await
         .expect("repair post-receipt response loss without sending again");
     assert_eq!(repaired.oracle_assessment_id, oracle_assessment_id);
-    assert_eq!(repaired.residual_id, residual_id);
+    assert_eq!(repaired.residual_id, Some(residual_id));
     assert!(!repaired.replayed);
     let replay = finalize_verification_action_semantic_landing(db.pool(), &command)
         .await
@@ -717,6 +716,346 @@ async fn semantic_landing_repairs_a_finalized_receipt_and_replays_exactly() {
     assert_eq!(
         exact,
         ("outcome_unknown".into(), "outcome_unknown".into(), 1, 1, 0)
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn directory_fingerprint_witness_v1_is_a_distinct_non_raw_finalization_kind() {
+    let (db, _data_dir) = fixture("directory-fingerprint-witness-kind").await;
+    let mut tx = db.pool().begin().await.expect("begin witness-kind fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *tx)
+        .await
+        .expect("disable foreign-key triggers for isolated check-constraint fixture");
+    sqlx::query(
+        r#"INSERT INTO verification_action_capability_receipt_finalizations(
+               finalization_id,stable_request_id,binding_id,action_execution_id,
+               prepared_action_id,capability_execution_receipt_id,terminal_state,
+               witness_completeness,observation_hash,finalization_hash)
+           VALUES($1,$2,$3,$4,$5,$6,'succeeded','complete_fingerprint_v1',$7,$8)"#,
+    )
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .bind(format!("sha256:{}", "b".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("expanded witness constraint accepts the versioned fingerprint kind");
+    tx.commit().await.expect("commit witness-kind fixture");
+}
+
+#[tokio::test]
+#[serial]
+#[ignore = "historical isolated replica fixture does not seed the complete typed Tool Truth authority; the runnable assignment/send path has been removed"]
+async fn directory_fingerprint_complete_witness_lands_a_recomputed_proof_oracle() {
+    use repo::verification_prepared_actions::{
+        finalize_verification_action_semantic_landing, FinalizeVerificationActionSemanticLanding,
+    };
+
+    let (db, _data_dir) = fixture("directory-fingerprint-proof-oracle").await;
+    let stable_request_id = Uuid::new_v4();
+    let operation_id = Uuid::new_v4();
+    let project_scope_id = Uuid::new_v4();
+    let organization_id = Uuid::new_v4();
+    let campaign_id = Uuid::new_v4();
+    let prepared_action_id = Uuid::new_v4();
+    let authorization_receipt_id = Uuid::new_v4();
+    let action_execution_id = Uuid::new_v4();
+    let capability_receipt_id = Uuid::new_v4();
+    let budget_reservation_id = Uuid::new_v4();
+    let conflict_set_id = Uuid::new_v4();
+    let denominator_id = Uuid::new_v4();
+    let wave_denominator_id = Uuid::new_v4();
+    let wave_member_id = Uuid::new_v4();
+    let coverage_member_id = Uuid::new_v4();
+    let capability_assessment_id = Uuid::new_v4();
+    let coverage_member_hash = format!("sha256:{}", "3".repeat(64));
+    let receipt_authority_hash = format!("sha256:{}", "4".repeat(64));
+    let oracle_contract_hash = format!("sha256:{}", "5".repeat(64));
+    let binding_id = Uuid::new_v4();
+    let nonce = prepared_action_id.simple().to_string();
+    let http_observation = |url: String, body_byte: char| {
+        serde_json::json!({
+            "final_url": url,
+            "hops": [{
+                "url": url,
+                "status": 200,
+                "response_bytes": 8,
+                "body_sha256": format!("sha256:{}", body_byte.to_string().repeat(64)),
+                "content_type": "text/html",
+            }],
+        })
+    };
+    let observation = serde_json::json!({
+        "assessment": {"controls_consistent": true, "verdict": "verified"},
+        "candidate": http_observation("https://example.test/admin".to_owned(), 'a'),
+        "capability_id": "verify.directory_fingerprint.v1",
+        "contract_version": "directory-soft404-fingerprint-observation.v1",
+        "controls": (1..=3).map(|ordinal| http_observation(
+            format!("https://example.test/.golish-soft404-{nonce}-{ordinal}"),
+            'b',
+        )).collect::<Vec<_>>(),
+        "request_count": 4,
+        "witness_completeness": "complete_fingerprint_v1",
+    });
+
+    let mut tx = db.pool().begin().await.expect("begin proof Oracle fixture");
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *tx)
+        .await
+        .expect("isolate proof Oracle fixture authority rows");
+    sqlx::query(
+        r#"INSERT INTO verification_prepared_actions(
+               prepared_action_id,stable_request_id,campaign_id,round_id,strategy_artifact_id,
+               operation_id,project_scope_id,organization_id,capability_assessment_id,
+               action_ordinal,action_contract_kind,action_kind,canonical_request_hash,
+               display_projection,display_projection_hash,renderer_version,private_manifest,
+               private_manifest_hash,review_expires_at,target_type_at_time,target_value_at_time,
+               target_identity_hash,policy_snapshot_hash,upper_budget_set_hash,
+               oracle_contract_hash,risk_tier,state)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,0,'single_action_v1',
+                  'verify.directory_fingerprint.v1',$10,'{}'::JSONB,$11,'fixture.v1',$12,$13,
+                  NOW()+INTERVAL '1 hour','url','https://example.test/admin',$14,$15,$16,$17,
+                  'T1','started')"#,
+    )
+    .bind(prepared_action_id)
+    .bind(Uuid::new_v4())
+    .bind(campaign_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(capability_assessment_id)
+    .bind(format!("sha256:{}", "6".repeat(64)))
+    .bind(format!("sha256:{}", "7".repeat(64)))
+    .bind(serde_json::json!({
+        "oracle_contract_version": "verification-action-oracle.v1",
+        "coverage_member_hash": coverage_member_hash,
+    }))
+    .bind(format!("sha256:{}", "8".repeat(64)))
+    .bind(format!("sha256:{}", "9".repeat(64)))
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .bind(format!("sha256:{}", "b".repeat(64)))
+    .bind(&oracle_contract_hash)
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory prepared action");
+    sqlx::query(
+        r#"INSERT INTO verification_budget_reservations(
+               budget_reservation_id,stable_request_id,prepared_action_id,
+               authorization_receipt_id,operation_id,project_scope_id,organization_id,
+               contract_set_hash,upper_bound_membership_hash,state)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')"#,
+    )
+    .bind(budget_reservation_id)
+    .bind(Uuid::new_v4())
+    .bind(prepared_action_id)
+    .bind(authorization_receipt_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(format!("sha256:{}", "c".repeat(64)))
+    .bind(format!("sha256:{}", "d".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory budget reservation");
+    sqlx::query(
+        r#"INSERT INTO verification_action_executions(
+               action_execution_id,stable_request_id,prepared_action_id,
+               authorization_receipt_id,budget_reservation_id,conflict_set_id,
+               operation_id,project_scope_id,organization_id,execution_ordinal,
+               execution_kind,state,campaign_dispatch_generation,durable_begin_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,1,'single_action_v1','started',0,$10)"#,
+    )
+    .bind(action_execution_id)
+    .bind(Uuid::new_v4())
+    .bind(prepared_action_id)
+    .bind(authorization_receipt_id)
+    .bind(budget_reservation_id)
+    .bind(conflict_set_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(format!("sha256:{}", "e".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory execution");
+    sqlx::query(
+        r#"INSERT INTO verification_campaign_coverage_denominators(
+               campaign_denominator_id,stable_request_id,operation_id,project_scope_id,
+               organization_id,campaign_id,hypothesis_revision_id,wave_denominator_id,
+               contract_version,source_snapshot_hash,member_set_hash,member_count,sealed_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,'fixture.v1',$9,$10,1,NOW())"#,
+    )
+    .bind(denominator_id)
+    .bind(Uuid::new_v4())
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(campaign_id)
+    .bind(Uuid::new_v4())
+    .bind(wave_denominator_id)
+    .bind(format!("sha256:{}", "f".repeat(64)))
+    .bind(format!("sha256:{}", "1".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory campaign denominator");
+    sqlx::query(
+        r#"INSERT INTO verification_wave_coverage_members(
+               wave_coverage_member_id,wave_denominator_id,operation_id,project_scope_id,
+               organization_id,member_ordinal,semantic_key,input_ref_kind,input_ref_id,
+               input_identity_hash,hypothesis_revision_id,claim_component_id,
+               claim_component_hash,verification_objective_id,predicate_component_id,
+               control_binding_kind,no_control_marker_hash,capability_assessment_id,
+               expected_capability_kind,expected_action_kind,expected_oracle_kind,member_hash)
+           VALUES($1,$2,$3,$4,$5,0,'directory-fixture','fixture',$6,$7,$8,$9,$10,$11,$12,
+                  'explicit_no_control',$13,$14,'verify.directory_fingerprint.v1',
+                  'trusted_http_directory_fingerprint.v1','directory_soft404_fingerprint.v1',$15)"#,
+    )
+    .bind(wave_member_id)
+    .bind(wave_denominator_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "2".repeat(64)))
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "3".repeat(64)))
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "4".repeat(64)))
+    .bind(capability_assessment_id)
+    .bind(format!("sha256:{}", "5".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory wave member");
+    sqlx::query(
+        r#"INSERT INTO verification_campaign_coverage_members(
+               campaign_coverage_member_id,campaign_denominator_id,wave_coverage_member_id,
+               wave_denominator_id,operation_id,project_scope_id,organization_id,
+               member_ordinal,semantic_key,claim_component_id,claim_component_hash,
+               obligation_kind,control_binding_kind,capability_assessment_id,
+               expected_capability_kind,expected_action_kind,expected_oracle_kind,member_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7,0,'directory-fixture',$8,$9,'predicate',
+                  'explicit_no_control',$10,'verify.directory_fingerprint.v1',
+                  'trusted_http_directory_fingerprint.v1','directory_soft404_fingerprint.v1',$11)"#,
+    )
+    .bind(coverage_member_id)
+    .bind(denominator_id)
+    .bind(wave_member_id)
+    .bind(wave_denominator_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "6".repeat(64)))
+    .bind(capability_assessment_id)
+    .bind(&coverage_member_hash)
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory campaign member");
+    sqlx::query(
+        r#"INSERT INTO capability_execution_receipts(
+               id,denominator_id,execution_authority_id,capability,attempt_ordinal,
+               receipt_authority_hash,input_manifest_hash,destination_policy_id,
+               destination_policy_hash,temporal_validity_policy_id,
+               temporal_validity_policy_hash,attempt_state,landing_state,
+               observation_state,coverage_extent,coverage_gap_reason,
+               reconciliation_state,security_interpretation,typed_landing)
+           VALUES($1,$2,$3,'verify.directory_fingerprint.v1',1,$4,$5,$6,$7,$8,$9,
+                  'running','not_attempted','indeterminate','none','none',
+                  'pending','not_assessed','{}'::JSONB)"#,
+    )
+    .bind(capability_receipt_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(&receipt_authority_hash)
+    .bind(format!("sha256:{}", "7".repeat(64)))
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "8".repeat(64)))
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "9".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("seed running directory receipt");
+    sqlx::query(
+        r#"INSERT INTO verification_action_capability_receipt_bindings(
+               binding_id,stable_request_id,action_execution_id,prepared_action_id,campaign_id,
+               operation_id,project_scope_id,organization_id,capability_execution_receipt_id,
+               derived_denominator_id,parent_denominator_id,parent_denominator_item_id,
+               execution_authority_id,binding_hash)
+           SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,receipt.denominator_id,$10,$11,
+                  receipt.execution_authority_id,$12
+             FROM capability_execution_receipts receipt WHERE receipt.id=$9"#,
+    )
+    .bind(binding_id)
+    .bind(Uuid::new_v4())
+    .bind(action_execution_id)
+    .bind(prepared_action_id)
+    .bind(campaign_id)
+    .bind(operation_id)
+    .bind(project_scope_id)
+    .bind(organization_id)
+    .bind(capability_receipt_id)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .execute(&mut *tx)
+    .await
+    .expect("seed directory receipt binding");
+    tx.commit().await.expect("commit proof Oracle fixture");
+
+    let landing = finalize_verification_action_semantic_landing(
+        db.pool(),
+        &FinalizeVerificationActionSemanticLanding {
+            stable_request_id,
+            operation_id,
+            campaign_id,
+            prepared_action_id,
+            authorization_receipt_id,
+            action_execution_id,
+            capability_execution_receipt_id: capability_receipt_id,
+            terminal_state: "succeeded".to_owned(),
+            observation,
+        },
+    )
+    .await
+    .expect("complete directory witness lands a deterministic proof");
+    assert_eq!(landing.residual_id, None);
+    let exact: (String, String, String, String, String, i64) = sqlx::query_as(
+        r#"SELECT oracle.verdict,oracle.precondition_validity,oracle.control_validity,
+                  receipt.landing_state,receipt.coverage_extent,
+                  (SELECT COUNT(*) FROM hypothesis_residual_risks
+                    WHERE operation_id=$2 AND organization_id=$3)
+             FROM verification_oracle_assessments oracle
+             JOIN capability_execution_receipts receipt
+               ON receipt.id=$4
+            WHERE oracle.oracle_assessment_id=$1"#,
+    )
+    .bind(landing.oracle_assessment_id)
+    .bind(operation_id)
+    .bind(organization_id)
+    .bind(capability_receipt_id)
+    .fetch_one(db.pool())
+    .await
+    .expect("read exact proof landing");
+    assert_eq!(
+        exact,
+        (
+            "proof".to_owned(),
+            "valid".to_owned(),
+            "not_required".to_owned(),
+            "committed".to_owned(),
+            "sampled".to_owned(),
+            0,
+        )
     );
 }
 

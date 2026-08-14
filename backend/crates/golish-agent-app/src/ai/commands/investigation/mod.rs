@@ -218,14 +218,13 @@ impl AuthorizedInvestigationScope {
     }
 }
 
-/// Authorize the principal and operation before any projection read or
-/// selector existence branch. All trust/scope failures collapse to one error.
-pub async fn authorize_investigation_scope(
+async fn authorize_investigation_scope_with_access(
     pool: &sqlx::PgPool,
     principal_provider: &dyn TrustedOperatorPrincipalProvider,
     ai_state: &crate::state::AiState,
     trusted_session_id: &str,
     operation_id: Uuid,
+    allow_finished_without_live_bridge: bool,
 ) -> Result<AuthorizedInvestigationScope, InvestigationCommandError> {
     let principal = principal_provider
         .current(OperatorChannel::LocalDesktop)
@@ -255,14 +254,6 @@ pub async fn authorize_investigation_scope(
     if session.chat_session_key.as_deref() != Some(trusted_session_id) {
         return Err(InvestigationCommandError::forbidden());
     }
-    let bridge = ai_state
-        .get_session_bridge(trusted_session_id)
-        .await
-        .ok_or_else(InvestigationCommandError::forbidden)?;
-    let trusted_workspace_path = bridge.workspace().read().await.clone();
-    let (canonical_workspace_path, workspace_path_sha256) =
-        golish_agent_kit::runtime_memory::canonical_workspace_identity(&trusted_workspace_path)
-            .map_err(|_| InvestigationCommandError::forbidden())?;
     let project_scope_id = operation
         .project_scope_id
         .ok_or_else(InvestigationCommandError::forbidden)?;
@@ -270,8 +261,18 @@ pub async fn authorize_investigation_scope(
         .await
         .map_err(|_| InvestigationCommandError::forbidden())?
         .ok_or_else(InvestigationCommandError::forbidden)?;
-    if project.canonical_project_path != canonical_workspace_path
-        || project.path_sha256 != workspace_path_sha256
+    if let Some(bridge) = ai_state.get_session_bridge(trusted_session_id).await {
+        let trusted_workspace_path = bridge.workspace().read().await.clone();
+        let (canonical_workspace_path, workspace_path_sha256) =
+            golish_agent_kit::runtime_memory::canonical_workspace_identity(&trusted_workspace_path)
+                .map_err(|_| InvestigationCommandError::forbidden())?;
+        if project.canonical_project_path != canonical_workspace_path
+            || project.path_sha256 != workspace_path_sha256
+        {
+            return Err(InvestigationCommandError::forbidden());
+        }
+    } else if !allow_finished_without_live_bridge
+        || task.status != golish_db::models::TaskStatus::Finished
     {
         return Err(InvestigationCommandError::forbidden());
     }
@@ -305,6 +306,49 @@ pub async fn authorize_investigation_scope(
         stage_topology_contract: operation.stage_topology_contract,
         organization_ids,
     })
+}
+
+/// Authorize a control or mutation path. A live bridge is mandatory so the
+/// current server-owned workspace remains part of the authority witness.
+pub async fn authorize_investigation_scope(
+    pool: &sqlx::PgPool,
+    principal_provider: &dyn TrustedOperatorPrincipalProvider,
+    ai_state: &crate::state::AiState,
+    trusted_session_id: &str,
+    operation_id: Uuid,
+) -> Result<AuthorizedInvestigationScope, InvestigationCommandError> {
+    authorize_investigation_scope_with_access(
+        pool,
+        principal_provider,
+        ai_state,
+        trusted_session_id,
+        operation_id,
+        false,
+    )
+    .await
+}
+
+/// Authorize a materialized, read-only projection. A finished Task may be
+/// reopened after process restart when its in-memory bridge no longer exists;
+/// the exact DB session, active project, sealed scope and local principal still
+/// form the server-owned historical read authority. If a bridge does exist,
+/// its workspace must match and cannot fall back through this path.
+pub async fn authorize_investigation_read_scope(
+    pool: &sqlx::PgPool,
+    principal_provider: &dyn TrustedOperatorPrincipalProvider,
+    ai_state: &crate::state::AiState,
+    trusted_session_id: &str,
+    operation_id: Uuid,
+) -> Result<AuthorizedInvestigationScope, InvestigationCommandError> {
+    authorize_investigation_scope_with_access(
+        pool,
+        principal_provider,
+        ai_state,
+        trusted_session_id,
+        operation_id,
+        true,
+    )
+    .await
 }
 
 fn map_unified_head_lookup_error(
@@ -512,7 +556,7 @@ pub async fn investigation_get_summary(
     state: State<'_, AgentState>,
 ) -> Result<InvestigationSummaryView, InvestigationCommandError> {
     let operation_id = parse_uuid(&request.operation_id)?;
-    let scope = authorize_investigation_scope(
+    let scope = authorize_investigation_read_scope(
         state.db_pool.as_ref(),
         state.operator_principal_provider.as_ref(),
         &state.ai_state,
@@ -759,7 +803,7 @@ pub async fn investigation_list_hypotheses(
     state: State<'_, AgentState>,
 ) -> Result<InvestigationHypothesisListView, InvestigationCommandError> {
     let operation_id = parse_uuid(&request.operation_id)?;
-    let scope = authorize_investigation_scope(
+    let scope = authorize_investigation_read_scope(
         state.db_pool.as_ref(),
         state.operator_principal_provider.as_ref(),
         &state.ai_state,
@@ -887,7 +931,7 @@ pub async fn investigation_get_hypothesis(
     state: State<'_, AgentState>,
 ) -> Result<InvestigationHypothesisDetailView, InvestigationCommandError> {
     let operation_id = parse_uuid(&request.operation_id)?;
-    let scope = authorize_investigation_scope(
+    let scope = authorize_investigation_read_scope(
         state.db_pool.as_ref(),
         state.operator_principal_provider.as_ref(),
         &state.ai_state,
@@ -930,7 +974,7 @@ pub async fn investigation_list_campaigns(
     state: State<'_, AgentState>,
 ) -> Result<InvestigationCampaignPageResponse, InvestigationCommandError> {
     let operation_id = parse_uuid(&request.operation_id)?;
-    let scope = authorize_investigation_scope(
+    let scope = authorize_investigation_read_scope(
         state.db_pool.as_ref(),
         state.operator_principal_provider.as_ref(),
         &state.ai_state,
@@ -1033,7 +1077,7 @@ pub async fn investigation_get_campaign(
     state: State<'_, AgentState>,
 ) -> Result<InvestigationCampaignDetailResponse, InvestigationCommandError> {
     let operation_id = parse_uuid(&request.operation_id)?;
-    let scope = authorize_investigation_scope(
+    let scope = authorize_investigation_read_scope(
         state.db_pool.as_ref(),
         state.operator_principal_provider.as_ref(),
         &state.ai_state,
@@ -1075,7 +1119,7 @@ pub async fn investigation_list_timeline(
     state: State<'_, AgentState>,
 ) -> Result<InvestigationTimelinePageResponse, InvestigationCommandError> {
     let operation_id = parse_uuid(&request.operation_id)?;
-    let scope = authorize_investigation_scope(
+    let scope = authorize_investigation_read_scope(
         state.db_pool.as_ref(),
         state.operator_principal_provider.as_ref(),
         &state.ai_state,
@@ -1589,7 +1633,6 @@ fn mode_policy(mode: InvestigationRolloutMode) -> InvestigationModePolicyView {
         gate_authority: authority_wire(policy.gate_authority).to_owned(),
         allow_legacy_mutation: policy.allow_legacy_mutation,
         campaign_write_policy: campaign_wire(policy.campaign_write_policy).to_owned(),
-        allow_prepared_action_jit: policy.allow_prepared_action_jit,
         compare_policy: compare_wire(policy.compare_policy).to_owned(),
         legacy_projection_policy: legacy_projection_wire(policy.legacy_projection).to_owned(),
     }
@@ -1662,7 +1705,12 @@ fn authority_time_view(authority: &InvestigationReadAuthority) -> InvestigationA
                 .to_rfc3339(),
         ),
         authority_epoch_hash: authority.temporal.authority_epoch_set_hash.clone(),
-        temporal_status: "current".to_owned(),
+        temporal_status: if authority.temporal.historical_terminal {
+            "temporally_stale"
+        } else {
+            "current"
+        }
+        .to_owned(),
     }
 }
 
@@ -1836,6 +1884,7 @@ mod tests {
                     as_of_temporal_cutoff: read_at,
                     authority_epoch_set_hash: format!("sha256:{}", "a".repeat(64)),
                     earliest_effective_valid_until: expired_at,
+                    historical_terminal: false,
                 },
         };
         let error = ensure_current_temporal_authority(&authority)
@@ -1844,5 +1893,43 @@ mod tests {
         assert_eq!(error.current_change_seq, Some(41));
         assert!(error.restart_required);
         assert!(envelope(&authority, None).is_err());
+    }
+
+    #[test]
+    fn terminal_historical_authority_is_readable_and_labeled_temporally_stale() {
+        let terminal_at = Utc
+            .with_ymd_and_hms(2026, 8, 11, 11, 11, 8)
+            .single()
+            .expect("terminal time");
+        let valid_until = Utc
+            .with_ymd_and_hms(2026, 8, 11, 16, 12, 31)
+            .single()
+            .expect("valid until");
+        let authority = InvestigationReadAuthority {
+            operation: InvestigationOperationReadAuthority {
+                operation_id: Uuid::new_v4(),
+                tool_truth_contract: "tool_truth_receipt_v1".to_owned(),
+                investigation_contract_version: "hypothesis_registry_v1".to_owned(),
+                investigation_rollout_mode: "new_only".to_owned(),
+                cursor_salt: [9; 32],
+            },
+            temporal:
+                golish_db::repo::investigation_projection::InvestigationTemporalReadAuthority {
+                    projection_schema_version: 1,
+                    as_of_change_seq: 14,
+                    as_of_temporal_cutoff: terminal_at,
+                    authority_epoch_set_hash: format!("sha256:{}", "b".repeat(64)),
+                    earliest_effective_valid_until: valid_until,
+                    historical_terminal: true,
+                },
+        };
+
+        ensure_current_temporal_authority(&authority)
+            .expect("exact terminal historical cutoff remains readable");
+        assert_eq!(
+            authority_time_view(&authority).temporal_status,
+            "temporally_stale"
+        );
+        envelope(&authority, None).expect("historical terminal response envelope");
     }
 }

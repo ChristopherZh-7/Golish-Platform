@@ -24,6 +24,60 @@ pub const INVESTIGATION_TASK_PLAN_RESULT_SCHEMA: &str = "investigation_task_plan
 pub const INVESTIGATION_REFINER_PATCH_RESULT_SCHEMA: &str = "investigation_refiner_patch.v1";
 pub const INVESTIGATION_PRIMARY_SYNTHESIS_RESULT_SCHEMA: &str =
     "investigation_primary_synthesis.v1";
+pub const INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_SCHEMA: &str =
+    "investigation_dynamic_verification_actor_observation.v2";
+pub const INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_SCHEMA: &str =
+    "investigation_dynamic_verification_primary_turn.v1";
+pub const INVESTIGATION_ASSET_VERIFICATION_PRIMARY_RESOLUTION_SCHEMA: &str =
+    "investigation_asset_verification_primary_resolution.v1";
+pub const INVESTIGATION_ANALYSIS_ROLE_IDS: [&str; 8] = [
+    "pentester",
+    "researcher",
+    "browser",
+    "coder",
+    "installer",
+    "enricher",
+    "memorist",
+    "adviser",
+];
+/// Legacy advisory compiler role vocabulary. It is retained only for the
+/// still-compiled advisory parser and does not grant runtime Verification
+/// tools.
+pub const INVESTIGATION_VERIFICATION_ROLE_IDS: [&str; 7] = [
+    "pentester",
+    "browser",
+    "coder",
+    "researcher",
+    "installer",
+    "memorist",
+    "adviser",
+];
+/// The only target-I/O wrappers visible to an asset Verification actor. Inner
+/// pentest tools remain dynamic members of the server-frozen Tool Manager
+/// inventory and are selected through `pentest_run` rather than promoted into
+/// this outer wrapper list.
+pub const INVESTIGATION_ASSET_VERIFICATION_TOOL_NAMES: [&str; 4] = [
+    "pentest_list_tools",
+    "pentest_read_skill",
+    "pentest_run",
+    "browser_collect_js_api",
+];
+/// Read/coordination tools that remain available beside the four dynamic
+/// verification wrappers. Each call is a fresh, Primary-requested actor and
+/// terminates through `submit_result`; no role roster is implied.
+pub const INVESTIGATION_ASSET_VERIFICATION_COGNITION_TOOL_NAMES: [&str; 11] = [
+    "update_plan",
+    "query_target_data",
+    "list_recent_evidence",
+    "search_memories",
+    "search_knowledge_base",
+    "read_knowledge",
+    "graph_search",
+    "graph_neighbors",
+    "graph_attack_paths",
+    "harness_trace",
+    BARRIER_TOOL_NAME,
+];
 /// Host-routed control tool exposed only to a trusted Company Controller.
 pub const STAGE_TEAM_DISPATCH_WORKERS_TOOL_NAME: &str = "stage_team_dispatch_workers";
 /// Host-routed control tool used by a trusted Company Controller to close its
@@ -176,6 +230,417 @@ pub struct BoundTerminalExecutionContract {
     pub record_reasoning_telemetry: bool,
 }
 
+/// Server-frozen identity shared by an asset Primary and every role worker in
+/// that lane. It grants no tools or target-I/O authority by itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationAssetLaneIdentity {
+    pub asset_lane_id: uuid::Uuid,
+    pub target_id: uuid::Uuid,
+    pub asset_context_sha256: String,
+}
+
+impl InvestigationAssetLaneIdentity {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.asset_lane_id.is_nil()
+            || self.target_id.is_nil()
+            || !valid_sha256_ref(&self.asset_context_sha256)
+        {
+            return Err("INVESTIGATION_ASSET_IDENTITY_INVALID");
+        }
+        Ok(())
+    }
+}
+
+/// Host-authored identity for one Primary-requested call in an exact asset and
+/// hypothesis round. `specialist_role` is a role hint from the allowed stage
+/// catalogue, not a fixed slot or a capability grant. Multiple calls may use
+/// the same role; `actor_call_id` and `actor_ordinal` are the durable identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationAssetVerificationActorBinding {
+    pub session_id: uuid::Uuid,
+    pub actor_call_id: uuid::Uuid,
+    pub actor_ordinal: i64,
+    pub subtask_id: uuid::Uuid,
+    pub specialist_role: String,
+    pub asset_lane_id: uuid::Uuid,
+    pub target_id: uuid::Uuid,
+    pub hypothesis_revision_id: uuid::Uuid,
+    pub work_item_id: uuid::Uuid,
+    pub worker_run_id: uuid::Uuid,
+    pub message_chain_id: uuid::Uuid,
+    pub primary_parent_request_id: uuid::Uuid,
+}
+
+/// Exact host-frozen identity for the durable Asset Verification Primary in
+/// one hypothesis round. This is deliberately distinct from
+/// [`InvestigationActorContract::AnalysisPrimary`]: the two phases may reuse a
+/// durable message chain, but never share an actor authority contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationAssetVerificationPrimaryBinding {
+    pub session_id: uuid::Uuid,
+    pub asset_lane_id: uuid::Uuid,
+    pub target_id: uuid::Uuid,
+    pub hypothesis_revision_id: uuid::Uuid,
+    pub work_item_id: uuid::Uuid,
+    pub worker_run_id: uuid::Uuid,
+    pub message_chain_id: uuid::Uuid,
+}
+
+impl InvestigationAssetVerificationPrimaryBinding {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if [
+            self.session_id,
+            self.asset_lane_id,
+            self.target_id,
+            self.hypothesis_revision_id,
+            self.work_item_id,
+            self.worker_run_id,
+            self.message_chain_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
+        {
+            return Err("INVESTIGATION_ASSET_VERIFICATION_PRIMARY_INVALID");
+        }
+        Ok(())
+    }
+
+    pub fn matches_session_subject(
+        &self,
+        session_id: uuid::Uuid,
+        asset_lane_id: uuid::Uuid,
+        target_id: uuid::Uuid,
+        hypothesis_revision_id: uuid::Uuid,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.session_id == session_id
+            && self.asset_lane_id == asset_lane_id
+            && self.target_id == target_id
+            && self.hypothesis_revision_id == hypothesis_revision_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationDynamicVerificationSubjectRefV1 {
+    pub kind: String,
+    pub id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationDynamicVerificationSubtaskV1 {
+    pub stable_key: String,
+    pub role: String,
+    pub objective: String,
+    pub rationale: String,
+    pub subject_refs: Vec<InvestigationDynamicVerificationSubjectRefV1>,
+}
+
+impl InvestigationDynamicVerificationSubtaskV1 {
+    fn validate(
+        &self,
+        primary: &InvestigationAssetVerificationPrimaryBinding,
+    ) -> Result<(), &'static str> {
+        if self.stable_key.is_empty()
+            || self.stable_key.len() > 128
+            || !self
+                .stable_key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
+            || !INVESTIGATION_ANALYSIS_ROLE_IDS.contains(&self.role.as_str())
+            || self.objective.trim().is_empty()
+            || self.objective.chars().count() > 4_096
+            || self.rationale.trim().is_empty()
+            || self.rationale.chars().count() > 2_048
+        {
+            return Err("INVESTIGATION_DYNAMIC_VERIFICATION_SUBTASK_INVALID");
+        }
+
+        let mut target_count = 0;
+        let mut revision_count = 0;
+        for subject_ref in &self.subject_refs {
+            match subject_ref.kind.as_str() {
+                "target" if subject_ref.id == primary.target_id => target_count += 1,
+                "hypothesis_revision" if subject_ref.id == primary.hypothesis_revision_id => {
+                    revision_count += 1;
+                }
+                _ => return Err("INVESTIGATION_DYNAMIC_VERIFICATION_SUBJECT_REF_INVALID"),
+            }
+        }
+        if self.subject_refs.len() != 2 || target_count != 1 || revision_count != 1 {
+            return Err("INVESTIGATION_DYNAMIC_VERIFICATION_SUBJECT_REF_INVALID");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvestigationDynamicVerificationDispositionV1 {
+    Verified,
+    Refuted,
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationDynamicVerificationHypothesisProposalV1 {
+    pub predicate_schema: String,
+    pub predicate_version: u32,
+    pub predicate_arguments: Vec<(String, String)>,
+    pub trust_boundary: String,
+    pub polarity: String,
+    pub structured_claim: String,
+    pub preconditions: Vec<String>,
+    pub impact: String,
+    pub rationale: String,
+}
+
+impl InvestigationDynamicVerificationHypothesisProposalV1 {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.predicate_schema.trim().is_empty()
+            || self.predicate_schema.chars().count() > 128
+            || self.predicate_version == 0
+            || self.predicate_arguments.len() > 64
+            || self.trust_boundary.trim().is_empty()
+            || self.trust_boundary.chars().count() > 256
+            || !matches!(self.polarity.as_str(), "positive" | "negative")
+            || self.structured_claim.trim().is_empty()
+            || self.structured_claim.chars().count() > 8_192
+            || self.preconditions.len() > 64
+            || self.impact.trim().is_empty()
+            || self.impact.chars().count() > 4_096
+            || self.rationale.trim().is_empty()
+            || self.rationale.chars().count() > 4_096
+        {
+            return Err("INVESTIGATION_DYNAMIC_VERIFICATION_PROPOSAL_INVALID");
+        }
+        let mut argument_keys = HashSet::new();
+        for (key, value) in &self.predicate_arguments {
+            if key.trim().is_empty()
+                || key.chars().count() > 128
+                || value.chars().count() > 4_096
+                || !argument_keys.insert(key.as_str())
+            {
+                return Err("INVESTIGATION_DYNAMIC_VERIFICATION_PROPOSAL_INVALID");
+            }
+        }
+        if self
+            .preconditions
+            .iter()
+            .any(|value| value.trim().is_empty() || value.chars().count() > 1_024)
+        {
+            return Err("INVESTIGATION_DYNAMIC_VERIFICATION_PROPOSAL_INVALID");
+        }
+        Ok(())
+    }
+}
+
+/// Closed model output from one exact dynamic Verification actor call.
+///
+/// The output deliberately carries no asset, tool, credential, or opaque
+/// authority selector. The host binds it to those authorities through
+/// [`InvestigationAssetVerificationActorBinding`] and the session-scoped
+/// invocation ledger before accepting any cited evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationAssetVerificationActorObservationV2 {
+    pub schema_version: u32,
+    pub session_id: uuid::Uuid,
+    pub hypothesis_revision_id: uuid::Uuid,
+    pub actor_call_id: uuid::Uuid,
+    pub actor_ordinal: i64,
+    pub subtask_id: uuid::Uuid,
+    pub specialist_role: String,
+    pub summary: String,
+    pub cited_evidence_ids: Vec<i64>,
+    pub new_hypothesis_proposals: Vec<InvestigationDynamicVerificationHypothesisProposalV1>,
+}
+
+impl InvestigationAssetVerificationActorObservationV2 {
+    pub fn validate(
+        &self,
+        binding: &InvestigationAssetVerificationActorBinding,
+    ) -> Result<(), &'static str> {
+        binding.validate()?;
+        if self.schema_version != 1
+            || self.session_id != binding.session_id
+            || self.hypothesis_revision_id != binding.hypothesis_revision_id
+            || self.actor_call_id != binding.actor_call_id
+            || self.actor_ordinal != binding.actor_ordinal
+            || self.subtask_id != binding.subtask_id
+            || self.specialist_role != binding.specialist_role
+            || self.summary.trim().is_empty()
+            || self.summary.chars().count() > 4_096
+            || self.cited_evidence_ids.len() > 256
+            || self.cited_evidence_ids.iter().any(|id| *id <= 0)
+            || self.cited_evidence_ids.iter().collect::<HashSet<_>>().len()
+                != self.cited_evidence_ids.len()
+            || self.new_hypothesis_proposals.len() > 64
+        {
+            return Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_INVALID");
+        }
+        for proposal in &self.new_hypothesis_proposals {
+            proposal.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// One closed semantic turn by the Verification Primary. Delegation creates
+/// one ordered 1..=8 actor batch; resolution creates no actor and owns the
+/// terminal semantic decision. The host supplies every durable authority id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InvestigationDynamicVerificationPrimaryTurnV1 {
+    Delegate {
+        schema_version: u32,
+        session_id: uuid::Uuid,
+        hypothesis_revision_id: uuid::Uuid,
+        subtasks: Vec<InvestigationDynamicVerificationSubtaskV1>,
+    },
+    Resolve {
+        schema_version: u32,
+        session_id: uuid::Uuid,
+        hypothesis_revision_id: uuid::Uuid,
+        subtasks: Vec<InvestigationDynamicVerificationSubtaskV1>,
+        disposition: InvestigationDynamicVerificationDispositionV1,
+        conclusion: String,
+        cited_evidence_ids: Vec<i64>,
+        new_hypothesis_proposals: Vec<InvestigationDynamicVerificationHypothesisProposalV1>,
+    },
+}
+
+impl InvestigationDynamicVerificationPrimaryTurnV1 {
+    pub fn validate(
+        &self,
+        primary: &InvestigationAssetVerificationPrimaryBinding,
+    ) -> Result<(), &'static str> {
+        primary.validate()?;
+        let (schema_version, session_id, hypothesis_revision_id) = match self {
+            Self::Delegate {
+                schema_version,
+                session_id,
+                hypothesis_revision_id,
+                subtasks,
+            } => {
+                if subtasks.is_empty() || subtasks.len() > 8 {
+                    return Err("INVESTIGATION_DYNAMIC_VERIFICATION_DELEGATION_INVALID");
+                }
+                let mut stable_keys = HashSet::new();
+                for subtask in subtasks {
+                    subtask.validate(primary)?;
+                    if !stable_keys.insert(subtask.stable_key.as_str()) {
+                        return Err("INVESTIGATION_DYNAMIC_VERIFICATION_DELEGATION_INVALID");
+                    }
+                }
+                (*schema_version, *session_id, *hypothesis_revision_id)
+            }
+            Self::Resolve {
+                schema_version,
+                session_id,
+                hypothesis_revision_id,
+                subtasks,
+                conclusion,
+                cited_evidence_ids,
+                new_hypothesis_proposals,
+                ..
+            } => {
+                if !subtasks.is_empty()
+                    || conclusion.trim().is_empty()
+                    || conclusion.chars().count() > 8_192
+                    || cited_evidence_ids.len() > 256
+                    || cited_evidence_ids.iter().any(|id| *id <= 0)
+                    || cited_evidence_ids.iter().collect::<HashSet<_>>().len()
+                        != cited_evidence_ids.len()
+                    || new_hypothesis_proposals.len() > 64
+                {
+                    return Err("INVESTIGATION_DYNAMIC_VERIFICATION_RESOLUTION_INVALID");
+                }
+                for proposal in new_hypothesis_proposals {
+                    proposal.validate()?;
+                }
+                (*schema_version, *session_id, *hypothesis_revision_id)
+            }
+        };
+        if schema_version != 1
+            || session_id != primary.session_id
+            || hypothesis_revision_id != primary.hypothesis_revision_id
+        {
+            return Err("INVESTIGATION_DYNAMIC_VERIFICATION_PRIMARY_TURN_INVALID");
+        }
+        Ok(())
+    }
+}
+
+impl InvestigationAssetVerificationActorBinding {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if [
+            self.session_id,
+            self.actor_call_id,
+            self.subtask_id,
+            self.asset_lane_id,
+            self.target_id,
+            self.hypothesis_revision_id,
+            self.work_item_id,
+            self.worker_run_id,
+            self.message_chain_id,
+            self.primary_parent_request_id,
+        ]
+        .into_iter()
+        .any(|id| id.is_nil())
+            || self.actor_ordinal <= 0
+            || !INVESTIGATION_ANALYSIS_ROLE_IDS.contains(&self.specialist_role.as_str())
+        {
+            return Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_INVALID");
+        }
+        Ok(())
+    }
+
+    pub fn matches_session_subject(
+        &self,
+        session_id: uuid::Uuid,
+        asset_lane_id: uuid::Uuid,
+        target_id: uuid::Uuid,
+        hypothesis_revision_id: uuid::Uuid,
+    ) -> bool {
+        self.validate().is_ok()
+            && self.session_id == session_id
+            && self.asset_lane_id == asset_lane_id
+            && self.target_id == target_id
+            && self.hypothesis_revision_id == hypothesis_revision_id
+    }
+}
+
+pub fn is_investigation_asset_verification_tool(tool_name: &str) -> bool {
+    INVESTIGATION_ASSET_VERIFICATION_TOOL_NAMES.contains(&tool_name)
+}
+
+pub fn is_investigation_asset_verification_cognition_tool(tool_name: &str) -> bool {
+    INVESTIGATION_ASSET_VERIFICATION_COGNITION_TOOL_NAMES.contains(&tool_name)
+}
+
+fn valid_sha256_ref(value: &str) -> bool {
+    value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvestigationActorContract {
+    AnalysisPrimary,
+    AnalysisWorker,
+    AssetVerificationPrimary(InvestigationAssetVerificationPrimaryBinding),
+    AssetVerification(InvestigationAssetVerificationActorBinding),
+}
+
 #[derive(Clone)]
 pub struct BoundWorkerChainContext {
     pub operation_id: uuid::Uuid,
@@ -210,6 +675,9 @@ pub struct BoundWorkerChainContext {
     /// Exact terminal-only boundary for closed host-authored modelers. This
     /// takes precedence over ordinary role, catalog, and delegation surfaces.
     pub terminal_execution: Option<BoundTerminalExecutionContract>,
+    /// Exact Investigation actor contract frozen by the host. `None` is
+    /// deliberately fail-closed and therefore cognition-only in Investigation.
+    pub investigation_actor_contract: Option<InvestigationActorContract>,
     pub chain_id: uuid::Uuid,
     pub session_id: uuid::Uuid,
     pub agent_type: String,
@@ -2297,6 +2765,394 @@ pub struct SubAgentExecutorContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn asset_verification_primary() -> InvestigationAssetVerificationPrimaryBinding {
+        InvestigationAssetVerificationPrimaryBinding {
+            session_id: uuid::Uuid::new_v4(),
+            asset_lane_id: uuid::Uuid::new_v4(),
+            target_id: uuid::Uuid::new_v4(),
+            hypothesis_revision_id: uuid::Uuid::new_v4(),
+            work_item_id: uuid::Uuid::new_v4(),
+            worker_run_id: uuid::Uuid::new_v4(),
+            message_chain_id: uuid::Uuid::new_v4(),
+        }
+    }
+
+    fn dynamic_verification_subtask(
+        primary: &InvestigationAssetVerificationPrimaryBinding,
+        stable_key: &str,
+        role: &str,
+    ) -> InvestigationDynamicVerificationSubtaskV1 {
+        InvestigationDynamicVerificationSubtaskV1 {
+            stable_key: stable_key.to_string(),
+            role: role.to_string(),
+            objective: "Check the exact current revision with a bounded method".to_string(),
+            rationale: "A fresh independent observation will discriminate the claim".to_string(),
+            subject_refs: vec![
+                InvestigationDynamicVerificationSubjectRefV1 {
+                    kind: "target".to_string(),
+                    id: primary.target_id,
+                },
+                InvestigationDynamicVerificationSubjectRefV1 {
+                    kind: "hypothesis_revision".to_string(),
+                    id: primary.hypothesis_revision_id,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn asset_verification_primary_is_exact_and_separate_from_analysis_primary() {
+        let primary = asset_verification_primary();
+        assert_eq!(primary.validate(), Ok(()));
+        assert!(primary.matches_session_subject(
+            primary.session_id,
+            primary.asset_lane_id,
+            primary.target_id,
+            primary.hypothesis_revision_id,
+        ));
+        assert!(!primary.matches_session_subject(
+            primary.session_id,
+            primary.asset_lane_id,
+            uuid::Uuid::new_v4(),
+            primary.hypothesis_revision_id,
+        ));
+        assert!(matches!(
+            InvestigationActorContract::AssetVerificationPrimary(primary),
+            InvestigationActorContract::AssetVerificationPrimary(_)
+        ));
+
+        let mut invalid = asset_verification_primary();
+        invalid.worker_run_id = uuid::Uuid::nil();
+        assert_eq!(
+            invalid.validate(),
+            Err("INVESTIGATION_ASSET_VERIFICATION_PRIMARY_INVALID")
+        );
+    }
+
+    #[test]
+    fn dynamic_verification_primary_delegate_accepts_repeated_roles_and_exact_subjects() {
+        let primary = asset_verification_primary();
+        let turn = InvestigationDynamicVerificationPrimaryTurnV1::Delegate {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: vec![
+                dynamic_verification_subtask(&primary, "browser-a", "browser"),
+                dynamic_verification_subtask(&primary, "browser-b", "browser"),
+            ],
+        };
+        assert_eq!(turn.validate(&primary), Ok(()));
+    }
+
+    #[test]
+    fn dynamic_verification_primary_delegate_rejects_empty_oversized_duplicate_or_foreign_plan() {
+        let primary = asset_verification_primary();
+        let empty = InvestigationDynamicVerificationPrimaryTurnV1::Delegate {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: Vec::new(),
+        };
+        assert_eq!(
+            empty.validate(&primary),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_DELEGATION_INVALID")
+        );
+
+        let oversized = InvestigationDynamicVerificationPrimaryTurnV1::Delegate {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: (0..9)
+                .map(|ordinal| {
+                    dynamic_verification_subtask(&primary, &format!("browser-{ordinal}"), "browser")
+                })
+                .collect(),
+        };
+        assert_eq!(
+            oversized.validate(&primary),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_DELEGATION_INVALID")
+        );
+
+        let duplicate = InvestigationDynamicVerificationPrimaryTurnV1::Delegate {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: vec![
+                dynamic_verification_subtask(&primary, "same", "researcher"),
+                dynamic_verification_subtask(&primary, "same", "researcher"),
+            ],
+        };
+        assert_eq!(
+            duplicate.validate(&primary),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_DELEGATION_INVALID")
+        );
+
+        let mut foreign = dynamic_verification_subtask(&primary, "foreign", "pentester");
+        foreign.subject_refs[0].id = uuid::Uuid::new_v4();
+        let foreign = InvestigationDynamicVerificationPrimaryTurnV1::Delegate {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: vec![foreign],
+        };
+        assert_eq!(
+            foreign.validate(&primary),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_SUBJECT_REF_INVALID")
+        );
+    }
+
+    #[test]
+    fn dynamic_verification_primary_resolution_accepts_zero_citations_without_authority_ids() {
+        let primary = asset_verification_primary();
+        let turn = InvestigationDynamicVerificationPrimaryTurnV1::Resolve {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: Vec::new(),
+            disposition: InvestigationDynamicVerificationDispositionV1::Refuted,
+            conclusion: "The exact revision is contradicted by the completed checks".to_string(),
+            cited_evidence_ids: Vec::new(),
+            new_hypothesis_proposals: Vec::new(),
+        };
+        assert_eq!(turn.validate(&primary), Ok(()));
+
+        let mut value = serde_json::to_value(turn).expect("turn serializes");
+        value["authority_id"] = serde_json::json!(uuid::Uuid::new_v4());
+        assert!(
+            serde_json::from_value::<InvestigationDynamicVerificationPrimaryTurnV1>(value).is_err()
+        );
+    }
+
+    #[test]
+    fn dynamic_verification_primary_resolution_rejects_delegation_or_duplicate_evidence() {
+        let primary = asset_verification_primary();
+        let with_subtask = InvestigationDynamicVerificationPrimaryTurnV1::Resolve {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: vec![dynamic_verification_subtask(
+                &primary,
+                "not-terminal",
+                "adviser",
+            )],
+            disposition: InvestigationDynamicVerificationDispositionV1::Verified,
+            conclusion: "Terminal conclusion".to_string(),
+            cited_evidence_ids: vec![41],
+            new_hypothesis_proposals: Vec::new(),
+        };
+        assert_eq!(
+            with_subtask.validate(&primary),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_RESOLUTION_INVALID")
+        );
+
+        let duplicate_evidence = InvestigationDynamicVerificationPrimaryTurnV1::Resolve {
+            schema_version: 1,
+            session_id: primary.session_id,
+            hypothesis_revision_id: primary.hypothesis_revision_id,
+            subtasks: Vec::new(),
+            disposition: InvestigationDynamicVerificationDispositionV1::Invalid,
+            conclusion: "Terminal conclusion".to_string(),
+            cited_evidence_ids: vec![41, 41],
+            new_hypothesis_proposals: Vec::new(),
+        };
+        assert_eq!(
+            duplicate_evidence.validate(&primary),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_RESOLUTION_INVALID")
+        );
+    }
+
+    fn asset_verification_actor(role: &str) -> InvestigationAssetVerificationActorBinding {
+        InvestigationAssetVerificationActorBinding {
+            session_id: uuid::Uuid::new_v4(),
+            actor_call_id: uuid::Uuid::new_v4(),
+            actor_ordinal: 1,
+            subtask_id: uuid::Uuid::new_v4(),
+            specialist_role: role.to_string(),
+            asset_lane_id: uuid::Uuid::new_v4(),
+            target_id: uuid::Uuid::new_v4(),
+            hypothesis_revision_id: uuid::Uuid::new_v4(),
+            work_item_id: uuid::Uuid::new_v4(),
+            worker_run_id: uuid::Uuid::new_v4(),
+            message_chain_id: uuid::Uuid::new_v4(),
+            primary_parent_request_id: uuid::Uuid::new_v4(),
+        }
+    }
+
+    #[test]
+    fn asset_verification_actor_contract_accepts_dynamic_repeated_role_calls() {
+        for role in INVESTIGATION_ANALYSIS_ROLE_IDS {
+            let binding = asset_verification_actor(role);
+            assert_eq!(binding.validate(), Ok(()));
+            assert_eq!(binding.specialist_role, role);
+        }
+        let first = asset_verification_actor("pentester");
+        let second = asset_verification_actor("pentester");
+        assert_ne!(first.actor_call_id, second.actor_call_id);
+        assert_eq!(first.specialist_role, second.specialist_role);
+
+        let mut invalid = asset_verification_actor("researcher");
+        invalid.hypothesis_revision_id = uuid::Uuid::nil();
+        assert_eq!(
+            invalid.validate(),
+            Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_INVALID")
+        );
+    }
+
+    fn asset_verification_actor_observation(
+        binding: &InvestigationAssetVerificationActorBinding,
+    ) -> InvestigationAssetVerificationActorObservationV2 {
+        InvestigationAssetVerificationActorObservationV2 {
+            schema_version: 1,
+            session_id: binding.session_id,
+            hypothesis_revision_id: binding.hypothesis_revision_id,
+            actor_call_id: binding.actor_call_id,
+            actor_ordinal: binding.actor_ordinal,
+            subtask_id: binding.subtask_id,
+            specialist_role: binding.specialist_role.clone(),
+            summary: "The bounded check completed without requiring a fresh tool call".to_string(),
+            cited_evidence_ids: Vec::new(),
+            new_hypothesis_proposals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn asset_verification_actor_observation_is_exactly_bound_and_allows_zero_evidence() {
+        for role in INVESTIGATION_ANALYSIS_ROLE_IDS {
+            let binding = asset_verification_actor(role);
+            let observation = asset_verification_actor_observation(&binding);
+            assert_eq!(observation.validate(&binding), Ok(()));
+        }
+    }
+
+    #[test]
+    fn asset_verification_actor_observation_rejects_foreign_identity_and_duplicate_evidence() {
+        let binding = asset_verification_actor("researcher");
+
+        let mut foreign = asset_verification_actor_observation(&binding);
+        foreign.actor_call_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            foreign.validate(&binding),
+            Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_INVALID")
+        );
+
+        let mut wrong_role = asset_verification_actor_observation(&binding);
+        wrong_role.specialist_role = "browser".to_string();
+        assert_eq!(
+            wrong_role.validate(&binding),
+            Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_INVALID")
+        );
+
+        let mut duplicate_evidence = asset_verification_actor_observation(&binding);
+        duplicate_evidence.cited_evidence_ids = vec![41, 41];
+        assert_eq!(
+            duplicate_evidence.validate(&binding),
+            Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_OBSERVATION_INVALID")
+        );
+
+        let mut unknown = serde_json::to_value(asset_verification_actor_observation(&binding))
+            .expect("observation serializes");
+        unknown["opaque_authority_id"] = serde_json::json!(uuid::Uuid::new_v4());
+        assert!(
+            serde_json::from_value::<InvestigationAssetVerificationActorObservationV2>(unknown)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn asset_verification_actor_observation_reuses_closed_hypothesis_proposal_validation() {
+        let binding = asset_verification_actor("browser");
+        let mut observation = asset_verification_actor_observation(&binding);
+        observation.new_hypothesis_proposals =
+            vec![InvestigationDynamicVerificationHypothesisProposalV1 {
+                predicate_schema: "http_header_observed.v1".to_string(),
+                predicate_version: 1,
+                predicate_arguments: vec![("header".to_string(), "server".to_string())],
+                trust_boundary: "public_http".to_string(),
+                polarity: "positive".to_string(),
+                structured_claim: "The current asset returns a server header".to_string(),
+                preconditions: Vec::new(),
+                impact: "informational".to_string(),
+                rationale: "Observed while checking the current hypothesis".to_string(),
+            }];
+        assert_eq!(observation.validate(&binding), Ok(()));
+
+        observation.new_hypothesis_proposals[0].predicate_version = 0;
+        assert_eq!(
+            observation.validate(&binding),
+            Err("INVESTIGATION_DYNAMIC_VERIFICATION_PROPOSAL_INVALID")
+        );
+    }
+
+    #[test]
+    fn asset_verification_actor_rejects_foreign_session_asset_target_or_revision() {
+        let binding = asset_verification_actor("browser");
+        assert!(binding.matches_session_subject(
+            binding.session_id,
+            binding.asset_lane_id,
+            binding.target_id,
+            binding.hypothesis_revision_id,
+        ));
+        assert!(!binding.matches_session_subject(
+            uuid::Uuid::new_v4(),
+            binding.asset_lane_id,
+            binding.target_id,
+            binding.hypothesis_revision_id,
+        ));
+        assert!(!binding.matches_session_subject(
+            binding.session_id,
+            uuid::Uuid::new_v4(),
+            binding.target_id,
+            binding.hypothesis_revision_id,
+        ));
+        assert!(!binding.matches_session_subject(
+            binding.session_id,
+            binding.asset_lane_id,
+            uuid::Uuid::new_v4(),
+            binding.hypothesis_revision_id,
+        ));
+        assert!(!binding.matches_session_subject(
+            binding.session_id,
+            binding.asset_lane_id,
+            binding.target_id,
+            uuid::Uuid::new_v4(),
+        ));
+    }
+
+    #[test]
+    fn asset_verification_contract_serde_rejects_unknown_fields_and_unknown_role() {
+        let binding = asset_verification_actor("browser");
+        let mut value = serde_json::to_value(binding).expect("binding serializes");
+        value["foreign_authority"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<InvestigationAssetVerificationActorBinding>(value).is_err()
+        );
+
+        let mut unknown = serde_json::to_value(asset_verification_actor("coder")).unwrap();
+        unknown["specialist_role"] = serde_json::json!("fixed_consult_lane");
+        let decoded = serde_json::from_value::<InvestigationAssetVerificationActorBinding>(unknown)
+            .expect("shape remains portable");
+        assert_eq!(
+            decoded.validate(),
+            Err("INVESTIGATION_ASSET_VERIFICATION_ACTOR_INVALID")
+        );
+    }
+
+    #[test]
+    fn asset_verification_external_wrapper_set_is_exact() {
+        for tool in INVESTIGATION_ASSET_VERIFICATION_TOOL_NAMES {
+            assert!(is_investigation_asset_verification_tool(tool));
+        }
+        for forbidden in [
+            "browser_navigate",
+            "run_pty_cmd",
+            "shell",
+            "write_file",
+            "sub_agent_coder",
+        ] {
+            assert!(!is_investigation_asset_verification_tool(forbidden));
+        }
+    }
 
     fn many_coverage_gap_actions(count: usize) -> Vec<CoverageGapAction> {
         (0..count)

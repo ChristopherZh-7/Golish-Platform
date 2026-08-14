@@ -397,18 +397,32 @@ impl ScopeFixture {
     }
 
     async fn insert_trusted_scoping_submission(&self) -> Uuid {
-        let request_id = format!("trusted-scoping-submit-{}", self.operation_id);
+        self.insert_trusted_scoping_submission_for(
+            self.operation_id,
+            self.stage_execution_id,
+            self.session_id,
+        )
+        .await
+    }
+
+    async fn insert_trusted_scoping_submission_for(
+        &self,
+        operation_id: Uuid,
+        stage_execution_id: Uuid,
+        session_id: Uuid,
+    ) -> Uuid {
+        let request_id = format!("trusted-scoping-submit-{operation_id}");
         let tool_call_record_id = tool_calls::record_tracked_start(
             self.db.pool(),
             &request_id,
-            self.session_id,
-            Some(self.operation_id),
+            session_id,
+            Some(operation_id),
             None,
             "submit_stage_deliverable",
             &serde_json::json!({"stage_id":"scoping"}),
             Some(&tool_calls::RuntimeToolIdentity {
-                operation_id: self.operation_id,
-                stage_execution_id: self.stage_execution_id,
+                operation_id,
+                stage_execution_id,
                 stage_run_unit_id: None,
                 worker_run_id: None,
                 organization_id: None,
@@ -420,7 +434,7 @@ impl ScopeFixture {
         .expect("insert trusted Scoping submit tool call");
         let canonical_payload = format!(
             r#"{{"claims":[],"stage_id":"scoping","stage_run_id":"{}"}}"#,
-            self.stage_execution_id
+            stage_execution_id
         );
         let payload_sha256 = Sha256::digest(canonical_payload.as_bytes())
             .iter()
@@ -429,8 +443,8 @@ impl ScopeFixture {
         let submission = stage_deliverable_submissions::insert(
             self.db.pool(),
             &stage_deliverable_submissions::NewStageDeliverableSubmission {
-                operation_id: self.operation_id,
-                stage_execution_id: self.stage_execution_id,
+                operation_id,
+                stage_execution_id,
                 stage_run_unit_id: None,
                 worker_run_id: None,
                 organization_id: None,
@@ -448,7 +462,7 @@ impl ScopeFixture {
         tool_calls::record_tracked_finish(
             self.db.pool(),
             tool_call_record_id,
-            self.session_id,
+            session_id,
             "finished",
             "accepted",
             1,
@@ -532,6 +546,195 @@ async fn trusted_company_intake_freezes_one_evidenced_root_identity_and_replays_
     assert!(child_error
         .to_string()
         .contains("SCOPING_TRUSTED_ORGANIZATION_MISMATCH"));
+    fixture.db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn human_selected_company_identity_is_frozen_before_scope_finalization() {
+    let mut fixture = ScopeFixture::start("human_company_identity").await;
+    let operation_id = fixture.foreign_operation_id;
+    let stage_execution_id = fixture.foreign_stage_execution_id;
+    let root_organization_id = fixture.foreign_root_id;
+    let session_id: Uuid = sqlx::query_scalar("SELECT session_id FROM tasks WHERE id=$1")
+        .bind(operation_id)
+        .fetch_one(fixture.db.pool())
+        .await
+        .expect("load foreign operation session");
+    let candidate_id = "company-candidate:v1:fixture:foreign-root";
+    let candidate = serde_json::json!({
+        "candidate_id": candidate_id,
+        "provider_id": "fixture",
+        "name": "Foreign Root",
+        "credit_code": "FOREIGN-CODE-001",
+        "industry": "security",
+        "legal_representative": "Fixture Owner",
+        "address": "Fixture Address",
+        "registered_at": "2020-01-01",
+        "confidence": 0.68,
+        "evidence": {"schema":"company_lookup_provenance.v1","provider_ids":["fixture"]}
+    });
+    let identity_payload = serde_json::json!({
+        "keyword_sha256": "fixture-keyword",
+        "candidates": [candidate.clone()]
+    });
+    let scope_policy = serde_json::json!({"owned_only":true,"reachable_only":true});
+    let evidence = audit::log_evidence(
+        fixture.db.pool(),
+        "scoping_company_resolution_fixture",
+        "scoping",
+        "fixture.company_resolution.v1",
+        Some(&fixture.project_path),
+        "fixture",
+        None,
+        Some(&session_id.to_string()),
+        Some("recon_lookup_company"),
+        &serde_json::json!({
+            "operation_id": operation_id,
+            "resolution_status": "needs_human",
+            "candidate_id": candidate_id,
+        }),
+        Some(operation_id),
+        None,
+        Some("Foreign Root"),
+        Some("needs_human"),
+    )
+    .await
+    .expect("record ambiguous company evidence");
+    let pending_receipt_id = Uuid::new_v4();
+    scoping_company_identities::insert_terminal_receipt(
+        fixture.db.pool(),
+        &scoping_company_identities::ScopingCompanyIdentityReceiptRow {
+            id: pending_receipt_id,
+            operation_id,
+            stage_execution_id,
+            resolution_attempt: 0,
+            supersedes_receipt_id: None,
+            organization_id: None,
+            subject_hint: "Foreign Root".to_string(),
+            canonical_legal_name: None,
+            aliases: serde_json::json!([]),
+            brands: serde_json::json!([]),
+            registration_identifiers: serde_json::json!({}),
+            disambiguation_fields: serde_json::json!({"candidate_count":1}),
+            confirmation_method: "none".to_string(),
+            resolution_status: "needs_human".to_string(),
+            scope_policy: scope_policy.clone(),
+            source_receipt_refs: serde_json::json!([]),
+            artifact_refs: serde_json::json!([format!("audit:{}", evidence.id)]),
+            evidence_refs: serde_json::json!([format!("audit:{}", evidence.id)]),
+            identity_sha256: prefixed_json_sha256(&identity_payload),
+            scope_policy_sha256: prefixed_json_sha256(&scope_policy),
+            identity_payload,
+        },
+    )
+    .await
+    .expect("freeze needs-human company identity");
+
+    let selected_option = "Foreign Root（统一社会信用代码 FOREIGN-CODE-001）";
+    fixture
+        .insert_call(
+            operation_id,
+            stage_execution_id,
+            session_id,
+            10,
+            "ask_human",
+            serde_json::json!({
+                "input_type":"choice",
+                "context":serde_json::json!({
+                    "decision":"company_identity",
+                    "candidates":[candidate]
+                }).to_string(),
+                "options":[selected_option,"不是这家，我来指定（Other）"]
+            }),
+            serde_json::json!({"response":selected_option,"skipped":false}),
+        )
+        .await;
+    fixture
+        .insert_call(
+            operation_id,
+            stage_execution_id,
+            session_id,
+            20,
+            "manage_organizations",
+            serde_json::json!({"action":"create","name":"Foreign Root"}),
+            serde_json::json!({
+                "action":"create",
+                "id":root_organization_id,
+                "name":"Foreign Root"
+            }),
+        )
+        .await;
+    fixture
+        .insert_call(
+            operation_id,
+            stage_execution_id,
+            session_id,
+            30,
+            "ask_human",
+            serde_json::json!({
+                "input_type":"choice",
+                "context":serde_json::json!({
+                    "decision":"subsidiary_scope",
+                    "organization_id":root_organization_id
+                }).to_string(),
+                "options":["root_only","include_51","include_100"]
+            }),
+            serde_json::json!({"response":"root_only","skipped":false}),
+        )
+        .await;
+    assert!(
+        scoping_company_identities::exact_human_selection_root_is_ready(
+            fixture.db.pool(),
+            operation_id,
+            stage_execution_id,
+            root_organization_id,
+        )
+        .await
+        .expect("validate pre-freeze Human selection authority"),
+        "the exact Human choice and root create must be usable by Scoping resume"
+    );
+    assert!(
+        !scoping_company_identities::exact_human_selection_root_is_ready(
+            fixture.db.pool(),
+            operation_id,
+            stage_execution_id,
+            fixture.root_id,
+        )
+        .await
+        .expect("reject a foreign pre-freeze root"),
+        "a root outside the operation's Human/Create witness must remain unauthorized"
+    );
+    let deliverable_submission_id = fixture
+        .insert_trusted_scoping_submission_for(operation_id, stage_execution_id, session_id)
+        .await;
+    let input = runtime_memory_tx::FinalizeScopingScopeRow {
+        operation_id,
+        project_scope_id: fixture.project_scope_id,
+        stage_execution_id,
+        root_organization_id,
+        deliverable_submission_id,
+        scope_snapshot_id: Uuid::new_v4(),
+        scoping_root_unit_id: Uuid::new_v4(),
+    };
+
+    let finalized = runtime_memory_tx::finalize_scoping_scope(fixture.db.pool(), &input)
+        .await
+        .expect("human-selected candidate should freeze before finalization");
+    assert_eq!(finalized.scope.units.len(), 1);
+    let confirmed =
+        scoping_company_identities::get_confirmed_for_operation(fixture.db.pool(), operation_id)
+            .await
+            .expect("load confirmed company identity")
+            .expect("confirmed company identity must exist");
+    assert_eq!(confirmed.supersedes_receipt_id, Some(pending_receipt_id));
+    assert_eq!(confirmed.organization_id, Some(root_organization_id));
+    assert_eq!(
+        confirmed.canonical_legal_name.as_deref(),
+        Some("Foreign Root")
+    );
+    assert_eq!(confirmed.confirmation_method, "human_selected");
+
     fixture.db.stop().await;
 }
 

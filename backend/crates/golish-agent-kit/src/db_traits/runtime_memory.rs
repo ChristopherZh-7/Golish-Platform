@@ -727,6 +727,24 @@ pub struct StageWorkerOutputView {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Host-rederived authority for one Vuln formulaic shard that failed before
+/// any network request or technique outcome could land. This is deliberately
+/// narrower than a generic blocked WorkerOutput: production repositories may
+/// return it only after joining the exact accepted request, immutable output,
+/// terminal Worker and failed wrapper ToolCall.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryableVulnFormulaicShardView {
+    pub source_work_item_id: Uuid,
+    pub source_worker_run_id: Uuid,
+    pub source_output_id: Uuid,
+    pub source_tool_call_id: Uuid,
+    pub source_dedupe_key: String,
+    pub target_id: Uuid,
+    pub target_url: String,
+    pub technique: String,
+    pub next_attempt_ordinal: u32,
+}
+
 /// Exact immutable cognition-output manifest for one Investigation PentAGI
 /// task plan. The task-plan identity is an additional boundary inside a
 /// StageTeam plan: synthesis must not consume Primary, recovery, or sibling
@@ -1008,6 +1026,16 @@ pub struct ClaimStageWorkItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadStageWorkItem {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub organization_id: Uuid,
+    pub work_item_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedStageWorkItemView {
     pub unit: RuntimeStageUnitView,
     pub plan: StageTeamPlanView,
@@ -1132,6 +1160,7 @@ pub struct LoadInvestigationRuntimeCursor {
 pub struct InvestigationRuntimeCursorView {
     pub phase: InvestigationRuntimeCursorPhase,
     pub verification_task_id: Option<Uuid>,
+    pub pending_evolution_authority_id: Option<Uuid>,
     pub analysis_read_session_sealed: bool,
     pub dispatch_epoch: i64,
     pub plan_row_version: i64,
@@ -1148,6 +1177,65 @@ pub struct EnsureInvestigationTaskPrimary {
     pub stage_team_plan_id: Uuid,
     pub verification_task_id: Uuid,
     pub subject_fingerprint_sha256: String,
+}
+
+/// Open one successor Analysis epoch for an exact pending Verification
+/// evolution authority. The repository re-derives the fingerprint from the
+/// immutable pending authority and copies the latest legal Analysis Primary
+/// chain; the caller cannot nominate source Worker or chain identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureInvestigationEvolutionAnalysisPrimary {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub pending_evolution_authority_id: Uuid,
+    pub subject_fingerprint_sha256: String,
+}
+
+/// Open the execution-coordination epoch for one already sealed
+/// VerificationTask. The host selects only the exact task/plan identity; the
+/// repository derives the prior Primary chain and the current closed epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureInvestigationVerificationExecutionPrimary {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub verification_task_id: Uuid,
+    pub task_plan_id: Uuid,
+}
+
+/// Open or recover the durable Primary-only scheduling round for one active
+/// asset lane. Children are requested later by that Primary and are never
+/// caller-preseeded as a roster.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnsureInvestigationAssetPrimarySchedule {
+    pub operation_id: Uuid,
+    pub stage_execution_id: Uuid,
+    pub stage_run_unit_id: Uuid,
+    pub stage_team_plan_id: Uuid,
+    pub asset_lane_id: Uuid,
+    pub target_id: Uuid,
+    pub asset_context_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvestigationAssetPrimaryScheduleView {
+    pub asset_lane_id: Uuid,
+    pub target_id: Uuid,
+    pub asset_context_sha256: String,
+    pub evolution_epoch: u32,
+    pub plan: StageTeamPlanView,
+    pub primary_work_item: StageWorkItemView,
+    pub primary_worker: RuntimeWorkerView,
+    pub primary_message_chain_id: Uuid,
+    /// Present only when the returned Primary is one member of the bounded,
+    /// append-only execution-continuation chain for an exhausted dynamic
+    /// Asset Primary. `execution_ordinal` identifies the current shell.
+    pub execution_rearm_receipt_id: Option<Uuid>,
+    pub execution_ordinal: u32,
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1205,7 +1293,13 @@ pub struct SealExhaustedVulnResidualOutcomes {
     pub fence: RuntimeWorkerFence,
     pub stage_team_plan_id: Uuid,
     pub leader_work_item_id: Uuid,
+    /// A replayed exhausted Controller is intentionally omitted from the
+    /// seeded runtime's active `primary_worker`. In that narrow state the DB
+    /// resolves the sole terminal leader Worker under the locked plan instead
+    /// of trusting a caller-supplied terminal identity.
+    pub derive_terminal_leader_fence: bool,
     pub expected_attempt_ordinal: u32,
+    pub expected_anonymous_attempt_ordinal: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -2068,6 +2162,18 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         Err(RuntimeMemoryError::Unavailable)
     }
 
+    /// Load one exact durable WorkItem without claiming or mutating it. This
+    /// is used by restart continuations because Team seeding intentionally
+    /// returns only the immutable server-seeded denominator, not dynamic
+    /// WorkItems accepted after that seed transaction.
+    async fn load_stage_work_item(
+        &self,
+        input: LoadStageWorkItem,
+    ) -> Result<Option<StageWorkItemView>, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     /// Claim the server-seeded Company Controller, or resume the same
     /// WorkerRun/message chain once every durable child dependency is terminal.
     async fn claim_stage_team_leader(
@@ -2110,6 +2216,30 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         Err(RuntimeMemoryError::Unavailable)
     }
 
+    async fn ensure_investigation_evolution_analysis_primary(
+        &self,
+        input: EnsureInvestigationEvolutionAnalysisPrimary,
+    ) -> Result<RearmedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn ensure_investigation_verification_execution_primary(
+        &self,
+        input: EnsureInvestigationVerificationExecutionPrimary,
+    ) -> Result<RearmedInvestigationTaskPrimaryView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
+    async fn ensure_investigation_asset_primary_schedule(
+        &self,
+        input: EnsureInvestigationAssetPrimarySchedule,
+    ) -> Result<InvestigationAssetPrimaryScheduleView, RuntimeMemoryError> {
+        let _ = input;
+        Err(RuntimeMemoryError::Unavailable)
+    }
+
     /// Atomically checkpoint and release the Company Controller while its
     /// durable sibling WorkItems execute.
     async fn park_stage_team_leader(
@@ -2146,10 +2276,10 @@ pub trait RuntimeMemoryRepository: Send + Sync {
         })
     }
 
-    /// Convert only current, evidence-backed Nuclei cells whose server-owned
-    /// retry fuel is exhausted into terminal positive or inconclusive-residual
-    /// projections. Scanner/runtime errors without an accepted observation or
-    /// a complete no-match batch remain nonterminal.
+    /// Convert only current, evidence-backed Nuclei or anonymous-access cells
+    /// whose server-owned retry fuel is exhausted into terminal positive or
+    /// inconclusive-residual projections. Other scanner/runtime errors remain
+    /// nonterminal.
     async fn seal_exhausted_vuln_residual_outcomes(
         &self,
         input: SealExhaustedVulnResidualOutcomes,
@@ -2215,6 +2345,18 @@ pub trait RuntimeMemoryRepository: Send + Sync {
     ) -> Result<Vec<StageWorkerOutputView>, RuntimeMemoryError> {
         let _ = input;
         Err(RuntimeMemoryError::Unavailable)
+    }
+
+    /// Re-derive the closed set of exact Vuln shards eligible for one
+    /// automatic successor attempt after a no-network wrapper-input rejection.
+    /// A normal business blocker, any network-attempted result, or any landed
+    /// technique outcome must never be returned by this seam.
+    async fn load_retryable_vuln_formulaic_shards(
+        &self,
+        input: LoadStageTeamBarrier,
+    ) -> Result<Vec<RetryableVulnFormulaicShardView>, RuntimeMemoryError> {
+        let _ = input;
+        Ok(Vec::new())
     }
 
     /// Load only immutable worker/nested-worker outputs admitted by the exact

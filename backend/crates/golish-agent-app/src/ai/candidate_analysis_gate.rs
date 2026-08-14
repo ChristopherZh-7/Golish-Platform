@@ -24,9 +24,10 @@ use golish_agent_kit::harness::hypothesis_registry::{
     StructuredClaimComponentSourceV1, VerificationContractCompilerInput,
     VerificationPlanCompilerInput,
 };
+#[cfg(test)]
+use golish_agent_kit::task_orchestrator::hypothesis_analysis::CandidateControllerFinalInput;
 use golish_agent_kit::task_orchestrator::hypothesis_analysis::{
     CandidateControllerDecisionArtifact, CandidateControllerDecisionKind,
-    CandidateControllerFinalInput,
 };
 use golish_core::hypothesis_semantic_key::ClaimPolarity;
 use golish_core::hypothesis_verification::{
@@ -149,6 +150,7 @@ pub(crate) fn validate_controller_decision_route_confirmation(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn validate_controller_proposal_pages(
     input: &CandidateControllerFinalInput,
     routes: &BTreeMap<Uuid, CandidateRegistryMutationDecisionV1>,
@@ -208,6 +210,7 @@ pub(crate) fn validate_controller_proposal_pages(
     Ok(())
 }
 
+#[cfg(test)]
 fn valid_sha256(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
@@ -539,6 +542,7 @@ fn db_snapshot_view(
         operation_id: value.operation_id,
         scope_snapshot_id: value.scope_snapshot_id,
         organization_id: value.organization_id,
+        asset_lane_id: value.asset_lane_id,
         disposition,
         snapshot_hash: value.snapshot_hash,
         candidate_snapshot_authority_hash: value.candidate_snapshot_authority_hash,

@@ -367,7 +367,7 @@ impl TaskOrchestrator {
                         .harness_stage
                         .is_some_and(|stage| executor.stage_run_retry_budget_exhausted(stage));
                     if should_retry_gate_block(reflector_attempt, stage_run_retry_budget_exhausted)
-                        && looks_like_text_only_response(&agent_result.content)
+                        && should_refine_text_only_response(&agent_result)
                     {
                         // 设计 2026-06-12-unified-refiner (PR-R4) · F 类：确定性
                         // 模板取代旧 LLM reflect()——直接灌下一轮纠正。
@@ -418,10 +418,14 @@ impl TaskOrchestrator {
                         specialist_gated = true;
                         res
                     } else {
-                        apply_harness_gate_hook(
+                        let gate_input = authoritative_gate_input(
+                            &agent_result.content,
+                            trusted_submission.as_ref(),
+                        );
+                        let (_, outcome) = apply_harness_gate_hook(
                             planned,
                             exec_ctx,
-                            agent_result.content,
+                            gate_input,
                             in_scope_assets,
                             asset_types,
                             web_capable_assets,
@@ -431,7 +435,8 @@ impl TaskOrchestrator {
                             source_queries,
                             reporting_truth,
                             self.harness_subsidiary_policy.map(|p| p.threshold_pct),
-                        )
+                        );
+                        (agent_result.content.clone(), outcome)
                     };
                     if let Some(mut outcome) = gate_outcome {
                         outcome.trusted_submission = trusted_submission;
@@ -647,10 +652,11 @@ impl TaskOrchestrator {
             specialist_gated = true;
             res
         } else {
-            apply_harness_gate_hook(
+            let gate_input = authoritative_gate_input(&fallback, trusted_submission.as_ref());
+            let (_, outcome) = apply_harness_gate_hook(
                 planned,
                 exec_ctx,
-                fallback,
+                gate_input,
                 in_scope_assets,
                 asset_types,
                 web_capable_assets,
@@ -660,7 +666,8 @@ impl TaskOrchestrator {
                 source_queries,
                 reporting_truth,
                 self.harness_subsidiary_policy.map(|p| p.threshold_pct),
-            )
+            );
+            (fallback, outcome)
         };
         if let Some(mut outcome) = gate_outcome {
             outcome.trusted_submission = trusted_submission;
@@ -2936,11 +2943,8 @@ impl TaskOrchestrator {
         let investigation_completion_authority = if stage
             == crate::harness::StageKind::Investigation
         {
-            let publication = match self.repo.unified_investigation_repository() {
-                Ok(repository) => match repository
-                    .load_closure_publication_for_operation(task_id)
-                    .await
-                {
+            let publication = match self.repo.investigation_asset_queue_repository() {
+                Ok(repository) => match repository.load_resolution_closure(task_id).await {
                     Ok(Some(publication)) => publication,
                     Ok(None) => {
                         return render_specialist_gate(
@@ -2972,7 +2976,7 @@ impl TaskOrchestrator {
                         stage,
                         false,
                         vec![format!(
-                            "Investigation closure publication repository is unavailable: {error}"
+                            "Investigation asset-queue closure publication repository is unavailable: {error}"
                         )],
                         deliverable,
                     );
@@ -4570,6 +4574,31 @@ fn parse_deliverable_from_content(content: &str) -> Option<crate::harness::Stage
     last_parseable
 }
 
+/// Select the one terminal contract that the deterministic gate validates.
+///
+/// A successful `submit_stage_deliverable` call captures canonical JSON under
+/// the active operation/execution/unit authority.  The model's later prose is
+/// presentation only: parsing it again would let a non-authoritative epilogue
+/// erase an already accepted submission.  The existing scoped immutable-row
+/// reload still runs after structural validation and remains the authority
+/// fence; this helper does not accept arbitrary JSON from callers.
+fn authoritative_gate_input(
+    final_content: &str,
+    captured: Option<&crate::db_traits::CapturedStageSubmission>,
+) -> String {
+    captured
+        .map(|submission| submission.canonical_deliverable_json.clone())
+        .unwrap_or_else(|| final_content.to_owned())
+}
+
+/// Text-only repair applies only when no terminal tool submission was
+/// captured.  Once the authoritative submit tool succeeded, a prose epilogue
+/// must proceed to deterministic gate validation instead of forcing another
+/// model turn that can lose the one-shot capture.
+fn should_refine_text_only_response(result: &AgentResult) -> bool {
+    result.captured_stage_submission.is_none() && looks_like_text_only_response(&result.content)
+}
+
 /// 设计 2026-06-12 §5.3 · 把 DB 业务表真值 `(asset, technique)` 转成 `Found`
 /// EvidenceFact，供与账本 facts 合并注入 coverage gate。
 ///
@@ -5884,6 +5913,47 @@ mod harness_gate_hook_tests {
         assert_eq!(d.stage_id, "target_intel");
     }
 
+    #[test]
+    fn accepted_submit_tool_payload_is_the_gate_input_even_when_final_prose_has_no_json() {
+        let canonical = r#"{"stage_id":"investigation","stage_run_id":"4b9b2c7e-2e5c-4f7b-8c3d-1a2e5f0c9d44","claims":[],"evidence_refs":[],"findings":[]}"#;
+        let captured = crate::db_traits::CapturedStageSubmission {
+            deliverable_submission_id: Uuid::new_v4(),
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: Some(Uuid::new_v4()),
+            canonical_deliverable_json: canonical.to_owned(),
+            payload_sha256: "0".repeat(64),
+        };
+
+        let selected = authoritative_gate_input(
+            "Investigation is complete; the deliverable was submitted above.",
+            Some(&captured),
+        );
+        let parsed = parse_deliverable_from_content(&selected)
+            .expect("captured submit payload must remain the terminal gate contract");
+        assert_eq!(parsed.stage_id, "investigation");
+    }
+
+    #[test]
+    fn accepted_submit_tool_capture_disables_text_only_repair_turn() {
+        let captured = crate::db_traits::CapturedStageSubmission {
+            deliverable_submission_id: Uuid::new_v4(),
+            operation_id: Uuid::new_v4(),
+            stage_execution_id: Uuid::new_v4(),
+            stage_run_unit_id: Some(Uuid::new_v4()),
+            canonical_deliverable_json: "{}".to_owned(),
+            payload_sha256: "0".repeat(64),
+        };
+        let result = AgentResult::new("Done; submitted above.".to_owned())
+            .with_captured_stage_submission(Some(captured));
+
+        assert!(!should_refine_text_only_response(&result));
+        assert!(should_refine_text_only_response(&AgentResult::new(
+            "I would now describe the next step without using a terminal submission tool."
+                .to_owned()
+        )));
+    }
+
     // 设计 2026-06-12-unified-refiner · 接线级：gate 的 reasons/recovery 事实经
     // outcome 进 Refiner 后，Generic 模板必须完整呈现（迁自旧 build_gate_correction 测试）。
     #[test]
@@ -6354,5 +6424,14 @@ mod missing_deliverable_fail_closed_tests {
     fn non_specialist_stages_do_not_force_stage_run_on_resume() {
         assert!(!stage_has_stage_run_specialist(StageKind::Scoping, false));
         assert!(!stage_has_stage_run_specialist(StageKind::Reporting, false));
+    }
+
+    #[test]
+    fn investigation_closeout_uses_asset_queue_publication_without_legacy_fallback() {
+        let source = include_str!("execute.rs");
+        assert!(source.contains("investigation_asset_queue_repository()"));
+        assert!(source.contains("load_resolution_closure(task_id)"));
+        let legacy_loader = ["load_closure_publication_", "for_operation(task_id)"].concat();
+        assert!(!source.contains(&legacy_loader));
     }
 }

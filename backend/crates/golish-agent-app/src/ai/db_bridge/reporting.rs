@@ -1784,25 +1784,22 @@ struct InvestigationClosurePublicationSourceRow {
     row_version: i64,
     content: Value,
     publication_id: Uuid,
-    closure_id: Uuid,
+    company_queue_id: Uuid,
     authority_id: Uuid,
+    operation_id: Uuid,
     stage_execution_id: Uuid,
     owning_stage_run_request_id: String,
     scope_snapshot_id: Uuid,
-    closure_sha256: String,
-    disposition: String,
     member_count: i64,
     member_set_sha256: String,
     publication_sha256: String,
     expected_publication_sha256: String,
-    residual_member_count: i64,
-    residual_member_set_sha256: String,
-    contract_version: String,
-    fixed_point_receipt_id: Uuid,
-    fixed_point_receipt_sha256: String,
-    run_state: String,
-    admission_open: bool,
-    execution_status: String,
+    published_at: chrono::DateTime<chrono::Utc>,
+    company_queue_state: String,
+    company_queue_member_count: i64,
+    company_queue_member_set_sha256: String,
+    expected_company_queue_member_set_sha256: String,
+    stage_execution_kind: String,
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
@@ -1812,11 +1809,14 @@ struct InvestigationClosurePublicationMemberSourceRow {
     content: Value,
     publication_id: Uuid,
     member_ordinal: i32,
+    company_queue_id: Uuid,
+    company_member_id: Uuid,
     operation_id: Uuid,
     stage_execution_id: Uuid,
     scope_snapshot_id: Uuid,
     stage_run_unit_id: Uuid,
     organization_id: Uuid,
+    stage_team_plan_id: Uuid,
     member_sha256: String,
     expected_member_sha256: String,
     passed_at: chrono::DateTime<chrono::Utc>,
@@ -1828,106 +1828,9 @@ struct InvestigationClosurePublicationMemberSourceRow {
     completion_passed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Clone, Debug, sqlx::FromRow)]
-struct InvestigationClosureResidualSourceRow {
-    id: Uuid,
-    row_version: i64,
-    content: Value,
-    member_key: String,
-    member_hash: String,
-    organization_id: Uuid,
-    reason_code: String,
-    affected_input_ids: Vec<String>,
-    owner_code: String,
-    next_action_code: String,
-}
-
-async fn investigation_closure_residual_rows_on(
-    connection: &mut PgConnection,
-    operation_id: Uuid,
-    stage_execution_id: Uuid,
-    scope_snapshot_id: Uuid,
-) -> anyhow::Result<Vec<InvestigationClosureResidualSourceRow>> {
-    Ok(sqlx::query_as::<_, InvestigationClosureResidualSourceRow>(
-        r#"WITH residual_members AS (
-               SELECT residual.residual_id AS id,
-                      'risk:' || residual.residual_id::TEXT AS member_key,
-                      residual.residual_hash AS member_hash,
-                      residual.organization_id,
-                      residual.reason_code,
-                      COALESCE((SELECT array_agg(value ORDER BY ordinal)
-                                  FROM jsonb_array_elements_text(residual.affected_inputs)
-                                       WITH ORDINALITY item(value,ordinal)),ARRAY[]::TEXT[])
-                          AS affected_input_ids,
-                      residual.owner_kind AS owner_code,
-                      COALESCE(NULLIF(residual.next_action->>'code',''),
-                               NULLIF(residual.next_action->>'kind',''),'follow_up_required')
-                          AS next_action_code,
-                      to_jsonb(residual) AS source_row
-                FROM hypothesis_residual_risks residual
-                WHERE residual.operation_id=$1 AND residual.closed_at IS NULL
-                  AND unified_investigation_residual_has_stage_authority_v1(
-                          residual.residual_id,$1,$2,$3
-                      )
-               UNION ALL
-               SELECT member.admission_member_id,
-                      'admission:' || member.admission_member_id::TEXT,
-                      member.member_sha256,member.organization_id,member.reason_code,
-                      ARRAY[member.hypothesis_revision_id::TEXT],
-                      'verification_admission',
-                      'resolve_admission_' || member.disposition,
-                      to_jsonb(member)
-                 FROM verification_admission_members member
-                WHERE member.operation_id=$1 AND member.stage_execution_id=$2
-                  AND member.scope_snapshot_id=$3
-                  AND member.disposition IN('needs_enrichment','deferred','out_of_scope','unsafe')
-               UNION ALL
-               SELECT member.assignment_member_id,
-                      'assignment:' || member.assignment_member_id::TEXT,
-                      member.residual_receipt_sha256,task.organization_id,
-                      member.residual_reason_code,
-                      ARRAY[member.verification_objective_id::TEXT],
-                      member.residual_owner,member.residual_next_action,to_jsonb(member)
-                 FROM hypothesis_verification_task_assignment_members member
-                 JOIN hypothesis_verification_tasks task ON task.task_id=member.task_id
-                WHERE task.operation_id=$1 AND task.stage_execution_id=$2
-                  AND task.scope_snapshot_id=$3 AND member.assignment_kind='residual'
-               UNION ALL
-               SELECT cycle.semantic_cycle_receipt_id,
-                      'cycle:' || cycle.semantic_cycle_receipt_id::TEXT,
-                      cycle.receipt_sha256,cycle.organization_id,
-                      COALESCE(cycle.residual_reason_code,'investigation_stopped'),
-                      ARRAY[cycle.task_id::TEXT],'investigation_scheduler',
-                      CASE WHEN cycle.disposition='stopped' THEN 'resume_after_stop'
-                           ELSE 'resolve_semantic_cycle' END,
-                      to_jsonb(cycle)
-                 FROM investigation_semantic_cycle_receipts cycle
-                WHERE cycle.operation_id=$1 AND cycle.stage_execution_id=$2
-                  AND cycle.scope_snapshot_id=$3
-                  AND cycle.disposition IN('residual','stopped')
-           )
-           SELECT id,0::BIGINT AS row_version,
-                  jsonb_build_object(
-                      'contractVersion','investigation-closure-residual.v1',
-                      'memberKey',member_key,'memberHash',member_hash,
-                      'organizationId',organization_id,'reasonCode',reason_code,
-                      'affectedInputIds',affected_input_ids,'ownerCode',owner_code,
-                      'nextActionCode',next_action_code,'sourceRow',source_row
-                  ) AS content,
-                  member_key,member_hash,organization_id,reason_code,
-                  affected_input_ids,owner_code,next_action_code
-             FROM residual_members ORDER BY member_key"#,
-    )
-    .bind(operation_id)
-    .bind(stage_execution_id)
-    .bind(scope_snapshot_id)
-    .fetch_all(&mut *connection)
-    .await?)
-}
-
 /// Load and validate the closure authority inside the caller's Reporting
 /// REPEATABLE READ snapshot. This intentionally does not use the pool-based
-/// runtime repository: publication, members, residuals, and report sources
+/// runtime repository: publication, members, and report sources
 /// must be one PostgreSQL snapshot or the manifest can mix two realities.
 async fn investigation_closure_publication_sources_on(
     connection: &mut PgConnection,
@@ -1937,54 +1840,50 @@ async fn investigation_closure_publication_sources_on(
     let headers = sqlx::query_as::<_, InvestigationClosurePublicationSourceRow>(
         r#"SELECT publication.publication_id AS id,0::BIGINT AS row_version,
                   jsonb_build_object(
-                      'contractVersion','investigation-closure-report-authority.v1',
+                      'contractVersion','investigation-asset-queue-closure-report-authority.v1',
                       'publication',to_jsonb(publication),
-                      'closureHeader',to_jsonb(closure_header),
-                      'closureAuthority',to_jsonb(closure_authority),
-                      'fixedPointReceipt',to_jsonb(fixed_point)
+                      'companyQueue',to_jsonb(company_queue)
                   ) AS content,
-                  publication.publication_id,publication.closure_id,
-                  publication.authority_id,publication.stage_execution_id,
+                  publication.publication_id,publication.company_queue_id,
+                  publication.authority_id,publication.operation_id,
+                  publication.stage_execution_id,
                   publication.owning_stage_run_request_id,publication.scope_snapshot_id,
-                  publication.closure_sha256,publication.disposition,
                   publication.member_count,publication.member_set_sha256,
                   publication.publication_sha256,
-                  tool_truth_sha256(jsonb_build_object(
-                      'contract_version','investigation-stage-closure-publication.v1',
-                      'publication_id',publication.publication_id,
-                      'closure_id',publication.closure_id,
-                      'closure_sha256',publication.closure_sha256,
-                      'authority_id',publication.authority_id,
-                      'operation_id',publication.operation_id,
-                      'stage_execution_id',publication.stage_execution_id,
-                      'owning_stage_run_request_id',publication.owning_stage_run_request_id,
-                      'scope_snapshot_id',publication.scope_snapshot_id,
-                      'disposition',publication.disposition,
-                      'member_count',publication.member_count,
-                      'member_set_sha256',publication.member_set_sha256
-                  )::TEXT) AS expected_publication_sha256,
-                  closure_authority.residual_member_count,
-                  closure_authority.residual_member_set_sha256,
-                  closure_authority.contract_version,
-                  closure_authority.fixed_point_receipt_id,
-                  closure_authority.fixed_point_receipt_sha256,
-                  head.run_state,head.admission_open,execution.status AS execution_status
-             FROM investigation_stage_closure_publications publication
-             JOIN investigation_run_closures closure_header
-               ON closure_header.closure_id=publication.closure_id
-              AND closure_header.authority_id=publication.authority_id
-             JOIN investigation_run_closure_v1_authorities closure_authority
-               ON closure_authority.closure_id=publication.closure_id
-              AND closure_authority.authority_id=publication.authority_id
-             JOIN investigation_stage_fixed_point_receipts fixed_point
-               ON fixed_point.fixed_point_receipt_id=closure_authority.fixed_point_receipt_id
-              AND fixed_point.authority_id=publication.authority_id
-             JOIN investigation_run_heads head
-               ON head.authority_id=publication.authority_id
-              AND head.operation_id=publication.operation_id
-              AND head.stage_execution_id=publication.stage_execution_id
-              AND head.owning_stage_run_request_id=publication.owning_stage_run_request_id
-              AND head.scope_snapshot_id=publication.scope_snapshot_id
+                  tool_truth_sha256(format(
+                      'golish.investigation.asset_queue_closure_publication.v1:%s:%s:%s:%s:%s:%s:%s',
+                      publication.publication_id,publication.company_queue_id,
+                      publication.authority_id,publication.operation_id,
+                      publication.stage_execution_id,publication.scope_snapshot_id,
+                      publication.member_set_sha256
+                  )) AS expected_publication_sha256,
+                  publication.published_at,
+                  company_queue.state AS company_queue_state,
+                  company_queue.member_count AS company_queue_member_count,
+                  company_queue.member_set_sha256 AS company_queue_member_set_sha256,
+                  investigation_exact_member_set_hash(
+                      'golish.investigation.company_queue.v1',
+                      ARRAY(
+                          SELECT tool_truth_sha256(format(
+                              'golish.investigation.company_queue_member.v1:%s:%s:%s:%s:%s',
+                              company.operation_id,company.scope_snapshot_id,
+                              company.organization_id,company.depth,company.ordinal
+                          ))
+                            FROM investigation_company_queue_members company
+                           WHERE company.company_queue_id=publication.company_queue_id
+                           ORDER BY company.depth,company.ordinal,company.organization_id
+                      )
+                  ) AS expected_company_queue_member_set_sha256,
+                  execution.stage_kind AS stage_execution_kind
+             FROM investigation_asset_queue_closure_publications publication
+             JOIN investigation_company_queues company_queue
+               ON company_queue.company_queue_id=publication.company_queue_id
+              AND company_queue.authority_id=publication.authority_id
+              AND company_queue.operation_id=publication.operation_id
+              AND company_queue.stage_execution_id=publication.stage_execution_id
+              AND company_queue.owning_stage_run_request_id=
+                  publication.owning_stage_run_request_id
+              AND company_queue.scope_snapshot_id=publication.scope_snapshot_id
              JOIN stage_runs execution
                ON execution.id=publication.stage_execution_id
               AND execution.operation_id=publication.operation_id
@@ -2001,70 +1900,68 @@ async fn investigation_closure_publication_sources_on(
         _ => anyhow::bail!("report_investigation_closure_publication_not_unique"),
     };
     if header.publication_sha256 != header.expected_publication_sha256
-        || header.contract_version != "investigation_run_closure.v1"
-        || header.closure_sha256
-            != header
-                .content
-                .pointer("/closureAuthority/closure_sha256")
-                .or_else(|| header.content.pointer("/closureAuthority/closureSha256"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        || header.closure_sha256
-            != header
-                .content
-                .pointer("/closureHeader/closure_sha256")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        || header.fixed_point_receipt_sha256
-            != header
-                .content
-                .pointer("/fixedPointReceipt/receipt_sha256")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
+        || header.operation_id != operation_id
         || header.authority_id.is_nil()
-        || header.closure_id.is_nil()
+        || header.company_queue_id.is_nil()
+        || header.publication_id.is_nil()
+        || header.stage_execution_id.is_nil()
+        || header.scope_snapshot_id.is_nil()
         || header.owning_stage_run_request_id.trim().is_empty()
-        || header.owning_stage_run_request_id
-            != header
-                .content
-                .pointer("/closureAuthority/owning_stage_run_request_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-        || header.fixed_point_receipt_id.is_nil()
-        || !header.fixed_point_receipt_sha256.starts_with("sha256:")
-        || header.run_state != "closed"
-        || header.admission_open
-        || header.execution_status != "completed"
-        || !matches!(header.disposition.as_str(), "pass" | "pass_with_gaps")
+        || header.member_count <= 0
+        || header.member_count != header.company_queue_member_count
+        || !header.member_set_sha256.starts_with("sha256:")
+        || header.company_queue_member_set_sha256 != header.expected_company_queue_member_set_sha256
+        || header.company_queue_state != "completed"
+        || header.stage_execution_kind != "investigation"
     {
         anyhow::bail!("report_investigation_closure_publication_invalid");
     }
     let members = sqlx::query_as::<_, InvestigationClosurePublicationMemberSourceRow>(
         r#"SELECT member.publication_member_id AS id,0::BIGINT AS row_version,
                   jsonb_build_object(
-                      'contractVersion','investigation-stage-closure-member.v1',
+                      'contractVersion','investigation-asset-queue-closure-member.v1',
                       'member',to_jsonb(member)
                   ) AS content,
-                  member.publication_id,member.member_ordinal,member.operation_id,
+                  member.publication_id,member.member_ordinal,member.company_queue_id,
+                  member.company_member_id,member.operation_id,
                   member.stage_execution_id,member.scope_snapshot_id,
-                  member.stage_run_unit_id,member.organization_id,member.member_sha256,
-                  tool_truth_sha256(jsonb_build_object(
-                      'contract_version','investigation-stage-closure-member.v1',
-                      'closure_id',publication.closure_id,
-                      'closure_sha256',publication.closure_sha256,
-                      'stage_run_unit_id',member.stage_run_unit_id,
-                      'organization_id',member.organization_id,
-                      'stage_team_plan_id',member.stage_team_plan_id
-                  )::TEXT) AS expected_member_sha256,
+                  member.stage_run_unit_id,member.organization_id,
+                  member.stage_team_plan_id,member.member_sha256,
+                  tool_truth_sha256(format(
+                      'golish.investigation.asset_queue_closure_member.v1:%s:%s:%s:%s:%s',
+                      member.publication_id,member.company_member_id,
+                      member.organization_id,member.stage_run_unit_id,
+                      member.stage_team_plan_id
+                  )) AS expected_member_sha256,
                   member.passed_at,unit.terminal_at,unit.status AS unit_status,
                   unit.pass_watermark,plan.requests_closed_at AS plan_requests_closed_at,
                   completion.stage_run_id AS completion_stage_run_id,
                   completion.passed_at AS completion_passed_at
-             FROM investigation_stage_closure_publication_members member
-             JOIN investigation_stage_closure_publications publication
+             FROM investigation_asset_queue_closure_publication_members member
+             JOIN investigation_asset_queue_closure_publications publication
                ON publication.publication_id=member.publication_id
-             JOIN stage_run_units unit ON unit.id=member.stage_run_unit_id
-             JOIN stage_team_plans plan ON plan.id=member.stage_team_plan_id
+             JOIN investigation_company_queue_members company
+               ON company.company_member_id=member.company_member_id
+              AND company.company_queue_id=member.company_queue_id
+              AND company.operation_id=member.operation_id
+              AND company.scope_snapshot_id=member.scope_snapshot_id
+              AND company.organization_id=member.organization_id
+              AND company.state='completed'
+             JOIN stage_run_units unit
+               ON unit.id=member.stage_run_unit_id
+              AND unit.operation_id=member.operation_id
+              AND unit.stage_execution_id=member.stage_execution_id
+              AND unit.scope_snapshot_id=member.scope_snapshot_id
+              AND unit.organization_id=member.organization_id
+              AND unit.stage_kind='investigation'
+             JOIN stage_team_plans plan
+               ON plan.id=member.stage_team_plan_id
+              AND plan.operation_id=member.operation_id
+              AND plan.stage_execution_id=member.stage_execution_id
+              AND plan.stage_run_unit_id=member.stage_run_unit_id
+              AND plan.scope_snapshot_id=member.scope_snapshot_id
+              AND plan.organization_id=member.organization_id
+              AND plan.stage_kind='investigation'
              LEFT JOIN org_stage_completions completion
                ON completion.organization_id=member.organization_id
               AND completion.stage_kind='investigation'
@@ -2079,23 +1976,29 @@ async fn investigation_closure_publication_sources_on(
         .collect::<BTreeSet<_>>();
     let operation_id_string = operation_id.to_string();
     let publication_id_string = header.publication_id.to_string();
-    let closure_id_string = header.closure_id.to_string();
+    let company_queue_id_string = header.company_queue_id.to_string();
+    let mut company_member_ids = BTreeSet::new();
+    let mut unit_ids = BTreeSet::new();
+    let mut plan_ids = BTreeSet::new();
     if i64::try_from(members.len()).ok() != Some(header.member_count)
         || &member_orgs != organization_ids
         || members.iter().enumerate().any(|(ordinal, member)| {
             member.publication_id != header.publication_id
                 || member.member_ordinal != ordinal as i32
+                || member.company_queue_id != header.company_queue_id
+                || member.company_member_id.is_nil()
                 || member.operation_id != operation_id
                 || member.stage_execution_id != header.stage_execution_id
                 || member.scope_snapshot_id != header.scope_snapshot_id
                 || member.member_sha256 != member.expected_member_sha256
+                || member.passed_at != header.published_at
                 || member.unit_status != "passed"
                 || member.terminal_at != Some(member.passed_at)
                 || member.plan_requests_closed_at.is_none()
                 || member.completion_stage_run_id.as_deref() != Some(operation_id_string.as_str())
                 || member.completion_passed_at != Some(member.passed_at)
                 || member.pass_watermark.get("schema").and_then(Value::as_str)
-                    != Some("investigation_stage_closure_publication.v1")
+                    != Some("investigation_asset_queue_closure_publication.v1")
                 || member
                     .pass_watermark
                     .get("publication_id")
@@ -2103,32 +2006,32 @@ async fn investigation_closure_publication_sources_on(
                     != Some(publication_id_string.as_str())
                 || member
                     .pass_watermark
-                    .get("closure_id")
+                    .get("company_queue_id")
                     .and_then(Value::as_str)
-                    != Some(closure_id_string.as_str())
+                    != Some(company_queue_id_string.as_str())
                 || member
                     .pass_watermark
-                    .get("closure_sha256")
+                    .get("company_member_id")
                     .and_then(Value::as_str)
-                    != Some(header.closure_sha256.as_str())
-                || member
-                    .pass_watermark
-                    .get("disposition")
-                    .and_then(Value::as_str)
-                    != Some(header.disposition.as_str())
+                    .and_then(|value| Uuid::parse_str(value).ok())
+                    != Some(member.company_member_id)
                 || member
                     .pass_watermark
                     .get("member_sha256")
                     .and_then(Value::as_str)
                     != Some(member.member_sha256.as_str())
                 || member.stage_run_unit_id.is_nil()
+                || member.stage_team_plan_id.is_nil()
+                || !company_member_ids.insert(member.company_member_id)
+                || !unit_ids.insert(member.stage_run_unit_id)
+                || !plan_ids.insert(member.stage_team_plan_id)
         })
     {
         anyhow::bail!("report_investigation_closure_member_authority_invalid");
     }
     let expected_member_set_sha256: String = sqlx::query_scalar(
-        "SELECT unified_investigation_exact_set_hash(
-             'investigation_stage_closure_publication_members.v1',$1::TEXT[])",
+        "SELECT investigation_exact_member_set_hash(
+             'golish.investigation.asset_queue_closure_members.v1',$1::TEXT[])",
     )
     .bind(
         members
@@ -2141,36 +2044,7 @@ async fn investigation_closure_publication_sources_on(
     if expected_member_set_sha256 != header.member_set_sha256 {
         anyhow::bail!("report_investigation_closure_member_set_mismatch");
     }
-    let residuals = investigation_closure_residual_rows_on(
-        &mut *connection,
-        operation_id,
-        header.stage_execution_id,
-        header.scope_snapshot_id,
-    )
-    .await?;
-    let expected_residual_set_sha256: String = sqlx::query_scalar(
-        "SELECT unified_investigation_exact_set_hash(
-             'investigation_run_residuals.v1',$1::TEXT[])",
-    )
-    .bind(
-        residuals
-            .iter()
-            .map(|member| format!("{}:{}", member.member_key, member.member_hash))
-            .collect::<Vec<_>>(),
-    )
-    .fetch_one(&mut *connection)
-    .await?;
-    if i64::try_from(residuals.len()).ok() != Some(header.residual_member_count)
-        || expected_residual_set_sha256 != header.residual_member_set_sha256
-        || (residuals.is_empty() && header.disposition != "pass")
-        || (!residuals.is_empty() && header.disposition != "pass_with_gaps")
-        || residuals
-            .iter()
-            .any(|residual| !organization_ids.contains(&residual.organization_id))
-    {
-        anyhow::bail!("report_investigation_closure_residual_authority_invalid");
-    }
-    let mut sources = Vec::with_capacity(1 + members.len() + residuals.len());
+    let mut sources = Vec::with_capacity(1 + members.len());
     sources.push(ReportSourceVersion {
         kind: ReportSourceKind::InvestigationClosurePublication,
         authority_class: ReportAuthorityClass::MethodAuditOnly,
@@ -2184,13 +2058,6 @@ async fn investigation_closure_publication_sources_on(
         id: CanonicalRowId::Uuid(member.id),
         row_version: member.row_version,
         content_hash: decode_sha256(&sha256(&member.content)).expect("JSON SHA-256 is canonical"),
-    }));
-    sources.extend(residuals.into_iter().map(|residual| ReportSourceVersion {
-        kind: ReportSourceKind::InvestigationClosureResidual,
-        authority_class: ReportAuthorityClass::MethodAuditOnly,
-        id: CanonicalRowId::Uuid(residual.id),
-        row_version: residual.row_version,
-        content_hash: decode_sha256(&sha256(&residual.content)).expect("JSON SHA-256 is canonical"),
     }));
     Ok(sources)
 }
@@ -2964,40 +2831,11 @@ async fn typed_report_claim_seeds_on(
     .fetch_all(&mut *connection)
     .await?;
 
-    let residual_rows = if revision_authoritative {
-        let identities = sqlx::query_as::<_, (Uuid, Uuid)>(
-            r#"SELECT stage_execution_id,scope_snapshot_id
-                 FROM investigation_stage_closure_publications
-                WHERE operation_id=$1 ORDER BY published_at,publication_id"#,
-        )
-        .bind(operation_id)
-        .fetch_all(&mut *connection)
-        .await?;
-        let (stage_execution_id, scope_snapshot_id) = match identities.as_slice() {
-            [identity] => *identity,
-            [] => anyhow::bail!("report_investigation_closure_publication_missing"),
-            _ => anyhow::bail!("report_investigation_closure_publication_not_unique"),
-        };
-        investigation_closure_residual_rows_on(
-            &mut *connection,
-            operation_id,
-            stage_execution_id,
-            scope_snapshot_id,
-        )
-        .await?
-        .into_iter()
-        .map(|row| ResidualClaimSeedRow {
-            source_id: row.id,
-            organization_id: row.organization_id,
-            reason_code: row.reason_code,
-            affected_input_ids: row.affected_input_ids,
-            owner_code: row.owner_code,
-            next_action_code: row.next_action_code,
-        })
-        .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
+    // The mandatory asset-queue closure has no pass-with-gaps branch. An
+    // unresolved or blocked canonical hypothesis cannot close its asset, so
+    // historical Campaign/admission residual rows are not Reporting closure
+    // authority for the new topology.
+    let residual_rows = Vec::<ResidualClaimSeedRow>::new();
 
     let input_disposition_rows = sqlx::query_as::<_, InputDispositionLimitationSeedRow>(
         r#"SELECT disposition.input_disposition_id,attempt.organization_id,
@@ -5075,6 +4913,22 @@ mod tests {
         let wiki_call = ["wiki_", "search("].concat();
         assert!(!source.contains(&graph_import));
         assert!(!source.contains(&wiki_call));
+    }
+
+    #[test]
+    fn reporting_investigation_closure_uses_resolution_queue_authority_only() {
+        let source = include_str!("reporting.rs");
+        assert!(source.contains("FROM investigation_asset_queue_closure_publications"));
+        assert!(source.contains("FROM investigation_asset_queue_closure_publication_members"));
+        assert!(source.contains("investigation_asset_queue_closure_publication.v1"));
+        let old_publication = ["FROM investigation_stage_", "closure_publications"].concat();
+        let old_member = ["FROM investigation_stage_", "closure_publication_members"].concat();
+        let old_residual_loader = ["investigation_closure_", "residual_rows_on"].concat();
+        let old_gap_disposition = ["pass_with_", "gaps"].concat();
+        assert!(!source.contains(&old_publication));
+        assert!(!source.contains(&old_member));
+        assert!(!source.contains(&old_residual_loader));
+        assert!(!source.contains(&old_gap_disposition));
     }
 
     #[test]

@@ -13,10 +13,8 @@
 mod application_understanding;
 mod code_research;
 mod execution_planning;
-mod hypothesis_analysis;
 mod orchestration;
 mod reporting;
-mod verification_campaign;
 
 pub(super) use application_understanding::{
     build_application_understanding_company_synthesizer_prompt,
@@ -28,19 +26,12 @@ pub(super) use execution_planning::{
     build_pentester_prompt, build_planner_prompt, build_prober_prompt, build_recon_prompt,
     build_reflector_prompt, build_resolution_analyst_prompt, build_vuln_scanner_prompt,
 };
-pub(super) use hypothesis_analysis::{
-    build_candidate_hypothesis_analyst_prompt, build_candidate_hypothesis_controller_prompt,
-    build_merge_conflict_critic_prompt,
-};
 pub(super) use orchestration::{
-    build_attack_analyst_prompt, build_browser_prompt, build_candidate_verifier_prompt,
-    build_enricher_prompt, build_orchestrator_prompt, build_post_exploit_operator_prompt,
+    build_browser_prompt, build_enricher_prompt, build_orchestrator_prompt,
+    build_post_exploit_operator_prompt,
 };
 pub(super) use reporting::{
     build_refiner_prompt, build_reporter_prompt, build_researcher_prompt_fallback,
-};
-pub(super) use verification_campaign::{
-    build_verification_campaign_prompt, VerificationCampaignRole,
 };
 
 /// System prompt used when generating optimized prompts for worker agents.

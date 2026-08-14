@@ -146,7 +146,6 @@ pub struct InvestigationModePolicyView {
     pub gate_authority: String,
     pub allow_legacy_mutation: bool,
     pub campaign_write_policy: String,
-    pub allow_prepared_action_jit: bool,
     pub compare_policy: String,
     pub legacy_projection_policy: String,
 }

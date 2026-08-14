@@ -25,6 +25,7 @@ pub(crate) enum ToolDispatchHaltReason {
     CompanyControllerFinalizationFailed,
     CompanyControllerFinalSubmissionMissing,
     CompanyControllerRuntimeRecovered,
+    InvestigationRepositoryInfrastructure,
     OperatorRecoveryRequired,
     StageRunReentryBlocked,
 }
@@ -38,6 +39,9 @@ impl ToolDispatchHaltReason {
                 "company_controller_final_submission_missing"
             }
             Self::CompanyControllerRuntimeRecovered => "company_controller_runtime_recovered",
+            Self::InvestigationRepositoryInfrastructure => {
+                "investigation_repository_infrastructure"
+            }
             Self::OperatorRecoveryRequired => "operator_recovery_required",
             Self::StageRunReentryBlocked => "stage_run_reentry_blocked",
         }
@@ -187,6 +191,17 @@ fn stage_run_halt_reason(tool_name: &str, content: &UserContent) -> Option<ToolD
                 && value.get("passed").and_then(serde_json::Value::as_bool) == Some(false) =>
         {
             Some(ToolDispatchHaltReason::StageRunReentryBlocked)
+        }
+        Some("investigation_repository_infrastructure")
+            if value.get("passed").and_then(serde_json::Value::as_bool) == Some(false)
+                && value
+                    .get("provider_dispatched")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(false)
+                && value.get("code").and_then(serde_json::Value::as_str)
+                    == Some("INVESTIGATION_ASSET_ANALYSIS_BLOCKED") =>
+        {
+            Some(ToolDispatchHaltReason::InvestigationRepositoryInfrastructure)
         }
         _ => None,
     }
@@ -671,6 +686,58 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn investigation_repository_halt_short_circuits_later_batch_calls() {
+        let calls = vec![
+            (0, tool_call("stage-run", "stage_run")),
+            (1, tool_call("retry", "stage_run")),
+            (2, tool_call("submit", "submit_stage_deliverable")),
+        ];
+        let executed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = std::sync::Arc::clone(&executed);
+
+        let (results, outcome) = dispatch_harness_terminal_batch(calls, move |call| {
+            observed.lock().unwrap().push(call.id.clone());
+            async move {
+                let value = serde_json::json!({
+                    "code": "INVESTIGATION_ASSET_ANALYSIS_BLOCKED",
+                    "passed": false,
+                    "provider_dispatched": false,
+                    "runtime_control": {
+                        "kind": "halt_current_request",
+                        "reason": "investigation_repository_infrastructure",
+                    },
+                });
+                (
+                    UserContent::ToolResult(ToolResult {
+                        id: call.id,
+                        call_id: call.call_id,
+                        content: OneOrMany::one(ToolResultContent::Text(Text {
+                            text: value.to_string(),
+                        })),
+                    }),
+                    Vec::new(),
+                )
+            }
+        })
+        .await;
+
+        assert_eq!(
+            outcome.halt_current_request,
+            Some(ToolDispatchHaltReason::InvestigationRepositoryInfrastructure)
+        );
+        assert_eq!(executed.lock().unwrap().as_slice(), &["stage-run"]);
+        assert_eq!(results.len(), 3, "every tool call remains provider-paired");
+        for (_, (content, _)) in results.iter().skip(1) {
+            let value = first_tool_result_json(content).expect("synthetic JSON result");
+            assert_eq!(value["blocked_by_stage_run_halt"], true);
+            assert_eq!(
+                value["halt_reason"],
+                "investigation_repository_infrastructure"
+            );
+        }
+    }
+
     #[test]
     fn runtime_control_is_closed_to_stage_run_and_known_reasons() {
         let call = tool_call("stage-run", "stage_run");
@@ -783,5 +850,26 @@ mod tests {
             })),
         });
         assert_eq!(stage_run_halt_reason("stage_run", &lookalike), None);
+
+        let investigation_halt = UserContent::ToolResult(ToolResult {
+            id: "stage-run-investigation".to_string(),
+            call_id: Some("provider-stage-run-investigation".to_string()),
+            content: OneOrMany::one(ToolResultContent::Text(Text {
+                text: serde_json::json!({
+                    "code": "INVESTIGATION_ASSET_ANALYSIS_BLOCKED",
+                    "passed": false,
+                    "provider_dispatched": false,
+                    "runtime_control": {
+                        "kind": "halt_current_request",
+                        "reason": "investigation_repository_infrastructure",
+                    },
+                })
+                .to_string(),
+            })),
+        });
+        assert_eq!(
+            stage_run_halt_reason("stage_run", &investigation_halt),
+            Some(ToolDispatchHaltReason::InvestigationRepositoryInfrastructure)
+        );
     }
 }

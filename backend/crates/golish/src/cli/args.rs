@@ -204,26 +204,6 @@ pub struct Args {
     )]
     pub stage_run_resume_pgdata: Option<PathBuf>,
 
-    /// Apply one explicit, hash/CAS-bound local-operator Campaign authority
-    /// packet before an exact Investigation resume. The packet may target the
-    /// retained ephemeral database or the local application database, but it
-    /// always requires the complete persisted identity and never derives
-    /// authority from `--auto-approve`.
-    #[arg(
-        long,
-        value_name = "JSON",
-        requires_all = [
-            "stage_run_resume",
-            "expect_session",
-            "expect_task",
-            "expect_operation",
-            "expect_org",
-            "expect_stage"
-        ],
-        conflicts_with = "stage_run_test_database"
-    )]
-    pub stage_run_campaign_authority: Option<PathBuf>,
-
     /// Apply one explicit operation/org/exact-candidate scope decision while
     /// crossing Target Intel into active reconnaissance on an exact retained
     /// resume. `--auto-approve` alone never grants this authority.
@@ -319,6 +299,14 @@ pub struct Args {
         hide = true
     )]
     pub stage_run_test_intel_provider_endpoint: Option<url::Url>,
+
+    /// Internal deterministic-Investigation hook: route every model turn to
+    /// one loopback OpenAI-compatible endpoint. Accepted only for an isolated
+    /// fresh ephemeral Investigation run or an Investigation-only stage fork;
+    /// the runtime also disables remote model overrides, MCP, embeddings,
+    /// telemetry, and inherited proxy settings.
+    #[arg(long, value_name = "URL", hide = true)]
+    pub stage_run_test_investigation_llm_endpoint: Option<url::Url>,
 
     /// Keep the temporary Postgres data directory after `--ephemeral-db` exits.
     /// Useful when a failed smoke run needs manual database inspection.
@@ -659,42 +647,6 @@ mod tests {
     }
 
     #[test]
-    fn test_args_campaign_authority_requires_exact_resume_identity() {
-        let args = Args::try_parse_from([
-            "golish",
-            "--stage-run-resume",
-            "stage-run-476558c3-c22a-4009-a82e-17e086a005de",
-            "--stage-run-campaign-authority",
-            "/tmp/campaign-authority.json",
-            "--expect-session",
-            "a15c0b0f-23ff-42f9-b950-7dcaf25de860",
-            "--expect-task",
-            "462b6c9f-2a0d-48af-8ff0-8b5c08416196",
-            "--expect-operation",
-            "462b6c9f-2a0d-48af-8ff0-8b5c08416196",
-            "--expect-org",
-            "0a431390-7726-48e5-b0a8-e692a9070e33",
-            "--expect-stage",
-            "investigation",
-        ])
-        .expect("exact retained resume accepts an explicit Campaign authority packet");
-        assert_eq!(
-            args.stage_run_campaign_authority,
-            Some(PathBuf::from("/tmp/campaign-authority.json"))
-        );
-        assert!(!args.auto_approve);
-
-        assert!(Args::try_parse_from([
-            "golish",
-            "--stage-run-resume",
-            "stage-run-476558c3-c22a-4009-a82e-17e086a005de",
-            "--stage-run-campaign-authority",
-            "/tmp/campaign-authority.json",
-        ])
-        .is_err());
-    }
-
-    #[test]
     fn test_args_retained_pgdata_restart_requires_complete_identity() {
         let complete = Args::try_parse_from([
             "golish",
@@ -795,6 +747,49 @@ mod tests {
                 "fork must reject fresh/resume/scope overrides"
             );
         }
+    }
+
+    #[test]
+    fn scripted_investigation_endpoint_accepts_only_owned_fresh_or_fork_entrypoints() {
+        let args = Args::try_parse_from([
+            "golish",
+            "--stage-run",
+            "--ephemeral-db",
+            "--only",
+            "investigation",
+            "--stage-run-test-investigation-llm-endpoint",
+            "http://127.0.0.1:32124/v1",
+        ])
+        .expect("isolated scripted Investigation endpoint parses");
+        assert_eq!(
+            args.stage_run_test_investigation_llm_endpoint
+                .as_ref()
+                .map(url::Url::as_str),
+            Some("http://127.0.0.1:32124/v1")
+        );
+
+        let fork = Args::try_parse_from([
+            "golish",
+            "--stage-run-fork",
+            "425c7693-99fb-4598-8361-62275c9413b1",
+            "--only",
+            "investigation",
+            "--stage-run-test-investigation-llm-endpoint",
+            "http://127.0.0.1:32124/v1",
+        ])
+        .expect("scripted Investigation stage fork parses");
+        assert!(fork.stage_run_fork.is_some());
+
+        // Clap accepts the hidden value without an execution mode so its
+        // mutually-exclusive fresh/fork shape can be validated in one place
+        // by the runtime before any provider or database work.
+        let detached = Args::try_parse_from([
+            "golish",
+            "--stage-run-test-investigation-llm-endpoint",
+            "http://127.0.0.1:32124/v1",
+        ])
+        .expect("runtime owns the detached-endpoint rejection");
+        assert!(!detached.stage_run && detached.stage_run_fork.is_none());
     }
 
     #[test]

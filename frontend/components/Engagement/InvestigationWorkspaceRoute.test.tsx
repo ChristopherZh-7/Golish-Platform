@@ -9,16 +9,6 @@ import {
   type InvestigationWorkspaceRouteApi,
 } from "./InvestigationWorkspaceRoute";
 
-vi.mock("./PendingPreparedActionPanel", () => ({
-  PendingPreparedActionPanel: ({
-    operationId,
-    campaignId,
-  }: {
-    operationId: string;
-    campaignId: string;
-  }) => <div>{`JIT ${operationId} ${campaignId}`}</div>,
-}));
-
 const identity = {
   operationId: "operation-1",
   stageExecutionId: "execution-1",
@@ -46,7 +36,6 @@ function envelope(changeSeq = 10) {
       gateAuthority: "unified",
       allowLegacyMutation: false,
       campaignWritePolicy: "jit",
-      allowPreparedActionJit: true,
       comparePolicy: "none",
       legacyProjectionPolicy: "read-only",
     },
@@ -75,15 +64,45 @@ function actor(
   };
 }
 
-function summary(changeSeq = 10): InvestigationSummaryView {
+function retainedMainAliasSummary(): InvestigationSummaryView {
+  const retained = summary();
+  const main = retained.mainActor;
+  const analysisPrimary = retained.actorTopology.find(
+    (node) => node.actorKind === "primary" && node.hypothesisRevisionId === null
+  );
+  if (!analysisPrimary) throw new Error("fixture is missing Analysis Primary");
+  Object.assign(analysisPrimary, {
+    organizationId: main.organizationId,
+    workerRunId: main.workerRunId,
+    owningStageRunRequestId: main.owningStageRunRequestId,
+    transcriptRequestId: main.transcriptRequestId,
+    status: "passed",
+  });
+  for (const node of retained.actorTopology) {
+    if (node.hypothesisRevisionId !== null) continue;
+    node.status = "passed";
+    if (node.parentActorTranscriptRequestId === "analysis-primary") {
+      node.parentActorTranscriptRequestId = main.transcriptRequestId;
+    }
+  }
+  retained.controlProjection = {
+    ...retained.controlProjection,
+    investigationRunState: "closed",
+    stopAllowed: false,
+    stopUnavailableReason: "run is closed",
+  };
+  return retained;
+}
+
+function summary(changeSeq = 10, controlChangeSeq = changeSeq): InvestigationSummaryView {
   return {
     envelope: envelope(changeSeq),
     controlProjection: {
       ...identity,
       stageTopologyContract: "unified_investigation_v1",
       investigationRunState: "verifying",
-      investigationRunStateHead: `head-${changeSeq}`,
-      changeSeq,
+      investigationRunStateHead: `head-${controlChangeSeq}`,
+      changeSeq: controlChangeSeq,
       stopEpoch: 0,
       stopAllowed: true,
       stopUnavailableReason: null,
@@ -334,7 +353,10 @@ describe("InvestigationWorkspaceRoute", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Loading exact Investigation projection");
     expect(await screen.findByText("Analysis Primary")).toBeInTheDocument();
     expect(screen.getByText("Bounded read session")).toBeInTheDocument();
-    expect(screen.getByText("Verification Primary")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Bounded read session/ })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Verification Primary")).not.toBeInTheDocument();
 
     expect(routeApi.getSummary).toHaveBeenCalledWith({
       sessionId: "session-1",
@@ -370,13 +392,134 @@ describe("InvestigationWorkspaceRoute", () => {
     expect(screen.getByText("Exact transcript evidence")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /Acme endpoint may expose/ }));
-    expect(screen.queryByText(/JIT operation-1/)).not.toBeInTheDocument();
+    expect(screen.getByText("Verification Primary")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Campaign 1" }));
-    expect(screen.getByText("JIT operation-1 campaign-1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Campaign 1" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   });
 
-  it("treats a monotonic event as a no-sequence bootstrap hint and stops only at the server head", async () => {
+  it("keeps API authority on the AI session while reading live projections from the pane session", async () => {
     const routeApi = api();
+    render(
+      <InvestigationWorkspaceRoute
+        sessionId="ai-session-1"
+        presentationSessionId="session-1"
+        identity={identity}
+        liveRows={useStore.getState().sessions["session-1"].stageRuns?.["request-1"]?.rows ?? []}
+        api={routeApi}
+      />
+    );
+
+    expect(await screen.findByText("Analysis Primary")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Nested worker/ }));
+    expect(screen.getByText("Exact transcript evidence")).toBeInTheDocument();
+    expect(routeApi.getSummary).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "ai-session-1" })
+    );
+
+    act(() => {
+      useStore.getState().setInvestigationRefreshHint("session-1", {
+        ...identity,
+        changeSeq: 12,
+      });
+    });
+    await waitFor(() => expect(routeApi.getSummary).toHaveBeenCalledTimes(2));
+  });
+
+  it("canonicalizes the exact retained Main alias and treats passed workers as terminal", async () => {
+    const routeApi = api();
+    const canonicalHypothesis = hypothesisDetail();
+    canonicalHypothesis.hypothesis.predicateSchema =
+      "typed.verification.license_api_authz_probe_request";
+    canonicalHypothesis.hypothesis.predicateSummary =
+      'typed.verification.license_api_authz_probe_request@1:{"auth_states":["anonymous"]}';
+    vi.mocked(routeApi.getSummary).mockResolvedValue(retainedMainAliasSummary());
+    vi.mocked(routeApi.getHypothesis).mockResolvedValue(canonicalHypothesis);
+    render(
+      <InvestigationWorkspaceRoute
+        sessionId="session-1"
+        identity={identity}
+        liveRows={useStore.getState().sessions["session-1"].stageRuns?.["request-1"]?.rows ?? []}
+        api={routeApi}
+      />
+    );
+
+    const main = await screen.findByRole("button", { name: /View Main transcript/ });
+    expect(screen.queryByRole("button", { name: /View Analysis Primary transcript/ })).not.toBeInTheDocument();
+    expect(screen.getByText("Handled by Main")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /license api authz probe request/i })
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("passed").length).toBeGreaterThan(1);
+    expect(screen.getByText("1. Subtask 1").parentElement).toHaveTextContent("passed");
+    fireEvent.click(main);
+    expect(screen.queryByText(/more than one actor claims this transcript/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop Investigation" })).not.toBeInTheDocument();
+  });
+
+  it("renders ordered compact Agent activity without repeating a machine submit response", async () => {
+    const routeApi = api();
+    useStore.setState((state) => ({
+      activeSubAgents: {
+        ...state.activeSubAgents,
+        "session-1": [
+          {
+            agentId: "agent-activity",
+            agentName: "Nested worker",
+            parentRequestId: "nested-worker",
+            task: "Inspect endpoint",
+            depth: 2,
+            status: "completed",
+            toolCalls: [
+              {
+                id: "plan-1",
+                name: "update_plan",
+                args: { plan: [{ step: "Verify boundary", status: "completed" }] },
+                status: "completed",
+                result: { ok: true },
+                startedAt: "2026-08-08T00:00:00Z",
+              },
+              {
+                id: "submit-1",
+                name: "submit_result",
+                args: { result: { schema_version: 1 } },
+                status: "completed",
+                result: { accepted_output_sha256: "machine-only-secret" },
+                startedAt: "2026-08-08T00:00:01Z",
+              },
+            ],
+            entries: [
+              { kind: "text", text: "Readable conclusion" },
+              { kind: "tool_call", toolCallId: "plan-1" },
+              { kind: "tool_call", toolCallId: "submit-1" },
+            ],
+            response: '{"accepted_output_sha256":"machine-only-secret"}',
+            startedAt: "2026-08-08T00:00:00Z",
+          },
+        ],
+      },
+    }));
+    render(
+      <InvestigationWorkspaceRoute
+        sessionId="session-1"
+        identity={identity}
+        liveRows={useStore.getState().sessions["session-1"].stageRuns?.["request-1"]?.rows ?? []}
+        api={routeApi}
+      />
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Nested worker/ }));
+    expect(screen.getByText("Readable conclusion")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Controller plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /submit result/i })).toBeInTheDocument();
+    expect(screen.queryByText(/machine-only-secret/)).not.toBeInTheDocument();
+  });
+
+  it("keeps projection and run-control sequences distinct and stops only at the server head", async () => {
+    const routeApi = api();
+    vi.mocked(routeApi.getSummary).mockResolvedValue(summary(10, 2));
     render(
       <InvestigationWorkspaceRoute
         sessionId="session-1"
@@ -392,8 +535,8 @@ describe("InvestigationWorkspaceRoute", () => {
     expect(routeApi.requestStop).toHaveBeenCalledWith({
       sessionId: "session-1",
       ...identity,
-      expectedInvestigationRunStateHead: "head-10",
-      expectedChangeSeq: 10,
+      expectedInvestigationRunStateHead: "head-2",
+      expectedChangeSeq: 2,
       idempotencyKey: expect.any(String),
     });
 
@@ -414,15 +557,8 @@ describe("InvestigationWorkspaceRoute", () => {
     });
   });
 
-  it("keeps campaign selection view-only when the exact mode policy disables JIT", async () => {
+  it("keeps campaign selection view-only", async () => {
     const routeApi = api();
-    vi.mocked(routeApi.getSummary).mockResolvedValue({
-      ...summary(),
-      envelope: {
-        ...summary().envelope,
-        modePolicy: { ...summary().envelope.modePolicy, allowPreparedActionJit: false },
-      },
-    });
     render(
       <InvestigationWorkspaceRoute
         sessionId="session-1"
@@ -435,7 +571,10 @@ describe("InvestigationWorkspaceRoute", () => {
     fireEvent.click(screen.getByRole("button", { name: /Acme endpoint may expose/ }));
     fireEvent.click(screen.getByRole("button", { name: "Campaign 1" }));
 
-    expect(screen.queryByText(/JIT operation-1/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Campaign 1" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   });
 
   it("recovers a stale stop with one no-sequence bootstrap and never retries against latest", async () => {

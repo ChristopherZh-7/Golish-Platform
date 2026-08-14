@@ -22,7 +22,7 @@
 | 域文件（18 个） | 说明 |
 |---|---|
 | `ai` / `pentest` / `vuln_intel` / `findings` / `evidence` / `methodology`（实为各处） | agent/pentest/vuln 命令 |
-| `attack` | Candidate review list/decide/resume 与 Attempt list 四个 durable 命令 |
+| `attack` | Candidate review list/decide/resume、Attempt list、Verification queue read与recovery resolve；不再导出PreparedAction人工review/decision命令 |
 | `reporting` | DB-authoritative build/read/history/artifact 与 explicit final publication 命令 |
 | `asset_intel` / `intel_providers` / `integrations` / `organization_recon` | recon 命令 |
 | `vault` / `wiki` / `sidecar` / `settings` / `indexer` / `mcp` / `git_pty` / `workspace` | 平台/工具命令 |

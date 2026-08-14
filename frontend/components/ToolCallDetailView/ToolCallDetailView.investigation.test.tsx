@@ -5,15 +5,29 @@ import { resolveInvestigationStageRun, ToolCallDetailView } from "./ToolCallDeta
 
 const REQUEST_ID = "stage-run-investigation-1";
 const SESSION_ID = "investigation-tool-detail-session";
+const CONVERSATION_ID = "investigation-conversation";
+const AI_SESSION_ID = "investigation-ai-session";
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
 }));
 
 vi.mock("@/components/Engagement/InvestigationWorkspaceRoute", () => ({
-  InvestigationWorkspaceRoute: ({ identity }: { identity: { stageExecutionId: string } }) => (
+  InvestigationWorkspaceRoute: ({
+    sessionId,
+    presentationSessionId,
+    identity,
+    displayStageRunRequestId,
+  }: {
+    sessionId: string;
+    presentationSessionId?: string;
+    identity: { stageExecutionId: string; stageRunRequestId: string };
+    displayStageRunRequestId?: string | null;
+  }) => (
     <div data-testid="investigation-workspace-view">
-      Exact Investigation route · {identity.stageExecutionId}
+      Exact Investigation route · {identity.stageExecutionId} · {sessionId} ·{" "}
+      {identity.stageRunRequestId} · pane:{presentationSessionId} · selected:
+      {displayStageRunRequestId}
     </div>
   ),
 }));
@@ -48,8 +62,9 @@ describe("resolveInvestigationStageRun", () => {
       identity: {
         operationId: "operation-1",
         stageExecutionId: "execution-1",
-        stageRunRequestId: REQUEST_ID,
+        stageRunRequestId: "stage_run:execution-1",
       },
+      selectedStageRunRequestId: REQUEST_ID,
     });
   });
 
@@ -76,6 +91,7 @@ describe("resolveInvestigationStageRun", () => {
         stageExecutionId: null,
         stageRunRequestId: REQUEST_ID,
       },
+      selectedStageRunRequestId: REQUEST_ID,
     });
   });
 
@@ -165,6 +181,10 @@ describe("ToolCallDetailView Investigation production route", () => {
       timelines: {},
       activeSubAgents: {},
       backgroundJobs: {},
+      conversations: {},
+      conversationOrder: [],
+      conversationTerminals: {},
+      activeConversationId: null,
     });
   });
 
@@ -227,6 +247,20 @@ describe("ToolCallDetailView Investigation production route", () => {
         : {},
       activeSubAgents: {},
       backgroundJobs: {},
+      conversations: {
+        [CONVERSATION_ID]: {
+          id: CONVERSATION_ID,
+          title: "Investigation",
+          messages: [],
+          createdAt: 0,
+          aiSessionId: AI_SESSION_ID,
+          aiInitialized: true,
+          isStreaming: false,
+        },
+      },
+      conversationOrder: [CONVERSATION_ID],
+      conversationTerminals: { [CONVERSATION_ID]: [SESSION_ID] },
+      activeConversationId: CONVERSATION_ID,
     });
   }
 
@@ -249,8 +283,78 @@ describe("ToolCallDetailView Investigation production route", () => {
     render(<ToolCallDetailView sessionId={SESSION_ID} />);
 
     expect(screen.getByTestId("investigation-workspace-view")).toBeInTheDocument();
-    expect(screen.getByText("Exact Investigation route · execution-1")).toBeInTheDocument();
+    expect(screen.getByTestId("investigation-workspace-view")).toHaveTextContent(
+      "Exact Investigation route · execution-1"
+    );
     expect(useStore.getState().sessions[SESSION_ID].detailViewMode).toBe("tool-detail");
+  });
+
+  it("uses the owning AI session and stable execution authority for exact reads", () => {
+    installRun({
+      stageExecutionId: "execution-1",
+      execution: {
+        requestId: REQUEST_ID,
+        toolName: "stage_run",
+        args: {
+          stage: "investigation",
+          operation_id: "operation-1",
+          stage_execution_id: "execution-1",
+        },
+        status: "running",
+        startedAt: "2026-08-02T00:00:00Z",
+      },
+    });
+
+    render(<ToolCallDetailView sessionId={SESSION_ID} />);
+
+    expect(screen.getByTestId("investigation-workspace-view")).toHaveTextContent(
+      `Exact Investigation route · execution-1 · ${AI_SESSION_ID} · stage_run:execution-1 · pane:${SESSION_ID} · selected:${REQUEST_ID}`
+    );
+  });
+
+  it("fails closed when a terminal has no owning conversation AI session", () => {
+    installRun({
+      stageExecutionId: "execution-1",
+      execution: {
+        requestId: REQUEST_ID,
+        toolName: "stage_run",
+        args: {
+          stage: "investigation",
+          operation_id: "operation-1",
+          stage_execution_id: "execution-1",
+        },
+        status: "running",
+        startedAt: "2026-08-02T00:00:00Z",
+      },
+    });
+    useStore.setState({ conversationTerminals: {} });
+
+    render(<ToolCallDetailView sessionId={SESSION_ID} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Investigation AI session identity is unavailable"
+    );
+    expect(screen.queryByTestId("investigation-workspace-view")).not.toBeInTheDocument();
+  });
+
+  it("routes a running outer call from its exact first progress row when args only contain orgs", () => {
+    installRun({
+      stageExecutionId: "execution-1",
+      execution: {
+        requestId: REQUEST_ID,
+        toolName: "stage_run",
+        args: { orgs: [{ organization_id: "org-1" }] },
+        status: "running",
+        startedAt: "2026-08-02T00:00:00Z",
+      },
+    });
+
+    render(<ToolCallDetailView sessionId={SESSION_ID} />);
+
+    expect(screen.getByTestId("investigation-workspace-view")).toBeInTheDocument();
+    expect(screen.getByTestId("investigation-workspace-view")).toHaveTextContent(
+      "Exact Investigation route · execution-1"
+    );
   });
 
   it("uses the same workspace for a live-only actor and never guesses execution", () => {

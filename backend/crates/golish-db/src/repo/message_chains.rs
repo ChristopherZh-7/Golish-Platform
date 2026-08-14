@@ -193,6 +193,22 @@ const LIST_EXACT_RESUME_BOUND_CHAINS_SQL: &str = r#"SELECT worker.id AS worker_r
           AND chain.session_id=$2
           AND chain.task_id=operation.operation_id
           AND chain.agent=(CASE
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM investigation_asset_primary_current_authorities asset_schedule
+                     WHERE asset_schedule.operation_id=worker.operation_id
+                       AND asset_schedule.stage_execution_id=worker.stage_execution_id
+                       AND asset_schedule.stage_run_unit_id=worker.stage_run_unit_id
+                       AND (
+                            (asset_schedule.primary_work_item_id=worker.work_item_id
+                             AND asset_schedule.primary_worker_run_id=worker.id)
+                            OR (
+                                asset_schedule.execution_rearm_receipt_id IS NOT NULL
+                                AND asset_schedule.authority_primary_work_item_id=worker.work_item_id
+                                AND asset_schedule.authority_primary_worker_run_id=worker.id
+                            )
+                       )
+                ) THEN 'primary'::agent_type
                 WHEN worker.specialist='reporter' THEN 'reporter'::agent_type
                 WHEN worker.specialist IN (
                     'company_stage_controller','generic_intel_worker','intel_goal_reviewer',
@@ -205,6 +221,47 @@ const LIST_EXACT_RESUME_BOUND_CHAINS_SQL: &str = r#"SELECT worker.id AS worker_r
                 ELSE NULL
               END)
         WHERE operation.operation_id=$1
+          AND NOT (
+                worker.message_chain_id IS NULL
+                AND worker.status IN ('passed','failed','superseded','exhausted')
+                AND worker.terminal_at IS NOT NULL
+                AND worker.lease_token IS NULL
+                AND worker.active_tool_call_id IS NULL
+                AND (
+                    EXISTS (
+                        SELECT 1
+                          FROM investigation_asset_primary_schedules fixed
+                          JOIN investigation_asset_primary_current_authorities current_primary
+                            ON current_primary.asset_lane_id=fixed.asset_lane_id
+                           AND current_primary.operation_id=fixed.operation_id
+                           AND current_primary.stage_execution_id=fixed.stage_execution_id
+                           AND current_primary.stage_run_unit_id=fixed.stage_run_unit_id
+                           AND current_primary.primary_message_chain_id=fixed.primary_message_chain_id
+                         WHERE fixed.schedule_contract='fixed_roster_v1'
+                           AND fixed.status='applied'
+                           AND (
+                                (fixed.primary_work_item_id=worker.work_item_id
+                                 AND fixed.primary_worker_run_id=worker.id)
+                                OR worker.work_item_id IN (
+                                    fixed.browser_work_item_id,
+                                    fixed.researcher_work_item_id,
+                                    fixed.pentester_work_item_id,
+                                    fixed.adviser_work_item_id
+                                )
+                           )
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                          FROM investigation_asset_primary_current_authorities current_primary
+                         WHERE current_primary.operation_id=worker.operation_id
+                           AND current_primary.stage_execution_id=worker.stage_execution_id
+                           AND current_primary.stage_run_unit_id=worker.stage_run_unit_id
+                           AND current_primary.execution_rearm_receipt_id IS NOT NULL
+                           AND current_primary.authority_primary_work_item_id=worker.work_item_id
+                           AND current_primary.authority_primary_worker_run_id=worker.id
+                    )
+                )
+          )
      ORDER BY worker.id"#;
 
 /// Load every current-stage worker's exact session/task/coarse-agent chain
@@ -228,6 +285,24 @@ mod exact_resume_tests {
     use super::LIST_EXACT_RESUME_BOUND_CHAINS_SQL;
 
     #[test]
+    fn exact_resume_chain_query_uses_asset_schedule_to_identify_primary() {
+        for required in [
+            "investigation_asset_primary_current_authorities asset_schedule",
+            "asset_schedule.primary_work_item_id=worker.work_item_id",
+            "asset_schedule.primary_worker_run_id=worker.id",
+            "asset_schedule.execution_rearm_receipt_id IS NOT NULL",
+            "asset_schedule.authority_primary_work_item_id=worker.work_item_id",
+            "asset_schedule.authority_primary_worker_run_id=worker.id",
+            "THEN 'primary'::agent_type",
+        ] {
+            assert!(
+                LIST_EXACT_RESUME_BOUND_CHAINS_SQL.contains(required),
+                "missing {required}: {LIST_EXACT_RESUME_BOUND_CHAINS_SQL}"
+            );
+        }
+    }
+
+    #[test]
     fn exact_resume_chain_query_admits_every_server_enumeration_role() {
         for role in [
             "content_mapper",
@@ -240,6 +315,28 @@ mod exact_resume_tests {
             assert!(
                 LIST_EXACT_RESUME_BOUND_CHAINS_SQL.contains(&format!("'{role}'")),
                 "missing coarse-agent mapping for {role}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_resume_chain_query_excludes_only_receipt_backed_asset_predecessors() {
+        for required in [
+            "worker.message_chain_id IS NULL",
+            "worker.status IN ('passed','failed','superseded','exhausted')",
+            "worker.terminal_at IS NOT NULL",
+            "worker.lease_token IS NULL",
+            "worker.active_tool_call_id IS NULL",
+            "fixed.schedule_contract='fixed_roster_v1'",
+            "JOIN investigation_asset_primary_current_authorities current_primary",
+            "fixed.primary_worker_run_id=worker.id",
+            "fixed.browser_work_item_id",
+            "current_primary.execution_rearm_receipt_id IS NOT NULL",
+            "current_primary.authority_primary_worker_run_id=worker.id",
+        ] {
+            assert!(
+                LIST_EXACT_RESUME_BOUND_CHAINS_SQL.contains(required),
+                "missing exact audit-predecessor fence {required}: {LIST_EXACT_RESUME_BOUND_CHAINS_SQL}"
             );
         }
     }

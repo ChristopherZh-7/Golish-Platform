@@ -47,7 +47,6 @@ pub mod stage_refiner;
 mod subtask_phases;
 pub mod tool_truth_revalidation;
 mod types;
-pub mod verification_campaign;
 
 pub use continuity::build_existing_db_continuity_plan;
 pub use harness_backfill::{backfill_harness_stage, infer_harness_stage};

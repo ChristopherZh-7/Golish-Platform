@@ -170,8 +170,6 @@ fn install_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri
         attack_list_candidate_attempts,
         attack_list_verification_queue,
         attack_resolve_candidate_recovery,
-        attack_list_pending_prepared_actions,
-        attack_decide_prepared_action,
         // ── cleanup (trusted obligations / residual waiver) ─────
         cleanup_list_obligations,
         cleanup_get_closeout_gate,

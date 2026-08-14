@@ -27,7 +27,6 @@ import {
   type InvestigationStageIdentity,
   InvestigationWorkspaceView,
 } from "@/components/Engagement/InvestigationWorkspaceView";
-import { PendingPreparedActionPanel } from "@/components/Engagement/PendingPreparedActionPanel";
 import { ReportReadModelView } from "@/components/Engagement/ReportReadModelView";
 import {
   isCompanyControllerStageRunRows,
@@ -132,10 +131,15 @@ interface InvestigationResolverRow {
 export type InvestigationStageRunResolution =
   | { kind: "not-investigation" }
   | { kind: "invalid"; message: string }
-  | { kind: "exact"; identity: InvestigationStageIdentity & { stageExecutionId: string } }
+  | {
+      kind: "exact";
+      identity: InvestigationStageIdentity & { stageExecutionId: string };
+      selectedStageRunRequestId: string;
+    }
   | {
       kind: "live-only";
       identity: InvestigationStageIdentity & { stageExecutionId: null };
+      selectedStageRunRequestId: string;
     };
 
 function exactString(record: Record<string, unknown> | null, keys: string[]): string | null {
@@ -217,7 +221,7 @@ export function resolveInvestigationStageRun({
     return { kind: "invalid", message: "Conflicting Investigation execution identity." };
   }
 
-  const stageRunRequestId = uniqueIdentity([
+  const selectedStageRunRequestId = uniqueIdentity([
     selectedRequestId,
     exactString(argsRecord, [
       "stageRunRequestId",
@@ -235,21 +239,31 @@ export function resolveInvestigationStageRun({
       (row) => row.owningStageRunRequestId ?? owningStageRunRequestIdFromActor(row.agentRequestId)
     ),
   ]);
-  if (stageRunRequestId === "conflict") {
+  if (selectedStageRunRequestId === "conflict") {
     return { kind: "invalid", message: "Conflicting Investigation stage_run request identity." };
   }
-  if (!stageRunRequestId) {
+  if (!selectedStageRunRequestId) {
     return { kind: "invalid", message: "Investigation stage_run request identity is unavailable." };
   }
 
   return stageExecutionId
     ? {
         kind: "exact",
-        identity: { operationId, stageExecutionId, stageRunRequestId },
+        identity: {
+          operationId,
+          stageExecutionId,
+          stageRunRequestId: `stage_run:${stageExecutionId}`,
+        },
+        selectedStageRunRequestId,
       }
     : {
         kind: "live-only",
-        identity: { operationId, stageExecutionId: null, stageRunRequestId },
+        identity: {
+          operationId,
+          stageExecutionId: null,
+          stageRunRequestId: selectedStageRunRequestId,
+        },
+        selectedStageRunRequestId,
       };
 }
 
@@ -287,21 +301,6 @@ export function getCandidateStageRunOperationId(
   const operationId = operationIds[0];
   if (!operationId || operationIds.some((candidate) => candidate !== operationId)) return null;
   return operationId;
-}
-
-export function getPreparedActionOperationIdFromRows(
-  rows: readonly { stage?: string; operationId?: string }[]
-): string | null {
-  if (
-    rows.length === 0 ||
-    rows.some((row) => !["attack_candidate", "verification"].includes(row.stage ?? ""))
-  ) {
-    return null;
-  }
-  const operationIds = rows.map((row) => row.operationId?.trim() ?? "");
-  return operationIds[0] && operationIds.every((value) => value === operationIds[0])
-    ? operationIds[0]
-    : null;
 }
 
 export function isCleanupStageRun(toolName: string, args: unknown): boolean {
@@ -718,6 +717,17 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     return sr;
   });
   const candidateReviewHint = useStore((s) => s.sessions[sessionId]?.candidateReviewHint);
+  const investigationReadSessionId = useStore((state) => {
+    const conversationId = Object.entries(state.conversationTerminals).find(([, terminalIds]) =>
+      terminalIds.includes(sessionId)
+    )?.[0];
+    if (conversationId) return state.conversations[conversationId]?.aiSessionId ?? null;
+    return (
+      Object.values(state.conversations).find(
+        (conversation) => conversation.aiSessionId === sessionId
+      )?.aiSessionId ?? null
+    );
+  });
   const investigationResolution = useMemo(
     () =>
       resolveInvestigationStageRun({
@@ -790,10 +800,27 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
         status: row.status,
       }));
     if (investigationResolution.kind === "exact") {
+      if (!investigationReadSessionId) {
+        return (
+          <div className="flex h-full flex-col bg-card">
+            <div className="flex flex-1 items-center justify-center p-6">
+              <div
+                role="alert"
+                className="max-w-lg rounded border border-red-500/30 bg-red-500/[0.06] p-4 text-xs text-red-200"
+              >
+                Investigation AI session identity is unavailable. No terminal session fallback was
+                used.
+              </div>
+            </div>
+          </div>
+        );
+      }
       return (
         <InvestigationWorkspaceRoute
-          sessionId={sessionId}
+          sessionId={investigationReadSessionId}
+          presentationSessionId={sessionId}
           identity={investigationResolution.identity}
+          displayStageRunRequestId={investigationResolution.selectedStageRunRequestId}
           liveRows={stageRun?.rows ?? []}
           onBack={navigateBack}
         />
@@ -825,7 +852,6 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     const candidateStageRunReady = Boolean(
       stageRun && isAttackCandidateStageRunRows(stageRun.rows)
     );
-    const preparedActionOperationId = getPreparedActionOperationIdFromRows(stageRun?.rows ?? []);
     return (
       <div className="h-full flex flex-col bg-card">
         <div className="flex items-center gap-3 px-3 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
@@ -838,8 +864,7 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
             {t("ai.toolDetail.backToTerminal")}
           </button>
         </div>
-        {(companyStageRunReady || candidateStageRunReady || preparedActionOperationId) &&
-        stageRun ? (
+        {(companyStageRunReady || candidateStageRunReady) && stageRun ? (
           <div className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
             <div className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-wider mb-2">
               {candidateStageRunReady ? "Attack Analysts" : "Company Controllers"}
@@ -857,9 +882,6 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
                 agentRequestIdsByWorker={stageTeamAgentRequestIds}
                 focusedAgentRequestId={focusedAgentRequestId}
               />
-            )}
-            {preparedActionOperationId && (
-              <PendingPreparedActionPanel operationId={preparedActionOperationId} />
             )}
           </div>
         ) : (
@@ -924,16 +946,6 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
     execution.result,
     stageRun?.rows ?? []
   );
-  const candidateOperationId = getCandidateStageRunOperationId(
-    execution.toolName,
-    execution.args,
-    execution.result,
-    stageRun?.rows ?? []
-  );
-  const preparedActionOperationId =
-    candidateOperationId ??
-    getPreparedActionOperationIdFromRows(stageRun?.rows ?? []) ??
-    (candidateStageRun ? (candidateReviewHint?.operationId ?? null) : null);
   const companyStageRun = Boolean(
     execution.toolName === "stage_run" && stageRun && isCompanyControllerStageRunRows(stageRun.rows)
   );
@@ -1069,12 +1081,6 @@ export const ToolCallDetailView = memo(function ToolCallDetailView({
               waveRunId={candidateReviewHint.waveRunId}
               refreshVersion={candidateReviewHint.refreshVersion}
             />
-          </div>
-        )}
-
-        {preparedActionOperationId && (
-          <div className="border-b border-border/20 px-4 py-3">
-            <PendingPreparedActionPanel operationId={preparedActionOperationId} />
           </div>
         )}
 

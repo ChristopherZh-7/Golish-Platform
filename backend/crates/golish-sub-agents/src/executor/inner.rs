@@ -41,7 +41,7 @@ use super::response_parsing::{
     dispatch_tool_calls, StageStallGuard, SubmitRepairModeUpdate, STAGE_STALL_THRESHOLD,
 };
 use super::stream_processing::process_llm_stream;
-use super::tool_setup::{build_tool_definitions, validate_closed_candidate_analysis_definition};
+use super::tool_setup::{build_tool_definitions, validate_static_specialist_definition};
 use super::CheckpointedChainId;
 
 const MAX_BOUND_STAGE_SUBMIT_REPROMPTS: usize = 2;
@@ -317,7 +317,7 @@ where
     P: ToolProvider,
 {
     let agent_id = &agent_def.id;
-    validate_closed_candidate_analysis_definition(agent_def)?;
+    validate_static_specialist_definition(agent_def)?;
 
     let transcript_writer: Option<Arc<SubAgentTranscriptWriter>> = if let (
         Some(base_dir),
@@ -1731,6 +1731,7 @@ mod tests {
             target_intel_review: None,
             stage_team_output_schema: None,
             terminal_execution: None,
+            investigation_actor_contract: None,
             chain_id: Uuid::new_v4(),
             session_id: persistence_session_id,
             agent_type: "test-agent".to_string(),

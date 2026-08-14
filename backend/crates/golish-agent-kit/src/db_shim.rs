@@ -358,6 +358,13 @@ pub mod wiki_kb {
         repo.wiki_search_by_tag(tag, limit).await
     }
 
+    pub async fn get_page(
+        repo: &dyn DbRepoProvider,
+        path: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        repo.wiki_get_page(path).await
+    }
+
     pub async fn list_cves_with_pocs(
         repo: &dyn DbRepoProvider,
     ) -> anyhow::Result<serde_json::Value> {

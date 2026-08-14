@@ -10,7 +10,6 @@
 //!
 //! See `docs/design/2026-06-06-headless-single-stage-runner.md`.
 
-mod campaign_authority;
 pub(crate) mod fleet;
 pub(crate) mod runtime_v2;
 /// Stage-agnostic per-org scheduling kernel (K-controlled concurrency, resume
@@ -228,23 +227,41 @@ const REPAIR_GRAPH_FLOW_SQL: &str = r#"UPDATE operation_state
          )
          AND state_blob -> 'graph_flow' IS NULL"#;
 
-const REPAIR_REAPED_TASK_SQL: &str = r#"UPDATE tasks
-       SET status = 'waiting', result = NULL, updated_at = NOW()
-       WHERE id = $1
-         AND session_id = $2
-         AND status = 'failed'
-         AND result = $3
-         AND updated_at = $4
-         AND EXISTS (
-             SELECT 1 FROM operation_state os
-             WHERE os.operation_id = tasks.id
-               AND os.operation_id = $1
-               AND os.profile = $5
-               AND os.current_stage = $6
-               AND os.engagement_org_id IS NOT DISTINCT FROM $7
-               AND os.superseded_by IS NULL
-               AND os.state_blob = $8
-         )"#;
+const REPAIR_REAPED_TASK_SQL: &str = r#"WITH repaired_task AS (
+       UPDATE tasks
+          SET status = 'waiting', result = NULL, updated_at = NOW()
+        WHERE id = $1
+          AND session_id = $2
+          AND status = 'failed'
+          AND result = $3
+          AND updated_at = $4
+          AND EXISTS (
+              SELECT 1 FROM operation_state os
+               WHERE os.operation_id = tasks.id
+                 AND os.operation_id = $1
+                 AND os.profile = $5
+                 AND os.current_stage = $6
+                 AND os.engagement_org_id IS NOT DISTINCT FROM $7
+                 AND os.superseded_by IS NULL
+                 AND os.state_blob = $8
+          )
+       RETURNING id
+     ), latest_failed_turn AS (
+       SELECT turn.id,turn.operation_id,turn.ordinal,turn.trigger_input
+         FROM operation_turns turn
+         JOIN repaired_task task ON task.id=turn.operation_id
+        WHERE turn.status='failed' AND turn.terminal_at IS NOT NULL
+          AND turn.ordinal=(SELECT MAX(candidate.ordinal)
+                              FROM operation_turns candidate
+                             WHERE candidate.operation_id=turn.operation_id)
+          AND NOT EXISTS(SELECT 1 FROM operation_turns open_turn
+                          WHERE open_turn.operation_id=turn.operation_id
+                            AND open_turn.status IN ('running','waiting'))
+     )
+     INSERT INTO operation_turns(id,operation_id,ordinal,trigger_input,status)
+     SELECT uuid_generate_v5(id,'stage-run-reaped-task-repair-v1'),operation_id,
+            ordinal+1,trigger_input,'waiting'
+       FROM latest_failed_turn"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ResumeSelector {
@@ -611,10 +628,17 @@ fn validate_resume_candidate(candidate: &ResumeCandidate) -> Result<ValidatedRes
                 .relational_v2
                 .as_ref()
                 .expect("relational authority selected only when present");
-            anyhow::ensure!(
-                candidate.engagement_org_id == Some(relational.organization_id),
-                "resume refused: relational scope root does not equal operation engagement organization"
-            );
+            if stage == StageKind::Scoping && candidate.engagement_org_id.is_none() {
+                anyhow::ensure!(
+                    candidate.expectations.organization_id == Some(relational.organization_id),
+                    "resume refused: pre-freeze Scoping authority requires the exact expected organization"
+                );
+            } else {
+                anyhow::ensure!(
+                    candidate.engagement_org_id == Some(relational.organization_id),
+                    "resume refused: relational scope root does not equal operation engagement organization"
+                );
+            }
             relational.organization_id
         }
     };
@@ -1273,8 +1297,14 @@ async fn resolve_stage_run_resume_target(
     use golish_agent_kit::runtime_memory::RuntimeMemoryContract;
     let relational_v2 = match contract {
         RuntimeMemoryContract::DualWriteV2Preferred => {
-            match runtime_v2::load_relational_resume_authority(pool, session.id, &operation, stage)
-                .await
+            match runtime_v2::load_relational_resume_authority(
+                pool,
+                session.id,
+                &operation,
+                stage,
+                expectations.organization_id,
+            )
+            .await
             {
                 Ok(authority) => Some(authority),
                 Err(error)
@@ -1295,9 +1325,15 @@ async fn resolve_stage_run_resume_target(
             }
         }
         RuntimeMemoryContract::V2Only => Some(
-            runtime_v2::load_relational_resume_authority(pool, session.id, &operation, stage)
-                .await
-                .context("resume refused: incomplete V2-only relational runtime authority")?,
+            runtime_v2::load_relational_resume_authority(
+                pool,
+                session.id,
+                &operation,
+                stage,
+                expectations.organization_id,
+            )
+            .await
+            .context("resume refused: incomplete V2-only relational runtime authority")?,
         ),
         RuntimeMemoryContract::LegacyV1 | RuntimeMemoryContract::DualWriteLegacyRead => None,
     };
@@ -1513,6 +1549,57 @@ async fn repair_reaped_task(
     anyhow::ensure!(
         result.rows_affected() == 1,
         "resume refused: reaped task changed before exact repair claim completed"
+    );
+    Ok(())
+}
+
+async fn ensure_reaped_task_open_turn(
+    claim: &mut StageRunResumeClaim,
+    target: &ValidatedResumeTarget,
+) -> Result<()> {
+    let restored: bool = sqlx::query_scalar(
+        r#"WITH latest_failed_turn AS (
+               SELECT turn.id,turn.operation_id,turn.ordinal,turn.trigger_input
+                 FROM operation_turns turn
+                 JOIN tasks task ON task.id=turn.operation_id
+                 JOIN operation_state operation ON operation.operation_id=task.id
+                WHERE task.id=$1 AND task.session_id=$2
+                  AND task.status='waiting' AND task.result IS NULL
+                  AND operation.profile=$3 AND operation.current_stage=$4
+                  AND operation.engagement_org_id IS NOT DISTINCT FROM $5
+                  AND operation.superseded_by IS NULL AND operation.state_blob=$6
+                  AND turn.status='failed' AND turn.terminal_at IS NOT NULL
+                  AND turn.ordinal=(SELECT MAX(candidate.ordinal)
+                                      FROM operation_turns candidate
+                                     WHERE candidate.operation_id=turn.operation_id)
+                  AND NOT EXISTS(SELECT 1 FROM operation_turns open_turn
+                                  WHERE open_turn.operation_id=turn.operation_id
+                                    AND open_turn.status IN ('running','waiting'))
+           ), inserted AS (
+               INSERT INTO operation_turns(id,operation_id,ordinal,trigger_input,status)
+               SELECT uuid_generate_v5(id,'stage-run-reaped-task-repair-v1'),operation_id,
+                      ordinal+1,trigger_input,'waiting'
+                 FROM latest_failed_turn
+               ON CONFLICT (operation_id,ordinal) DO NOTHING
+               RETURNING id
+           )
+           SELECT EXISTS(SELECT 1 FROM inserted)
+               OR EXISTS(SELECT 1 FROM operation_turns open_turn
+                           WHERE open_turn.operation_id=$1
+                             AND open_turn.status IN ('running','waiting'))"#,
+    )
+    .bind(target.operation_id)
+    .bind(target.session_id)
+    .bind(&target.profile)
+    .bind(target.stage.as_str())
+    .bind(target.organization_id)
+    .bind(&target.state_blob)
+    .fetch_one(claim.connection_mut()?)
+    .await
+    .context("restore exact startup-reaped operation Turn")?;
+    anyhow::ensure!(
+        restored,
+        "resume refused: repaired task has no exact failed Turn to continue"
     );
     Ok(())
 }
@@ -2265,7 +2352,9 @@ async fn restart_exhausted_test_stage_runtime(
                     },
                     stage_team_plan_id: plan_id,
                     leader_work_item_id: item_id,
+                    derive_terminal_leader_fence: false,
                     expected_attempt_ordinal: 3,
+                    expected_anonymous_attempt_ordinal: 2,
                 },
             )
             .await
@@ -2732,8 +2821,55 @@ async fn bootstrap_ephemeral_joint_rollout(
     Ok(())
 }
 
+fn deterministic_investigation_settings(
+    endpoint: &url::Url,
+) -> Result<golish_settings::GolishSettings> {
+    let loopback_host = match endpoint.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        None => false,
+    };
+    anyhow::ensure!(
+        endpoint.scheme() == "http"
+            && loopback_host
+            && endpoint.username().is_empty()
+            && endpoint.password().is_none()
+            && endpoint.query().is_none()
+            && endpoint.fragment().is_none(),
+        "deterministic Investigation LLM endpoint must be a credential-free loopback HTTP URL"
+    );
+
+    // Start from defaults instead of the user's loaded settings. This removes
+    // remote provider credentials, MCP settings, telemetry, embeddings and
+    // inherited proxy configuration from the isolated process before any
+    // application service or model client is constructed.
+    let mut settings = golish_settings::GolishSettings::default();
+    settings.ai.default_provider = golish_settings::schema::AiProvider::Deepseek;
+    settings.ai.default_model = "golish-investigation-scripted-v1".to_string();
+    settings.ai.deepseek.api_key = Some("local-scripted-fixture".to_string());
+    settings.ai.deepseek.base_url = Some(endpoint.as_str().trim_end_matches('/').to_string());
+    settings.ai.sub_agent_models.clear();
+    settings.ai.model_overrides.clear();
+    settings.ai.summarizer_model = None;
+    settings.ai.research_provider = None;
+    settings.ai.research_model = None;
+    settings.context.enabled = false;
+    settings.telemetry.langfuse.enabled = false;
+    settings.mcp_servers.clear();
+    settings.network = golish_settings::schema::NetworkSettings::default();
+    settings.api_keys = golish_settings::schema::ApiKeysSettings::default();
+    Ok(settings)
+}
+
 /// Headless entry point for `golish --stage-run`.
-pub async fn run(args: Args) -> Result<()> {
+pub async fn run(mut args: Args) -> Result<()> {
+    if args.stage_run_test_investigation_llm_endpoint.is_some() {
+        anyhow::ensure!(
+            (args.stage_run && args.ephemeral_db) || args.stage_run_fork.is_some(),
+            "deterministic Investigation LLM endpoint requires an isolated ephemeral stage-run or stage fork"
+        );
+    }
     if args.stage_run_resume.is_some() {
         return run_resume(args).await;
     }
@@ -2768,7 +2904,28 @@ pub async fn run(args: Args) -> Result<()> {
             .context("init settings manager")?,
     );
     settings_manager.ensure_settings_file().await.ok();
-    let settings = settings_manager.get().await;
+    let settings = if let Some(endpoint) = args.stage_run_test_investigation_llm_endpoint.as_ref() {
+        anyhow::ensure!(
+            entry_stage == StageKind::Investigation
+                && to_stage == StageKind::Investigation
+                && allowlist.len() == 1,
+            "deterministic Investigation LLM endpoint is restricted to --only investigation"
+        );
+        let settings = deterministic_investigation_settings(endpoint)?;
+        settings_manager
+            .replace_process_cache(settings.clone())
+            .await;
+        args.provider = Some("deepseek".to_string());
+        args.model = Some(settings.ai.default_model.clone());
+        args.api_key = Some("local-scripted-fixture".to_string());
+        eprintln!(
+            "[stage-run] deterministic Investigation model endpoint installed: {}",
+            endpoint
+        );
+        settings
+    } else {
+        settings_manager.get().await
+    };
     golish_settings::apply_proxy_env(&settings);
     init_tracing_best_effort(&settings, args.verbose);
 
@@ -2961,6 +3118,13 @@ pub async fn run(args: Args) -> Result<()> {
     };
 
     crate::ai::commands::configure_bridge(&mut bridge, &agent_state, &session_id, None).await;
+    if args.stage_run_test_investigation_llm_endpoint.is_some() {
+        // Even if a DB prompt-template refresh races with this point and
+        // preserves stale per-agent override metadata, execution has no
+        // alternate client factory and therefore remains on the loopback main
+        // client.
+        bridge.clear_model_factory();
+    }
 
     // Persist this run's transcript exactly where the GUI / `--replay` look.
     let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace));
@@ -3316,7 +3480,28 @@ async fn run_fork(mut args: Args) -> Result<()> {
             .context("init settings manager")?,
     );
     settings_manager.ensure_settings_file().await.ok();
-    let settings = settings_manager.get().await;
+    let settings = if let Some(endpoint) = args.stage_run_test_investigation_llm_endpoint.as_ref() {
+        anyhow::ensure!(
+            args.only.as_deref() == Some("investigation")
+                && args.from.is_none()
+                && args.to.is_none(),
+            "deterministic Investigation LLM endpoint is restricted to an Investigation-only stage fork"
+        );
+        let settings = deterministic_investigation_settings(endpoint)?;
+        settings_manager
+            .replace_process_cache(settings.clone())
+            .await;
+        args.provider = Some("deepseek".to_string());
+        args.model = Some(settings.ai.default_model.clone());
+        args.api_key = Some("local-scripted-fixture".to_string());
+        eprintln!(
+            "[stage-run-fork] deterministic Investigation model endpoint installed: {}",
+            endpoint
+        );
+        settings
+    } else {
+        settings_manager.get().await
+    };
     golish_settings::apply_proxy_env(&settings);
     init_tracing_best_effort(&settings, args.verbose);
 
@@ -3412,6 +3597,9 @@ async fn run_fork(mut args: Args) -> Result<()> {
         .await
         .context("build stage fork agent bridge")?;
         crate::ai::commands::configure_bridge(&mut bridge, &agent_state, &session_id, None).await;
+        if args.stage_run_test_investigation_llm_endpoint.is_some() {
+            bridge.clear_model_factory();
+        }
 
         let transcripts_dir = golish_events::op_trace::resolve_transcript_base(Some(&workspace));
         golish_events::op_trace::set_active_transcript_base(transcripts_dir.clone());
@@ -3712,6 +3900,9 @@ async fn run_resume(mut args: Args) -> Result<()> {
         if initial.needs_task_repair {
             repair_reaped_task(&mut claim, &initial).await?;
         }
+        if expectations.repair_reaped_task {
+            ensure_reaped_task_open_turn(&mut claim, &initial).await?;
+        }
         if initial.needs_graph_repair {
             repair_missing_graph_flow(&mut claim, &initial).await?;
         }
@@ -3767,19 +3958,6 @@ async fn run_resume(mut args: Args) -> Result<()> {
             } else {
                 None
             };
-
-        if let Some(packet_path) = args.stage_run_campaign_authority.as_deref() {
-            anyhow::ensure!(
-                target.stage == StageKind::Investigation,
-                "Campaign authority packets are accepted only while resuming Investigation"
-            );
-            campaign_authority::apply_exact_resume_campaign_authority(
-                &db_pool,
-                packet_path,
-                target.operation_id,
-            )
-            .await?;
-        }
 
         eprintln!(
             "[stage-run-resume] session={} db_session={} operation={} org={} profile={} topology={} stage={} to={}",
@@ -4293,16 +4471,60 @@ async fn immutable_stage_fork_target_authority(
     let frozen_targets =
         golish_db::repo::operation_stage_forks::list_targets(pool, target.operation_id).await?;
     anyhow::ensure!(
-        frozen_targets.len() == fork.expected_target_count as usize
-            && frozen_targets.iter().all(|row| {
-                row.operation_id == target.operation_id
-                    && row.scope_snapshot_id == fork.target_scope_snapshot_id
-                    && row.target_scope_at_fork.trim().eq_ignore_ascii_case("in")
-                    && !row.canonical_identity_sha256.trim().is_empty()
-            }),
+        immutable_stage_fork_target_manifest_is_complete(&fork, &frozen_targets),
         "resume refused: immutable stage-fork target manifest is incomplete or inconsistent"
     );
     Ok(true)
+}
+
+fn immutable_stage_fork_target_manifest_is_complete(
+    fork: &golish_db::repo::operation_stage_forks::OperationStageForkRow,
+    frozen_targets: &[golish_db::repo::operation_stage_forks::OperationStageForkTargetRow],
+) -> bool {
+    let Some(manifest_targets) = fork
+        .manifest
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    if fork.expected_target_count <= 0
+        || frozen_targets.len() != fork.expected_target_count as usize
+        || manifest_targets.len() != frozen_targets.len()
+    {
+        return false;
+    }
+
+    let mut saw_in_scope = false;
+    let mut ordinals = std::collections::HashSet::new();
+    frozen_targets.iter().all(|row| {
+        let scope = row.target_scope_at_fork.trim().to_ascii_lowercase();
+        saw_in_scope |= scope == "in";
+        row.operation_id == fork.operation_id
+            && row.scope_snapshot_id == fork.target_scope_snapshot_id
+            && matches!(scope.as_str(), "in" | "out")
+            && !row.canonical_identity_sha256.trim().is_empty()
+            && row.ordinal >= 0
+            && ordinals.insert(row.ordinal)
+            && manifest_targets.iter().any(|member| {
+                member.get("id").and_then(serde_json::Value::as_str)
+                    == Some(row.id.to_string().as_str())
+                    && member.get("ordinal").and_then(serde_json::Value::as_i64)
+                        == Some(i64::from(row.ordinal))
+                    && member
+                        .get("live_target_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(row.live_target_id.to_string().as_str())
+                    && member
+                        .get("organization_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(row.organization_id.to_string().as_str())
+                    && member
+                        .get("canonical_identity_sha256")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(row.canonical_identity_sha256.as_str())
+            })
+    }) && saw_in_scope
 }
 
 fn persisted_resume_target_authority(
@@ -6778,6 +7000,37 @@ fn format_db_summary_value(value: &serde_json::Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
 }
 
+fn redacted_typed_tool_failure(result: &serde_json::Value) -> Option<(String, String)> {
+    fn bounded_single_line(value: &str, max_chars: usize) -> String {
+        let single_line = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut chars = single_line.chars();
+        let mut bounded = chars.by_ref().take(max_chars).collect::<String>();
+        if chars.next().is_some() {
+            bounded.push('…');
+        }
+        bounded
+    }
+
+    let code = result.get("code")?.as_str()?.trim();
+    let error = result.get("error")?.as_str()?.trim();
+    if !code.starts_with("INVESTIGATION_")
+        || !code.chars().all(|character| {
+            character.is_ascii_uppercase() || character == '_' || character.is_ascii_digit()
+        })
+    {
+        return None;
+    }
+    let typed_error_offset = ["investigation_analysis_host_revalidation_required:"]
+        .into_iter()
+        .filter_map(|marker| error.find(marker))
+        .min()?;
+    let error = &error[typed_error_offset..];
+    Some((
+        bounded_single_line(code, 96),
+        bounded_single_line(error, 640),
+    ))
+}
+
 /// Render the human-readable post-run report from collected events.
 fn format_report(
     events: &[AiEvent],
@@ -6837,12 +7090,20 @@ fn format_report(
                 _ => {}
             },
             AiEvent::ToolResult {
-                tool_name, success, ..
+                tool_name,
+                result,
+                success,
+                ..
             } => {
-                tool_lines.push(format!(
-                    "  {tool_name}: {}",
-                    if *success { "ok" } else { "err" }
-                ));
+                let mut line = format!("  {tool_name}: {}", if *success { "ok" } else { "err" });
+                if !*success && tool_name == "stage_run" {
+                    if let Some((code, error)) = redacted_typed_tool_failure(result) {
+                        line.push_str(&format!(
+                            " [typed code={code}; error={error}; other_payload=redacted]"
+                        ));
+                    }
+                }
+                tool_lines.push(line);
             }
             AiEvent::AskHumanRequest { .. } => askhuman += 1,
             AiEvent::AskHumanResponse { skipped, .. } => {
@@ -7212,6 +7473,32 @@ mod tests {
             .expect("V2-only resume selects complete relational authority");
         assert_eq!(validated.stage, StageKind::Enumeration);
         assert!(!validated.needs_graph_repair);
+    }
+
+    #[test]
+    fn scoping_pre_freeze_resume_requires_the_exact_expected_root_authority() {
+        let mut candidate = valid_resume_candidate();
+        candidate.current_stage = "scoping".to_string();
+        candidate.runtime_memory_contract = "v2_only".to_string();
+        candidate.engagement_org_id = None;
+        candidate.worker_chains.clear();
+        candidate.relational_v2 = Some(runtime_v2::RuntimeV2ResumeAuthority {
+            active_stage_execution_id: uuid::Uuid::new_v4(),
+            organization_id: ORG_ID,
+        });
+        candidate.expectations.organization_id = Some(ORG_ID);
+        candidate.expectations.stage = Some(StageKind::Scoping);
+
+        let validated = validate_resume_candidate(&candidate)
+            .expect("exact expected root may resume the witnessed pre-freeze Scoping state");
+        assert_eq!(validated.stage, StageKind::Scoping);
+        assert_eq!(validated.organization_id, ORG_ID);
+
+        candidate.expectations.organization_id = Some(uuid::Uuid::new_v4());
+        assert!(validate_resume_candidate(&candidate).is_err());
+
+        candidate.expectations.organization_id = None;
+        assert!(validate_resume_candidate(&candidate).is_err());
     }
 
     #[test]
@@ -7620,6 +7907,102 @@ mod tests {
     }
 
     #[test]
+    fn immutable_fork_resume_preserves_out_of_scope_rejection_targets() {
+        use golish_db::repo::operation_stage_forks::{
+            OperationStageForkRow, OperationStageForkTargetRow,
+        };
+
+        let operation_id = uuid::Uuid::new_v4();
+        let scope_snapshot_id = uuid::Uuid::new_v4();
+        let organization_id = uuid::Uuid::new_v4();
+        let in_target_id = uuid::Uuid::new_v4();
+        let out_target_id = uuid::Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let targets = vec![
+            OperationStageForkTargetRow {
+                id: uuid::Uuid::new_v4(),
+                operation_id,
+                scope_snapshot_id,
+                organization_id,
+                ordinal: 0,
+                live_target_id: in_target_id,
+                target_name_at_fork: "allowed.example".to_string(),
+                target_type_at_fork: "domain".to_string(),
+                target_value_at_fork: "allowed.example".to_string(),
+                target_scope_at_fork: "in".to_string(),
+                target_source_at_fork: "customer_provided".to_string(),
+                project_path_at_fork: "/tmp/project".to_string(),
+                canonical_identity_sha256: "sha256:in".to_string(),
+                schema_version: 1,
+                frozen_at: now,
+            },
+            OperationStageForkTargetRow {
+                id: uuid::Uuid::new_v4(),
+                operation_id,
+                scope_snapshot_id,
+                organization_id,
+                ordinal: 1,
+                live_target_id: out_target_id,
+                target_name_at_fork: "denied.example".to_string(),
+                target_type_at_fork: "domain".to_string(),
+                target_value_at_fork: "denied.example".to_string(),
+                target_scope_at_fork: "out".to_string(),
+                target_source_at_fork: "target_intel_goal".to_string(),
+                project_path_at_fork: "/tmp/project".to_string(),
+                canonical_identity_sha256: "sha256:out".to_string(),
+                schema_version: 1,
+                frozen_at: now,
+            },
+        ];
+        let manifest_targets = targets
+            .iter()
+            .map(|row| {
+                serde_json::json!({
+                    "id": row.id,
+                    "ordinal": row.ordinal,
+                    "live_target_id": row.live_target_id,
+                    "organization_id": row.organization_id,
+                    "canonical_identity_sha256": row.canonical_identity_sha256,
+                })
+            })
+            .collect::<Vec<_>>();
+        let fork = OperationStageForkRow {
+            operation_id,
+            source_operation_id: uuid::Uuid::new_v4(),
+            project_scope_id: uuid::Uuid::new_v4(),
+            source_scope_snapshot_id: uuid::Uuid::new_v4(),
+            target_scope_snapshot_id: scope_snapshot_id,
+            source_profile: "red_team".to_string(),
+            target_profile: "red_team".to_string(),
+            source_runtime_memory_contract: "v2_only".to_string(),
+            target_runtime_memory_contract: "v2_only".to_string(),
+            source_attack_execution_contract: "v2_only".to_string(),
+            target_attack_execution_contract: "v2_only".to_string(),
+            source_stage_topology_contract: "unified_investigation_v1".to_string(),
+            target_stage_topology_contract: "unified_investigation_v1".to_string(),
+            entry_stage: "external_attack_surface".to_string(),
+            terminal_stage: "investigation".to_string(),
+            adopted_stage_kinds: vec!["scoping".to_string(), "target_intel".to_string()],
+            expected_input_count: 2,
+            expected_target_count: 2,
+            manifest: serde_json::json!({"targets": manifest_targets}),
+            manifest_sha256: "sha256:manifest".to_string(),
+            schema_version: 2,
+            created_at: now,
+        };
+
+        assert!(immutable_stage_fork_target_manifest_is_complete(
+            &fork, &targets
+        ));
+
+        let mut foreign = targets.clone();
+        foreign[1].canonical_identity_sha256 = "sha256:drift".to_string();
+        assert!(!immutable_stage_fork_target_manifest_is_complete(
+            &fork, &foreign
+        ));
+    }
+
+    #[test]
     fn resolve_slice_only_single_stage() {
         let (entry, allowlist) = resolve_slice(
             "assessment",
@@ -7784,6 +8167,41 @@ mod tests {
                 StageKind::ExternalAttackSurface,
             ]
         );
+    }
+
+    #[test]
+    fn stale_investigation_retry_from_eas_adopts_only_scoping_and_target_intel() {
+        let args = Args::parse_from([
+            "golish",
+            "--stage-run-fork",
+            "425c7693-99fb-4598-8361-62275c9413b1",
+            "--from",
+            "external_attack_surface",
+            "--to",
+            "investigation",
+        ]);
+        let resolved = resolve_stage_run_fork_slice(
+            "pentest",
+            golish_core::StageTopologyContract::UnifiedInvestigationV1.freeze_material(),
+            &args,
+        )
+        .expect("stale Investigation prerequisites restart from EAS");
+        assert_eq!(resolved.entry_stage, StageKind::ExternalAttackSurface);
+        assert_eq!(resolved.terminal_stage, StageKind::Investigation);
+        assert_eq!(
+            resolved.adopted_stage_kinds,
+            vec![StageKind::Scoping, StageKind::TargetIntel]
+        );
+        assert!(resolved
+            .allowlist
+            .contains(&StageKind::ExternalAttackSurface));
+        assert!(resolved.allowlist.contains(&StageKind::Enumeration));
+        assert!(resolved.allowlist.contains(&StageKind::VulnTriage));
+        assert!(resolved
+            .allowlist
+            .contains(&StageKind::ApplicationUnderstanding));
+        assert!(resolved.allowlist.contains(&StageKind::Investigation));
+        assert!(!resolved.allowlist.contains(&StageKind::AttackCandidate));
     }
 
     #[test]
@@ -8184,6 +8602,40 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_investigation_settings_are_loopback_only_and_credential_free() {
+        let endpoint = url::Url::parse("http://127.0.0.1:32124/v1").expect("loopback URL");
+        let settings = deterministic_investigation_settings(&endpoint)
+            .expect("build deterministic Investigation settings");
+        assert_eq!(
+            settings.ai.default_provider,
+            golish_settings::schema::AiProvider::Deepseek
+        );
+        assert_eq!(
+            settings.ai.deepseek.base_url.as_deref(),
+            Some("http://127.0.0.1:32124/v1")
+        );
+        assert_eq!(
+            settings.ai.deepseek.api_key.as_deref(),
+            Some("local-scripted-fixture")
+        );
+        assert!(settings.ai.sub_agent_models.is_empty());
+        assert!(settings.mcp_servers.is_empty());
+        assert!(settings.api_keys.tavily.is_none());
+        assert!(settings.network.proxy_url.is_none());
+        assert!(!settings.telemetry.langfuse.enabled);
+
+        for rejected in [
+            "https://127.0.0.1:32124/v1",
+            "http://example.com/v1",
+            "http://user:pass@127.0.0.1:32124/v1",
+            "http://127.0.0.1:32124/v1?remote=true",
+        ] {
+            let rejected = url::Url::parse(rejected).expect("rejected URL parses");
+            assert!(deterministic_investigation_settings(&rejected).is_err());
+        }
+    }
+
+    #[test]
     fn exact_test_organization_identity_requires_owned_ephemeral_database() {
         let args = Args::try_parse_from([
             "golish",
@@ -8341,6 +8793,46 @@ mod tests {
         assert!(report.contains("missing scope_human_approved claim"));
         assert!(report.contains("fabricated evidence refs: [1, 2]"));
         assert!(report.contains("FAILED: stage blocked"));
+    }
+
+    #[test]
+    fn format_report_surfaces_redacted_typed_stage_run_failure() {
+        let operation_id = uuid::Uuid::parse_str("425c7693-99fb-4598-8361-62275c9413b1").unwrap();
+        let obligation_id = uuid::Uuid::new_v4();
+        let typed_error =
+            golish_agent_kit::db_traits::InvestigationAnalysisHostError::RevalidationRequired {
+                operation_id,
+                revalidation_obligation_ids: vec![obligation_id],
+                stale_roots: vec!["external_attack_surface:expired".to_owned()],
+            };
+        let events = vec![AiEvent::ToolResult {
+            tool_name: "stage_run".to_owned(),
+            result: serde_json::json!({
+                "code": "INVESTIGATION_UNIT_BLOCKED",
+                "error": format!("run Investigation Analysis Primary:\n{typed_error}"),
+                "credential": "must-not-reach-cli-report",
+                "unit_results": [{"private": "must-not-reach-cli-report"}],
+            }),
+            success: false,
+            request_id: "stage-run-tool-call".to_owned(),
+            source: golish_core::events::ToolSource::Main,
+        }];
+        let result: Result<String> = Ok("model handled the failed tool result".to_owned());
+        let report = format_report(
+            &events,
+            &result,
+            "pentest",
+            StageKind::Investigation,
+            StageKind::Investigation,
+            "stage-run-test",
+            Path::new("/tmp/golish-stage-run-test"),
+        );
+        assert!(report.contains("stage_run: err [typed code=INVESTIGATION_UNIT_BLOCKED"));
+        assert!(report.contains("investigation_analysis_host_revalidation_required"));
+        assert!(report.contains(&format!("operation_id={operation_id}")));
+        assert!(!report.contains("must-not-reach-cli-report"));
+        assert!(!report.contains("run Investigation Analysis Primary"));
+        assert!(report.contains("other_payload=redacted"));
     }
 
     #[test]

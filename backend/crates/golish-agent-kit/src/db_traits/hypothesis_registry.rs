@@ -52,6 +52,9 @@ pub struct FreezeCandidateAnalysisSnapshot {
     pub operation_id: Uuid,
     pub scope_snapshot_id: Uuid,
     pub organization_id: Uuid,
+    /// Server-selected active asset lane. There is no organization-wide
+    /// Candidate freeze path in the unified Investigation contract.
+    pub asset_lane_id: Uuid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +102,9 @@ pub struct CandidateAnalysisSnapshotView {
     pub operation_id: Uuid,
     pub scope_snapshot_id: Uuid,
     pub organization_id: Uuid,
+    /// `None` is readable only for archived pre-cutover snapshots. Every new
+    /// freeze returns `Some` and no writer accepts `None`.
+    pub asset_lane_id: Option<Uuid>,
     pub disposition: CandidateAnalysisSnapshotDispositionV1,
     pub snapshot_hash: String,
     pub candidate_snapshot_authority_hash: String,

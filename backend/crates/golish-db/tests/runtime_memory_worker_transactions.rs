@@ -2579,6 +2579,140 @@ async fn company_controller_parks_for_dynamic_child_and_resumes_same_worker_chai
 
 #[tokio::test]
 #[serial]
+async fn investigation_primary_reentry_reads_the_parked_worker_before_claiming_its_child() {
+    let (mut db, _data_dir) = fixture().await;
+    let roots = create_sealed_runtime_roots_with_contract_stage_and_children(
+        &db,
+        runtime_memory_rollout::RuntimeMemoryContract::V2Only,
+        "investigation",
+        0,
+    )
+    .await
+    .0;
+    let mut seed = stage_team_controller_seed_for_stage(&roots, "investigation");
+    seed.base.specialist = "investigation".to_string();
+    seed.base.agent_path_prefix = "main>stage_run:investigation".to_string();
+    seed.plan.leader_role = "investigation".to_string();
+    seed.plan.allowed_roles = vec!["investigation".to_string(), "adviser".to_string()];
+    seed.plan.aggregator_role = Some("investigation".to_string());
+    seed.plan.dynamic_request_policy = serde_json::json!({
+        "allowed_request_kinds": ["analysis_task"],
+        "canonical_subject_refs_only": true,
+        "child_budget": {},
+        "child_output_schema": "investigation_cognitive_output.v1",
+        "coordination_mode": "investigation_task_orchestrator",
+        "max_requests": 8,
+        "max_subject_refs": 8,
+        "organization_scope_implicit": true,
+        "attempt_policy": {"max_attempts": 3}
+    });
+    seed.work_items[0].work_item_kind = "investigation_primary".to_string();
+    seed.work_items[0].role = "investigation".to_string();
+    seed.work_items[0].conflict_key = None;
+    let seeded = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &seed)
+        .await
+        .expect("seed Investigation Primary")
+        .remove(0);
+    let claim = stage_team_claim_input(&roots, &seeded, "investigation-primary-reentry");
+    let primary = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow {
+            claim: claim.clone(),
+        },
+    )
+    .await
+    .expect("claim Investigation Primary")
+    .expect("Investigation Primary is runnable");
+    let primary_worker_id = primary.worker.id;
+    let primary_chain_id = primary.message_chain_id;
+    let mut request = runtime_memory_tx::RequestStageWorkerRow {
+        fence: stage_team_fence(&roots, &seeded, &primary),
+        stage_team_plan_id: seeded.plan.id,
+        parent_work_item_id: primary.work_item.id,
+        expected_dispatch_epoch: seeded.plan.dispatch_epoch,
+        requested_role: "adviser".to_string(),
+        requested_kind: "analysis_task".to_string(),
+        subject_refs: Vec::new(),
+        reason: serde_json::json!({
+            "schema": "stage_team_controller_request.v1",
+            "objective": "Continue the exact durable Investigation subtask",
+            "parent_tool_request_id": "investigation-child-1"
+        })
+        .to_string(),
+        output_schema: serde_json::json!("investigation_cognitive_output.v1"),
+        budget_hint: serde_json::json!({}),
+        dedupe_key: "investigation-child-1".to_string(),
+        request_sha256: String::new(),
+    };
+    request.request_sha256 = runtime_memory_tx::stage_worker_request_payload_hash(&request);
+    let accepted = runtime_memory_tx::request_stage_worker(db.pool(), &request)
+        .await
+        .expect("persist exact Investigation child request");
+    let child = accepted.work_item.expect("accepted child WorkItem");
+    let parked = runtime_memory_tx::park_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ParkStageTeamLeaderRow {
+            fence: stage_team_fence(&roots, &seeded, &primary),
+            stage_team_plan_id: seeded.plan.id,
+            leader_work_item_id: primary.work_item.id,
+            expected_work_item_row_version: primary.work_item.row_version,
+            checkpoint: serde_json::json!({"waiting_for": child.id}),
+        },
+    )
+    .await
+    .expect("park Investigation Primary behind its child");
+    assert_eq!(parked.work_item.status, "waiting_dependency");
+    assert_eq!(parked.worker.status, "waiting_background");
+
+    let reentered = runtime_memory_tx::claim_stage_team_leader(
+        db.pool(),
+        &runtime_memory_tx::ClaimStageTeamLeaderRow { claim },
+    )
+    .await
+    .expect("read exact parked Investigation Primary")
+    .expect("Investigation host must regain the parked Primary to schedule its durable child");
+    assert_eq!(reentered.work_item.id, primary.work_item.id);
+    assert_eq!(reentered.work_item.status, "waiting_dependency");
+    assert_eq!(reentered.worker.id, primary_worker_id);
+    assert_eq!(reentered.worker.status, "waiting_background");
+    assert_eq!(reentered.worker.lease_token, None);
+    assert_eq!(reentered.message_chain_id, primary_chain_id);
+
+    let restarted = runtime_memory_tx::seed_stage_team_runtime(db.pool(), &seed)
+        .await
+        .expect("replay the static Investigation denominator")
+        .remove(0);
+    assert!(
+        restarted.work_items.iter().all(|item| item.id != child.id),
+        "dynamic child remains outside the immutable static seed response"
+    );
+    let loaded_child = runtime_memory_tx::load_stage_work_item(
+        db.pool(),
+        &runtime_memory_tx::LoadStageWorkItemRow {
+            operation_id: roots.operation_id,
+            stage_execution_id: roots.stage_execution_id,
+            stage_run_unit_id: seeded.unit.id,
+            stage_team_plan_id: seeded.plan.id,
+            organization_id: roots.organization_id,
+            work_item_id: child.id,
+        },
+    )
+    .await
+    .expect("load exact durable Investigation child")
+    .expect("accepted dynamic child remains readable after restart");
+    assert_eq!(loaded_child.work_item.id, child.id);
+    assert_eq!(loaded_child.work_item.created_by, "accepted_worker_request");
+    assert_eq!(loaded_child.work_item.status, "queued");
+    assert_eq!(
+        loaded_child.aggregator_role.as_deref(),
+        Some("investigation")
+    );
+
+    db.stop().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn company_controller_continue_reclaims_interrupted_eas_child_on_same_chain() {
     let (mut db, _data_dir) = fixture().await;
     let roots = create_sealed_runtime_roots_with_contract(

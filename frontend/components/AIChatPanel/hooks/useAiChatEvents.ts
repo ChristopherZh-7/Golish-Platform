@@ -660,6 +660,10 @@ export function useAiChatEvents({
     setAskHumanRequest(null);
   }, [askHumanRequest]);
 
+  const dismissAskHumanRequest = useCallback(() => {
+    setAskHumanRequest(null);
+  }, []);
+
   return {
     contextUsage,
     askHumanRequest,
@@ -671,5 +675,6 @@ export function useAiChatEvents({
     planMessageIdRef,
     handleAskHumanSubmit,
     handleAskHumanSkip,
+    dismissAskHumanRequest,
   };
 }

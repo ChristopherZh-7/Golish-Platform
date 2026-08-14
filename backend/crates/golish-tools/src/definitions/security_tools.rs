@@ -234,7 +234,7 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
         },
         FunctionDeclaration {
             name: "query_target_data".to_string(),
-            description: "Query aggregated security data for a target. Returns assets, API endpoints, fingerprints, JS analysis results, and scan logs. Use this to get a comprehensive overview of what is known about a target before planning next steps.".to_string(),
+            description: "Query aggregated security data for a target. Returns assets, API endpoints, fingerprints, JS analysis results, and scan logs. During Vuln endpoint review, pass exact_origin copied from the current server-authored work item's absolute target_url so the operation-bound endpoint manifest is selected without guessing.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -249,6 +249,10 @@ pub fn security_analysis_declarations() -> Vec<FunctionDeclaration> {
                             "enum": ["assets", "endpoints", "fingerprints", "js_analysis", "scan_logs", "all"]
                         },
                         "description": "Which data sections to include (default: all)"
+                    },
+                    "exact_origin": {
+                        "type": "string",
+                        "description": "Optional exact HTTP(S) origin copied from the current server-authored work item's target_url (for example https://example.com:443). This selects an operation manifest and does not grant network authority."
                     }
                 },
                 "required": ["target_id"]

@@ -5,14 +5,12 @@ import type {
   InvestigationCampaignPageResponse,
 } from "@/lib/api/investigation";
 import { CampaignDetail } from "./CampaignDetail";
-import { WorkspaceAsyncState } from "./WorkspaceAsyncState";
 import type { ProjectionResource } from "./useInvestigationProjection";
+import { WorkspaceAsyncState } from "./WorkspaceAsyncState";
 
 type CampaignItem = InvestigationCampaignPageResponse["campaigns"][number];
 
 export function CampaignsTab({
-  operationId,
-  refreshVersion,
   resource,
   detail,
   selectedCampaignId,
@@ -20,8 +18,6 @@ export function CampaignsTab({
   onLoadMore,
   onRetry,
 }: {
-  operationId: string;
-  refreshVersion: number;
   resource: ProjectionResource<InvestigationCampaignPageResponse>;
   detail: ProjectionResource<InvestigationCampaignDetailResponse>;
   selectedCampaignId: string | null;
@@ -94,7 +90,9 @@ export function CampaignsTab({
               >
                 <div className="truncate text-xs font-medium">{item.label}</div>
                 <div className="mt-1 flex flex-wrap gap-1 text-[9px] text-muted-foreground">
-                  <span>Wave {item.waveOrdinal}</span><span>·</span><span>{item.state}</span>
+                  <span>Wave {item.waveOrdinal}</span>
+                  <span>·</span>
+                  <span>{item.state}</span>
                   <span className="ml-auto">{item.coverageStatus}</span>
                 </div>
               </button>
@@ -103,11 +101,7 @@ export function CampaignsTab({
         </div>
       </div>
       <div className="min-h-0 overflow-y-auto">
-        <CampaignDetail
-          operationId={operationId}
-          refreshVersion={refreshVersion}
-          resource={detail}
-        />
+        <CampaignDetail resource={detail} />
       </div>
     </div>
   );

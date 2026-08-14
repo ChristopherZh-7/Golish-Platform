@@ -145,6 +145,11 @@ fn test_default_config() {
 
     // Check default policies
     assert_eq!(config.policies.get("read_file"), Some(&ToolPolicy::Allow));
+    assert_eq!(
+        config.policies.get("list_in_scope_targets"),
+        Some(&ToolPolicy::Allow),
+        "server-scoped read-only census must bypass generic HITL"
+    );
     assert_eq!(config.policies.get("write_file"), Some(&ToolPolicy::Prompt));
     assert_eq!(config.policies.get("delete_file"), Some(&ToolPolicy::Deny));
 

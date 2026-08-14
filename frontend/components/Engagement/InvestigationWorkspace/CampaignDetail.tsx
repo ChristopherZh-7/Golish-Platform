@@ -1,17 +1,12 @@
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { PendingPreparedActionPanel } from "@/components/Engagement/PendingPreparedActionPanel";
 import type { InvestigationCampaignDetailResponse } from "@/lib/api/investigation";
 import { InvestigationAuditDrawer } from "./InvestigationAuditDrawer";
 import type { ProjectionResource } from "./useInvestigationProjection";
 
 export function CampaignDetail({
-  operationId,
-  refreshVersion,
   resource,
   onRetry,
 }: {
-  operationId: string;
-  refreshVersion: number;
   resource: ProjectionResource<InvestigationCampaignDetailResponse>;
   onRetry?: () => void;
 }) {
@@ -77,7 +72,10 @@ export function CampaignDetail({
         ) : (
           <ol className="mt-1 space-y-1 text-[11px]">
             {campaign.redactedRoundSummaries.map((summary, index) => (
-              <li key={`${index}:${summary}`} className="rounded border border-border/25 bg-muted/10 p-2">
+              <li
+                key={`${index}:${summary}`}
+                className="rounded border border-border/25 bg-muted/10 p-2"
+              >
                 <span className="mr-2 text-muted-foreground">Round {index + 1}</span>
                 {summary}
               </li>
@@ -89,23 +87,23 @@ export function CampaignDetail({
       <dl className="grid grid-cols-3 gap-2 text-[10px]">
         <div className="rounded border border-border/25 p-2">
           <dt className="text-muted-foreground">Authorized actions</dt>
-          <dd className="mt-1 text-base font-semibold tabular-nums">{campaign.authorizedActionCount}</dd>
+          <dd className="mt-1 text-base font-semibold tabular-nums">
+            {campaign.authorizedActionCount}
+          </dd>
         </div>
         <div className="rounded border border-border/25 p-2">
           <dt className="text-muted-foreground">Blocked actions</dt>
-          <dd className="mt-1 text-base font-semibold tabular-nums">{campaign.blockedActionCount}</dd>
+          <dd className="mt-1 text-base font-semibold tabular-nums">
+            {campaign.blockedActionCount}
+          </dd>
         </div>
         <div className="rounded border border-border/25 p-2">
           <dt className="text-muted-foreground">Open residuals</dt>
-          <dd className="mt-1 text-base font-semibold tabular-nums">{campaign.openResidualIds.length}</dd>
+          <dd className="mt-1 text-base font-semibold tabular-nums">
+            {campaign.openResidualIds.length}
+          </dd>
         </div>
       </dl>
-
-      <PendingPreparedActionPanel
-        operationId={operationId}
-        campaignId={campaign.campaignId}
-        refreshVersion={refreshVersion}
-      />
 
       <InvestigationAuditDrawer
         fields={[

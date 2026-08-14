@@ -283,6 +283,7 @@ pub struct FreezeCandidateSnapshotInput {
     pub operation_id: Uuid,
     pub scope_snapshot_id: Uuid,
     pub organization_id: Uuid,
+    pub asset_lane_id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -374,6 +375,7 @@ pub struct CandidateSnapshotRowView {
     pub operation_id: Uuid,
     pub scope_snapshot_id: Uuid,
     pub organization_id: Uuid,
+    pub asset_lane_id: Option<Uuid>,
     pub disposition: CandidateSnapshotDispositionRow,
     pub snapshot_hash: String,
     pub candidate_snapshot_authority_hash: String,
@@ -529,6 +531,8 @@ async fn load_snapshot_source_members_on(
     operation_id: Uuid,
     organization_id: Uuid,
     scope_snapshot_id: Uuid,
+    asset_lane_id: Uuid,
+    target_id: Uuid,
     previous_generation_seal_id: Option<Uuid>,
 ) -> Result<BTreeMap<&'static str, Vec<(String, String)>>> {
     let mut sources = BTreeMap::new();
@@ -580,13 +584,24 @@ async fn load_snapshot_source_members_on(
     .await?;
     sources.insert("relations", relations);
     let obligations: Vec<(String, String)> = sqlx::query_as(
-        r#"SELECT residual_id::TEXT,residual_hash
-             FROM hypothesis_residual_risks
-            WHERE operation_id=$1 AND organization_id=$2 AND closed_at IS NULL
-            ORDER BY residual_id"#,
+        r#"SELECT residual.residual_id::TEXT,residual.residual_hash
+             FROM hypothesis_residual_risks residual
+             LEFT JOIN attack_hypothesis_revisions revision
+               ON revision.revision_id=residual.revision_id
+              AND revision.operation_id=residual.operation_id
+              AND revision.organization_id=residual.organization_id
+             LEFT JOIN candidate_analysis_snapshots snapshot
+               ON snapshot.snapshot_id=residual.snapshot_id
+              AND snapshot.operation_id=residual.operation_id
+              AND snapshot.organization_id=residual.organization_id
+            WHERE residual.operation_id=$1 AND residual.organization_id=$2
+              AND residual.closed_at IS NULL
+              AND COALESCE(revision.asset_lane_id,snapshot.asset_lane_id)=$3
+            ORDER BY residual.residual_id"#,
     )
     .bind(operation_id)
     .bind(organization_id)
+    .bind(asset_lane_id)
     .fetch_all(&mut **tx)
     .await?;
     sources.insert("open_obligations", obligations);
@@ -601,16 +616,45 @@ async fn load_snapshot_source_members_on(
         let query = format!(
             "SELECT id::TEXT,dedupe_hash FROM attack_fact_deltas \
              WHERE operation_id=$1 AND organization_id=$2 AND scope_snapshot_id=$3 \
-               AND {predicate} ORDER BY id"
+               AND target_live_id=$4 AND {predicate} ORDER BY id"
         );
         let members = sqlx::query_as::<_, (String, String)>(&query)
             .bind(operation_id)
             .bind(organization_id)
             .bind(scope_snapshot_id)
+            .bind(target_id)
             .fetch_all(&mut **tx)
             .await?;
         sources.insert(source_kind, members);
     }
+    let verification_fact_deltas = load_verification_fact_delta_sources_on(
+        tx,
+        operation_id,
+        organization_id,
+        previous_generation_seal_id,
+    )
+    .await?;
+    sources.insert(
+        "verification_fact_deltas",
+        verification_fact_deltas
+            .into_iter()
+            .map(|source| (source.source_identity, source.source_hash))
+            .collect(),
+    );
+    let pending_discoveries = load_pending_hypothesis_discovery_sources_on(
+        tx,
+        operation_id,
+        organization_id,
+        asset_lane_id,
+    )
+    .await?;
+    sources.insert(
+        "pending_hypothesis_discovery",
+        pending_discoveries
+            .into_iter()
+            .map(|source| (source.source_identity, source.source_hash))
+            .collect(),
+    );
     let unified_investigation: bool = sqlx::query_scalar(
         "SELECT stage_topology_contract='unified_investigation_v1' FROM operation_state WHERE operation_id=$1 FOR SHARE",
     )
@@ -623,6 +667,7 @@ async fn load_snapshot_source_members_on(
             operation_id,
             organization_id,
             scope_snapshot_id,
+            target_id,
         )
         .await?
         {
@@ -637,6 +682,329 @@ async fn load_snapshot_source_members_on(
 }
 
 #[derive(Debug, sqlx::FromRow)]
+struct VerificationFactDeltaAuthorityRow {
+    fact_delta_bundle_id: Uuid,
+    delta_kind: String,
+    typed_delta: Value,
+    evidence_ref_set_hash: String,
+    source_authority_hash: String,
+    fact_delta_hash: String,
+    objective_outcome_receipt_id: Uuid,
+    verification_objective_id: Uuid,
+    outcome_ordinal: i64,
+    objective_outcome: String,
+    objective_outcome_hash: String,
+    revision_adjudication_id: Uuid,
+    adjudication_outcome: String,
+    adjudication_hash: String,
+    revision_terminal_decision_id: Option<Uuid>,
+    terminal_successor_revision_id: Option<Uuid>,
+    terminal_decision: Option<String>,
+    terminal_decision_hash: Option<String>,
+    capability_execution_receipt_id: Option<Uuid>,
+    capability_execution_receipt_hash: Option<String>,
+    oracle_assessment_id: Option<Uuid>,
+    oracle_assessment_hash: Option<String>,
+}
+
+#[derive(Debug)]
+struct VerificationFactDeltaSnapshotSource {
+    source_identity: String,
+    source_hash: String,
+    body: Value,
+}
+
+#[derive(Debug)]
+struct PendingHypothesisDiscoverySnapshotSource {
+    source_identity: String,
+    source_hash: String,
+    body: Value,
+}
+
+async fn load_pending_hypothesis_discovery_sources_on(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    organization_id: Uuid,
+    asset_lane_id: Uuid,
+) -> Result<Vec<PendingHypothesisDiscoverySnapshotSource>> {
+    let rows: Vec<(Uuid, String, Value, String, Value)> = sqlx::query_as(
+        r#"SELECT discovery.discovery_authority_id,discovery.semantic_key_sha256,
+                  discovery.canonical_proposal,discovery.discovery_sha256,
+                  discovery.rationale_redacted
+             FROM investigation_pending_hypothesis_discovery_backlog discovery
+             JOIN investigation_asset_lanes lane
+               ON lane.asset_lane_id=discovery.asset_lane_id
+              AND lane.operation_id=$1 AND lane.organization_id=$2
+            WHERE discovery.asset_lane_id=$3
+            ORDER BY discovery.created_at,discovery.discovery_ordinal,
+                     discovery.discovery_authority_id"#,
+    )
+    .bind(operation_id)
+    .bind(organization_id)
+    .bind(asset_lane_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut sources = Vec::with_capacity(rows.len());
+    for (
+        discovery_authority_id,
+        semantic_key_sha256,
+        canonical_proposal,
+        discovery_sha256,
+        rationale_redacted,
+    ) in rows
+    {
+        let body = json!({
+            "schema":"investigation_pending_hypothesis_discovery_analysis_input.v1",
+            "instruction_authority":false,
+            "discovery_authority_id":discovery_authority_id,
+            "semantic_key_sha256":semantic_key_sha256,
+            "canonical_proposal":canonical_proposal,
+            "discovery_sha256":discovery_sha256,
+            "rationale_redacted":rationale_redacted,
+        });
+        sources.push(PendingHypothesisDiscoverySnapshotSource {
+            source_identity: discovery_authority_id.to_string(),
+            source_hash: hash_json_on(tx, &body).await?,
+            body,
+        });
+    }
+    Ok(sources)
+}
+
+fn redacted_verification_typed_delta(typed_delta: &Value) -> Value {
+    const SAFE_FIELDS: &[&str] = &[
+        "contract_version",
+        "objective_id",
+        "outcome",
+        "predicate_schema",
+        "predicate_version",
+        "subject_kind",
+        "subject_identity_hash",
+        "trust_boundary",
+        "polarity",
+        "semantic_material_hash",
+        "signal_kind",
+        "reason_code",
+    ];
+    let Some(object) = typed_delta.as_object() else {
+        return json!({
+            "contract_version":"verification-fact-delta-redacted.v1",
+            "redacted_field_names":["$non_object"],
+        });
+    };
+    let mut redacted = serde_json::Map::new();
+    let mut redacted_field_names = Vec::new();
+    for (key, value) in object {
+        if SAFE_FIELDS.contains(&key.as_str())
+            && (value.is_string() || value.is_number() || value.is_boolean() || value.is_null())
+        {
+            redacted.insert(key.clone(), value.clone());
+        } else {
+            redacted_field_names.push(key.clone());
+        }
+    }
+    redacted_field_names.sort();
+    redacted.insert(
+        "redacted_field_names".to_owned(),
+        Value::Array(
+            redacted_field_names
+                .into_iter()
+                .map(Value::String)
+                .collect(),
+        ),
+    );
+    Value::Object(redacted)
+}
+
+async fn load_verification_fact_delta_sources_on(
+    tx: &mut Transaction<'_, Postgres>,
+    operation_id: Uuid,
+    organization_id: Uuid,
+    previous_generation_seal_id: Option<Uuid>,
+) -> Result<Vec<VerificationFactDeltaSnapshotSource>> {
+    let Some(previous_generation_seal_id) = previous_generation_seal_id else {
+        return Ok(Vec::new());
+    };
+    let rows = sqlx::query_as::<_, VerificationFactDeltaAuthorityRow>(
+        r#"SELECT delta.fact_delta_bundle_id,delta.delta_kind,delta.typed_delta,
+                  delta.evidence_ref_set_hash,delta.source_authority_hash,
+                  delta.fact_delta_hash,outcome.objective_outcome_receipt_id,
+                  outcome.verification_objective_id,outcome.outcome_ordinal,
+                  outcome.outcome AS objective_outcome,
+                  outcome.outcome_hash AS objective_outcome_hash,
+                  adjudication.revision_adjudication_id,
+                  adjudication.outcome AS adjudication_outcome,
+                  adjudication.adjudication_hash,
+                  terminal.revision_terminal_decision_id,
+                  terminal.terminal_successor_revision_id,
+                  terminal.decision AS terminal_decision,
+                  terminal.decision_hash AS terminal_decision_hash,
+                  capability.id AS capability_execution_receipt_id,
+                  capability.receipt_authority_hash AS capability_execution_receipt_hash,
+                  oracle.oracle_assessment_id,oracle.assessment_hash AS oracle_assessment_hash
+             FROM hypothesis_generation_seals generation_seal
+             JOIN fact_delta_consumptions consumption
+               ON consumption.generation_id=generation_seal.generation_id
+              AND consumption.operation_id=$2 AND consumption.organization_id=$3
+              AND consumption.disposition IN ('applied','no_semantic_change')
+             JOIN verification_fact_delta_bundles delta
+               ON delta.fact_delta_bundle_id=consumption.fact_delta_bundle_id
+              AND delta.operation_id=consumption.operation_id
+              AND delta.project_scope_id=consumption.project_scope_id
+              AND delta.organization_id=consumption.organization_id
+             JOIN hypothesis_objective_outcome_receipts outcome
+               ON outcome.fact_delta_bundle_id=delta.fact_delta_bundle_id
+              AND outcome.operation_id=delta.operation_id
+              AND outcome.project_scope_id=delta.project_scope_id
+              AND outcome.organization_id=delta.organization_id
+             JOIN LATERAL (
+                 SELECT current.revision_adjudication_id,current.outcome,
+                        current.adjudication_hash
+                   FROM hypothesis_revision_adjudications current
+                   JOIN hypothesis_objective_outcome_set_members selected_outcome
+                     ON selected_outcome.objective_outcome_set_seal_id=
+                            current.objective_outcome_set_seal_id
+                    AND selected_outcome.verification_plan_id=current.verification_plan_id
+                    AND selected_outcome.operation_id=current.operation_id
+                    AND selected_outcome.project_scope_id=current.project_scope_id
+                    AND selected_outcome.organization_id=current.organization_id
+                    AND selected_outcome.verification_objective_id=
+                            outcome.verification_objective_id
+                    AND selected_outcome.selected_current_outcome_id=
+                            outcome.objective_outcome_receipt_id
+                    AND selected_outcome.selected_current_ordinal=outcome.outcome_ordinal
+                    AND selected_outcome.selected_current_outcome_hash=outcome.outcome_hash
+                  WHERE current.hypothesis_revision_id=delta.hypothesis_revision_id
+                    AND current.operation_id=delta.operation_id
+                    AND current.project_scope_id=delta.project_scope_id
+                    AND current.organization_id=delta.organization_id
+                  ORDER BY current.created_at DESC,current.revision_adjudication_id DESC
+                  LIMIT 1
+             ) adjudication ON TRUE
+             LEFT JOIN hypothesis_revision_terminal_decisions terminal
+               ON terminal.revision_adjudication_id=adjudication.revision_adjudication_id
+              AND terminal.hypothesis_revision_id=delta.hypothesis_revision_id
+              AND terminal.operation_id=delta.operation_id
+              AND terminal.project_scope_id=delta.project_scope_id
+              AND terminal.organization_id=delta.organization_id
+             LEFT JOIN verification_campaign_coverage_results coverage
+               ON coverage.campaign_coverage_receipt_id=outcome.campaign_coverage_receipt_id
+             LEFT JOIN capability_execution_receipts capability
+               ON capability.id=coverage.capability_execution_receipt_id
+             LEFT JOIN verification_oracle_assessments oracle
+               ON oracle.oracle_assessment_id=coverage.oracle_assessment_id
+            WHERE generation_seal.seal_id=$1
+              AND NOT EXISTS(
+                  SELECT 1 FROM verification_authority_quarantine_events quarantine
+                   WHERE quarantine.fact_delta_bundle_id=delta.fact_delta_bundle_id)
+            ORDER BY delta.fact_delta_bundle_id,capability.id,oracle.oracle_assessment_id"#,
+    )
+    .bind(previous_generation_seal_id)
+    .bind(operation_id)
+    .bind(organization_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut grouped = BTreeMap::<Uuid, Vec<VerificationFactDeltaAuthorityRow>>::new();
+    for row in rows {
+        grouped
+            .entry(row.fact_delta_bundle_id)
+            .or_default()
+            .push(row);
+    }
+    let mut sources = Vec::with_capacity(grouped.len());
+    for (fact_delta_bundle_id, rows) in grouped {
+        let first = rows.first().ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+        if rows.iter().any(|row| {
+            row.delta_kind != first.delta_kind
+                || row.typed_delta != first.typed_delta
+                || row.evidence_ref_set_hash != first.evidence_ref_set_hash
+                || row.source_authority_hash != first.source_authority_hash
+                || row.fact_delta_hash != first.fact_delta_hash
+                || row.objective_outcome_receipt_id != first.objective_outcome_receipt_id
+                || row.verification_objective_id != first.verification_objective_id
+                || row.outcome_ordinal != first.outcome_ordinal
+                || row.objective_outcome != first.objective_outcome
+                || row.objective_outcome_hash != first.objective_outcome_hash
+                || row.revision_adjudication_id != first.revision_adjudication_id
+                || row.adjudication_outcome != first.adjudication_outcome
+                || row.adjudication_hash != first.adjudication_hash
+                || row.revision_terminal_decision_id != first.revision_terminal_decision_id
+                || row.terminal_successor_revision_id != first.terminal_successor_revision_id
+                || row.terminal_decision != first.terminal_decision
+                || row.terminal_decision_hash != first.terminal_decision_hash
+        }) {
+            return Err(conflict(AUTHORITY_MISMATCH));
+        }
+        let capability_execution_receipts = rows
+            .iter()
+            .filter_map(|row| {
+                row.capability_execution_receipt_id.zip(
+                    row.capability_execution_receipt_hash
+                        .as_deref(),
+                )
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|(id, receipt_authority_hash)| {
+                json!({"id":id,"receipt_authority_hash":receipt_authority_hash})
+            })
+            .collect::<Vec<_>>();
+        let oracle_assessments = rows
+            .iter()
+            .filter_map(|row| {
+                row.oracle_assessment_id
+                    .zip(row.oracle_assessment_hash.as_deref())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|(id, assessment_hash)| json!({"id":id,"assessment_hash":assessment_hash}))
+            .collect::<Vec<_>>();
+        let terminal_decision = first.revision_terminal_decision_id.map(|id| {
+            json!({
+                "revision_terminal_decision_id":id,
+                "terminal_successor_revision_id":first.terminal_successor_revision_id,
+                "decision":first.terminal_decision,
+                "decision_hash":first.terminal_decision_hash,
+            })
+        });
+        let body = json!({
+            "schema":"candidate_verification_fact_delta_source.v1",
+            "instruction_authority":false,
+            "fact_delta":{
+                "fact_delta_bundle_id":fact_delta_bundle_id,
+                "delta_kind":first.delta_kind,
+                "evidence_ref_set_hash":first.evidence_ref_set_hash,
+                "source_authority_hash":first.source_authority_hash,
+                "fact_delta_hash":first.fact_delta_hash,
+            },
+            "typed_fact_delta":redacted_verification_typed_delta(&first.typed_delta),
+            "objective_outcome":{
+                "objective_outcome_receipt_id":first.objective_outcome_receipt_id,
+                "verification_objective_id":first.verification_objective_id,
+                "outcome_ordinal":first.outcome_ordinal,
+                "outcome":first.objective_outcome,
+                "outcome_hash":first.objective_outcome_hash,
+            },
+            "revision_adjudication":{
+                "revision_adjudication_id":first.revision_adjudication_id,
+                "outcome":first.adjudication_outcome,
+                "adjudication_hash":first.adjudication_hash,
+            },
+            "terminal_decision":terminal_decision,
+            "capability_execution_receipts":capability_execution_receipts,
+            "oracle_assessments":oracle_assessments,
+        });
+        sources.push(VerificationFactDeltaSnapshotSource {
+            source_identity: fact_delta_bundle_id.to_string(),
+            source_hash: hash_json_on(tx, &body).await?,
+            body,
+        });
+    }
+    Ok(sources)
+}
+
+#[derive(Debug, sqlx::FromRow)]
 struct PredecessorHandoffAuthorityRow {
     source_identity: String,
     source_operation_id: Uuid,
@@ -645,7 +1013,6 @@ struct PredecessorHandoffAuthorityRow {
     source_stage_execution_id: Uuid,
     source_stage_run_unit_id: Uuid,
     source_deliverable_submission_id: Uuid,
-    source_payload: Value,
     source_payload_sha256: String,
     source_evidence_ids: Vec<i64>,
     source_coverage_watermark: Value,
@@ -665,13 +1032,14 @@ async fn load_predecessor_authority_bodies_on(
     operation_id: Uuid,
     organization_id: Uuid,
     scope_snapshot_id: Uuid,
+    target_id: Uuid,
 ) -> Result<BTreeMap<&'static str, Vec<(String, Value)>>> {
     let mut handoffs = sqlx::query_as::<_, PredecessorHandoffAuthorityRow>(
         r#"SELECT ('fork:' || input.id::TEXT) AS source_identity,
                   input.source_operation_id,input.source_stage_kind,
                   input.source_scope_snapshot_id,input.source_stage_execution_id,
                   input.source_stage_run_unit_id,input.source_deliverable_submission_id,
-                  input.source_payload,input.source_payload_sha256,
+                  input.source_payload_sha256,
                   input.source_evidence_ids,input.source_coverage_watermark,
                   input.source_unit_gate_decision_hash,
                   input.source_aggregate_pass_token_hash,input.source_gate_passed_at,
@@ -696,7 +1064,7 @@ async fn load_predecessor_authority_bodies_on(
                       handoff.scope_snapshot_id AS source_scope_snapshot_id,
                       handoff.stage_execution_id AS source_stage_execution_id,
                       handoff.source_stage_run_unit_id,handoff.deliverable_submission_id AS source_deliverable_submission_id,
-                      handoff.payload AS source_payload,handoff.payload_sha256 AS source_payload_sha256,
+                      handoff.payload_sha256 AS source_payload_sha256,
                       handoff.evidence_ids AS source_evidence_ids,
                       handoff.coverage_watermark AS source_coverage_watermark,
                       handoff.unit_gate_decision_hash AS source_unit_gate_decision_hash,
@@ -719,9 +1087,8 @@ async fn load_predecessor_authority_bodies_on(
     }
 
     let mut authority = BTreeMap::new();
-    let mut handoff_members = Vec::with_capacity(handoffs.len());
     let mut expected_evidence = BTreeMap::<i64, (Uuid, BTreeSet<String>)>::new();
-    for handoff in handoffs {
+    for handoff in &handoffs {
         for evidence_id in &handoff.source_evidence_ids {
             let entry = expected_evidence
                 .entry(*evidence_id)
@@ -731,27 +1098,7 @@ async fn load_predecessor_authority_bodies_on(
             }
             entry.1.insert(handoff.source_stage_kind.clone());
         }
-        let body = json!({
-            "schema":"investigation_predecessor_handoff.v1",
-            "instruction_authority":false,
-            "source_operation_id":handoff.source_operation_id,
-            "source_stage_kind":handoff.source_stage_kind,
-            "source_scope_snapshot_id":handoff.source_scope_snapshot_id,
-            "source_stage_execution_id":handoff.source_stage_execution_id,
-            "source_stage_run_unit_id":handoff.source_stage_run_unit_id,
-            "source_deliverable_submission_id":handoff.source_deliverable_submission_id,
-            "source_payload":handoff.source_payload,
-            "source_payload_sha256":handoff.source_payload_sha256,
-            "source_evidence_ids":handoff.source_evidence_ids,
-            "source_coverage_watermark":handoff.source_coverage_watermark,
-            "source_unit_gate_decision_hash":handoff.source_unit_gate_decision_hash,
-            "source_aggregate_pass_token_hash":handoff.source_aggregate_pass_token_hash,
-            "source_gate_passed_at":handoff.source_gate_passed_at,
-            "manifest_input_sha256":handoff.manifest_input_sha256,
-        });
-        handoff_members.push((handoff.source_identity, body));
     }
-    authority.insert("predecessor_handoff", handoff_members);
 
     let evidence_ids = expected_evidence.keys().copied().collect::<Vec<_>>();
     let evidence_rows = if evidence_ids.is_empty() {
@@ -774,6 +1121,7 @@ async fn load_predecessor_authority_bodies_on(
         return Err(conflict(AUTHORITY_MISMATCH));
     }
     let mut evidence_members = Vec::with_capacity(evidence_rows.len());
+    let mut selected_evidence_ids = BTreeSet::new();
     let organization_id_text = organization_id.to_string();
     for row in evidence_rows {
         let evidence_id: i64 = row.try_get("id")?;
@@ -782,11 +1130,16 @@ async fn load_predecessor_authority_bodies_on(
             .get(&evidence_id)
             .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
         let detail: Value = row.try_get("detail")?;
+        let evidence_target_id = row.try_get::<Option<Uuid>, _>("target_id")?;
         if run_id != Some(*expected_operation_id)
             || predecessor_evidence_organization_id(&detail) != Some(organization_id_text.as_str())
         {
             return Err(conflict(AUTHORITY_MISMATCH));
         }
+        if evidence_target_id.is_some_and(|id| id != target_id) {
+            continue;
+        }
+        selected_evidence_ids.insert(evidence_id);
         let body = json!({
             "schema":"investigation_predecessor_evidence.v1",
             "instruction_authority":false,
@@ -799,7 +1152,7 @@ async fn load_predecessor_authority_bodies_on(
             "action":row.try_get::<String, _>("action")?,
             "category":row.try_get::<String, _>("category")?,
             "source":row.try_get::<String, _>("source")?,
-            "target_id":row.try_get::<Option<Uuid>, _>("target_id")?,
+            "target_id":evidence_target_id,
             "evidence_technique":row.try_get::<Option<String>, _>("evidence_technique")?,
             "evidence_outcome":row.try_get::<Option<String>, _>("evidence_outcome")?,
             "evidence_asset":row.try_get::<Option<String>, _>("evidence_asset")?,
@@ -808,6 +1161,38 @@ async fn load_predecessor_authority_bodies_on(
         });
         evidence_members.push((format!("{}:{evidence_id}", expected_operation_id), body));
     }
+    let mut handoff_members = Vec::with_capacity(handoffs.len());
+    for handoff in handoffs {
+        let asset_evidence_ids = handoff
+            .source_evidence_ids
+            .iter()
+            .filter(|id| selected_evidence_ids.contains(id))
+            .copied()
+            .collect::<Vec<_>>();
+        let coverage_watermark_sha256 =
+            hash_json_on(tx, &handoff.source_coverage_watermark).await?;
+        let body = json!({
+            "schema":"investigation_asset_predecessor_handoff.v1",
+            "instruction_authority":false,
+            "asset_target_id":target_id,
+            "source_operation_id":handoff.source_operation_id,
+            "source_stage_kind":handoff.source_stage_kind,
+            "source_scope_snapshot_id":handoff.source_scope_snapshot_id,
+            "source_stage_execution_id":handoff.source_stage_execution_id,
+            "source_stage_run_unit_id":handoff.source_stage_run_unit_id,
+            "source_deliverable_submission_id":handoff.source_deliverable_submission_id,
+            "source_payload_sha256":handoff.source_payload_sha256,
+            "source_payload_projection":"asset_evidence_only",
+            "source_asset_evidence_ids":asset_evidence_ids,
+            "source_coverage_watermark_sha256":coverage_watermark_sha256,
+            "source_unit_gate_decision_hash":handoff.source_unit_gate_decision_hash,
+            "source_aggregate_pass_token_hash":handoff.source_aggregate_pass_token_hash,
+            "source_gate_passed_at":handoff.source_gate_passed_at,
+            "manifest_input_sha256":handoff.manifest_input_sha256,
+        });
+        handoff_members.push((handoff.source_identity, body));
+    }
+    authority.insert("predecessor_handoff", handoff_members);
     authority.insert("predecessor_evidence", evidence_members);
     Ok(authority)
 }
@@ -1073,6 +1458,7 @@ pub(crate) async fn freeze_snapshot_on(
     lock_and_require_registry_canonical_on(tx, input.operation_id).await?;
     if checked.operation_id() != input.operation_id
         || checked.organization_id() != input.organization_id
+        || input.asset_lane_id.is_nil()
     {
         return Err(conflict(AUTHORITY_MISMATCH));
     }
@@ -1100,6 +1486,19 @@ pub(crate) async fn freeze_snapshot_on(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
+    let asset_target_id: Uuid = sqlx::query_scalar(
+        r#"SELECT target_id FROM investigation_asset_lanes
+            WHERE asset_lane_id=$1 AND operation_id=$2 AND scope_snapshot_id=$3
+              AND organization_id=$4 AND state='analyzing'
+            FOR SHARE"#,
+    )
+    .bind(input.asset_lane_id)
+    .bind(input.operation_id)
+    .bind(input.scope_snapshot_id)
+    .bind(input.organization_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?;
 
     let snapshot_id = Uuid::new_v5(
         &input.stable_consumer_request_id,
@@ -1117,6 +1516,7 @@ pub(crate) async fn freeze_snapshot_on(
         if replay.operation_id != input.operation_id
             || replay.organization_id != input.organization_id
             || replay.scope_snapshot_id != input.scope_snapshot_id
+            || replay.asset_lane_id != Some(input.asset_lane_id)
             || replay.tool_truth_authority_bundle_seal_id != checked.bundle_seal_id()
         {
             return Err(conflict(SNAPSHOT_REPLAY_DRIFT));
@@ -1125,21 +1525,19 @@ pub(crate) async fn freeze_snapshot_on(
     }
 
     let wave_ordinal: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(wave_ordinal)+1,0) FROM candidate_analysis_snapshots WHERE operation_id=$1 AND organization_id=$2",
+        "SELECT COALESCE(MAX(wave_ordinal)+1,0) FROM candidate_analysis_snapshots WHERE asset_lane_id=$1",
     )
-    .bind(input.operation_id)
-    .bind(input.organization_id)
+    .bind(input.asset_lane_id)
     .fetch_one(&mut **tx)
     .await?;
     let previous_generation_seal_id: Option<Uuid> = sqlx::query_scalar(
         r#"SELECT seal.seal_id
              FROM hypothesis_generation_seals seal
              JOIN hypothesis_generations generation ON generation.generation_id=seal.generation_id
-            WHERE generation.operation_id=$1 AND generation.organization_id=$2
+            WHERE generation.asset_lane_id=$1
             ORDER BY generation.generation_ordinal DESC LIMIT 1 FOR SHARE"#,
     )
-    .bind(input.operation_id)
-    .bind(input.organization_id)
+    .bind(input.asset_lane_id)
     .fetch_optional(&mut **tx)
     .await?;
     let genesis = previous_generation_seal_id.is_none();
@@ -1148,6 +1546,8 @@ pub(crate) async fn freeze_snapshot_on(
         input.operation_id,
         input.organization_id,
         input.scope_snapshot_id,
+        input.asset_lane_id,
+        asset_target_id,
         previous_generation_seal_id,
     )
     .await?;
@@ -1166,8 +1566,7 @@ pub(crate) async fn freeze_snapshot_on(
                 tx,
                 &json!({
                     "domain":"candidate_previous_generation_absent.v1",
-                    "operation_id":input.operation_id,
-                    "organization_id":input.organization_id,
+                    "asset_lane_id":input.asset_lane_id,
                 }),
             )
             .await?,
@@ -1242,6 +1641,7 @@ pub(crate) async fn freeze_snapshot_on(
         &json!({
             "domain":"candidate_snapshot_authority.v1",
             "snapshot_id":snapshot_id,
+            "asset_lane_id":input.asset_lane_id,
             "bundle_seal_id":checked.bundle_seal_id(),
             "root_set_hash":checked.relevant_root_set_hash(),
             "member_set_hash":checked.member_set_hash(),
@@ -1268,10 +1668,11 @@ pub(crate) async fn freeze_snapshot_on(
                bundle_member_count,bundle_member_set_hash,semantic_authority_bundle_hash,
                freshness_attestation_bundle_hash,temporal_validity_bundle_hash,
                temporal_validity_policy_set_hash,target_state_epoch_set_hash,
-               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash
+               observation_window_hash,bundle_sealed_at,candidate_snapshot_authority_hash,
+               asset_lane_id
            ) VALUES(
                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-               $19,$20,$21,$22,$23,$24,$25,$26)"#,
+               $19,$20,$21,$22,$23,$24,$25,$26,$27)"#,
     )
     .bind(snapshot_id)
     .bind(input.operation_id)
@@ -1299,6 +1700,7 @@ pub(crate) async fn freeze_snapshot_on(
     .bind(&observation_window_hash)
     .bind(header.sealed_at)
     .bind(&candidate_snapshot_authority_hash)
+    .bind(input.asset_lane_id)
     .execute(&mut **tx)
     .await?;
 
@@ -1830,18 +2232,30 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
     .bind(snapshot_id)
     .fetch_all(&mut **tx)
     .await?;
-    let (snapshot_operation_id, snapshot_organization_id, snapshot_scope_snapshot_id): (
-        Uuid,
-        Uuid,
-        Uuid,
-    ) = sqlx::query_as(
-        r#"SELECT operation_id,organization_id,scope_snapshot_id
-             FROM candidate_analysis_snapshots WHERE snapshot_id=$1 FOR SHARE"#,
+    let (
+        snapshot_operation_id,
+        snapshot_organization_id,
+        snapshot_scope_snapshot_id,
+        asset_lane_id,
+        snapshot_target_id,
+        previous_generation_seal_id,
+    ): (Uuid, Uuid, Uuid, Uuid, Uuid, Option<Uuid>) = sqlx::query_as(
+        r#"SELECT snapshot.operation_id,snapshot.organization_id,
+                  snapshot.scope_snapshot_id,snapshot.asset_lane_id,lane.target_id,
+                  snapshot.previous_generation_seal_id
+             FROM candidate_analysis_snapshots snapshot
+             JOIN investigation_asset_lanes lane
+               ON lane.asset_lane_id=snapshot.asset_lane_id
+              AND lane.operation_id=snapshot.operation_id
+              AND lane.scope_snapshot_id=snapshot.scope_snapshot_id
+              AND lane.organization_id=snapshot.organization_id
+            WHERE snapshot.snapshot_id=$1
+            FOR SHARE OF snapshot,lane"#,
     )
     .bind(snapshot_id)
     .fetch_one(&mut **tx)
     .await?;
-    let predecessor_bodies = if source_set_rows.iter().any(|(source_kind, _, _, _)| {
+    let mut frozen_authority_bodies = if source_set_rows.iter().any(|(source_kind, _, _, _)| {
         matches!(
             source_kind.as_str(),
             "predecessor_handoff" | "predecessor_evidence"
@@ -1852,6 +2266,7 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
             snapshot_operation_id,
             snapshot_organization_id,
             snapshot_scope_snapshot_id,
+            snapshot_target_id,
         )
         .await?
         .into_iter()
@@ -1864,10 +2279,42 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
     } else {
         BTreeMap::new()
     };
+    for source in load_verification_fact_delta_sources_on(
+        tx,
+        snapshot_operation_id,
+        snapshot_organization_id,
+        previous_generation_seal_id,
+    )
+    .await?
+    {
+        let key = (
+            "verification_fact_deltas".to_owned(),
+            source.source_identity,
+        );
+        if frozen_authority_bodies.insert(key, source.body).is_some() {
+            return Err(conflict(AUTHORITY_MISMATCH));
+        }
+    }
+    for source in load_pending_hypothesis_discovery_sources_on(
+        tx,
+        snapshot_operation_id,
+        snapshot_organization_id,
+        asset_lane_id,
+    )
+    .await?
+    {
+        let key = (
+            "pending_hypothesis_discovery".to_owned(),
+            source.source_identity,
+        );
+        if frozen_authority_bodies.insert(key, source.body).is_some() {
+            return Err(conflict(AUTHORITY_MISMATCH));
+        }
+    }
     for (source_kind, source_identity, source_hash, member_hash) in source_set_rows {
         let stable_key = format!("source-set:{source_kind}:{source_identity}");
         let source_ref = format!("candidate_snapshot_source_member:{member_hash}");
-        let body = predecessor_bodies
+        let body = frozen_authority_bodies
             .get(&(source_kind.clone(), source_identity.clone()))
             .cloned()
             .unwrap_or_else(|| {
@@ -1877,7 +2324,7 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
                     "source_hash":source_hash,"member_hash":member_hash,
                 })
             });
-        if predecessor_bodies.contains_key(&(source_kind.clone(), source_identity.clone()))
+        if frozen_authority_bodies.contains_key(&(source_kind.clone(), source_identity.clone()))
             && hash_json_on(tx, &body).await? != source_hash
         {
             return Err(conflict(AUTHORITY_MISMATCH));
@@ -2024,8 +2471,8 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
         return Err(conflict("CANDIDATE_SNAPSHOT_INPUT_CAP_EXCEEDED"));
     }
     let input_set_hash = hash_text_array_on(tx, &input_hashes).await?;
-    let (operation_id, organization_id): (Uuid, Uuid) = sqlx::query_as(
-        "SELECT operation_id,organization_id FROM candidate_analysis_snapshots WHERE snapshot_id=$1",
+    let (operation_id, organization_id, asset_lane_id): (Uuid, Uuid, Uuid) = sqlx::query_as(
+        "SELECT operation_id,organization_id,asset_lane_id FROM candidate_analysis_snapshots WHERE snapshot_id=$1",
     )
     .bind(snapshot_id)
     .fetch_optional(&mut **tx)
@@ -2068,9 +2515,10 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
                analysis_attempt_id,snapshot_id,operation_id,organization_id,attempt_ordinal,
                attempt_input_hash,attack_class_checklist_version,attack_class_checklist_digest,
                trust_boundary_checklist_version,trust_boundary_checklist_digest,
-               coverage_sampling_contract_version,coverage_sampling_contract_digest,retry_limit
+               coverage_sampling_contract_version,coverage_sampling_contract_digest,retry_limit,
+               asset_lane_id
            ) VALUES($1,$2,$3,$4,0,$5,'attack_class.v1',$6,
-                    'trust_boundary.v1',$7,'coverage_sampling.v1',$8,1)"#,
+                    'trust_boundary.v1',$7,'coverage_sampling.v1',$8,1,$9)"#,
     )
     .bind(analysis_attempt_id)
     .bind(snapshot_id)
@@ -2080,6 +2528,7 @@ async fn freeze_ready_snapshot_inputs_and_attempt_on(
     .bind(&attack_class_digest)
     .bind(&trust_boundary_digest)
     .bind(&sampling_digest)
+    .bind(asset_lane_id)
     .execute(&mut **tx)
     .await?;
     let event_hash = hash_json_on(
@@ -3406,6 +3855,7 @@ pub(crate) async fn load_snapshot_on(
     struct Snapshot {
         operation_id: Uuid,
         organization_id: Uuid,
+        asset_lane_id: Option<Uuid>,
         scope_snapshot_id: Option<Uuid>,
         snapshot_status: String,
         tool_truth_authority_bundle_seal_id: Uuid,
@@ -3424,7 +3874,7 @@ pub(crate) async fn load_snapshot_on(
         bundle_sealed_at: DateTime<Utc>,
     }
     let snapshot = sqlx::query_as::<_, Snapshot>(
-        r#"SELECT operation_id,organization_id,scope_snapshot_id,snapshot_status,
+        r#"SELECT operation_id,organization_id,asset_lane_id,scope_snapshot_id,snapshot_status,
                   tool_truth_authority_bundle_seal_id,stable_consumer_request_id,
                   relevant_root_count,relevant_root_set_hash,bundle_member_count,
                   bundle_member_set_hash,semantic_authority_bundle_hash,
@@ -3584,6 +4034,7 @@ pub(crate) async fn load_snapshot_on(
             .scope_snapshot_id
             .ok_or_else(|| conflict(AUTHORITY_MISMATCH))?,
         organization_id: snapshot.organization_id,
+        asset_lane_id: snapshot.asset_lane_id,
         disposition: CandidateSnapshotDispositionRow::parse(&snapshot.snapshot_status)?,
         snapshot_hash: snapshot.candidate_snapshot_authority_hash.clone(),
         candidate_snapshot_authority_hash: snapshot.candidate_snapshot_authority_hash,

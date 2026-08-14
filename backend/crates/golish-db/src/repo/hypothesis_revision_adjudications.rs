@@ -187,46 +187,6 @@ pub async fn adjudicate_revision_from_current_authority(
     .await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn objective_outcome_set_replay_reuses_only_the_exact_authority_identity() {
-        let request = AdjudicateRevisionFromAuthority {
-            stable_consumer_request_id: Uuid::new_v4(),
-            operation_id: Uuid::new_v4(),
-            scope_snapshot_id: Uuid::new_v4(),
-            organization_id: Uuid::new_v4(),
-            generation_seal_id: Uuid::new_v4(),
-            hypothesis_revision_id: Uuid::new_v4(),
-            verification_plan_id: Uuid::new_v4(),
-        };
-        let project_scope_id = Uuid::new_v4();
-        let existing = (
-            Uuid::new_v4(),
-            request.verification_plan_id,
-            request.hypothesis_revision_id,
-            request.operation_id,
-            project_scope_id,
-            request.organization_id,
-        );
-        assert!(objective_outcome_set_replay_identity_matches(
-            &existing,
-            &request,
-            project_scope_id
-        ));
-
-        let mut foreign = existing;
-        foreign.5 = Uuid::new_v4();
-        assert!(!objective_outcome_set_replay_identity_matches(
-            &foreign,
-            &request,
-            project_scope_id
-        ));
-    }
-}
-
 pub async fn adjudicate_hypothesis_revision_with_fresh_tool_truth(
     tx: &mut Transaction<'_, Postgres>,
     authority: &AllFreshToolTruthAuthorityBundle<'_>,
@@ -744,7 +704,7 @@ async fn terminalize_hypothesis_revision_on(
     Ok(terminal_decision_id)
 }
 
-async fn clone_terminal_revision_authorities_on(
+pub(super) async fn clone_terminal_revision_authorities_on(
     tx: &mut Transaction<'_, Postgres>,
     source_revision_id: Uuid,
     successor_revision_id: Uuid,
@@ -995,4 +955,44 @@ async fn clone_terminal_revision_authorities_on(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn objective_outcome_set_replay_reuses_only_the_exact_authority_identity() {
+        let request = AdjudicateRevisionFromAuthority {
+            stable_consumer_request_id: Uuid::new_v4(),
+            operation_id: Uuid::new_v4(),
+            scope_snapshot_id: Uuid::new_v4(),
+            organization_id: Uuid::new_v4(),
+            generation_seal_id: Uuid::new_v4(),
+            hypothesis_revision_id: Uuid::new_v4(),
+            verification_plan_id: Uuid::new_v4(),
+        };
+        let project_scope_id = Uuid::new_v4();
+        let existing = (
+            Uuid::new_v4(),
+            request.verification_plan_id,
+            request.hypothesis_revision_id,
+            request.operation_id,
+            project_scope_id,
+            request.organization_id,
+        );
+        assert!(objective_outcome_set_replay_identity_matches(
+            &existing,
+            &request,
+            project_scope_id
+        ));
+
+        let mut foreign = existing;
+        foreign.5 = Uuid::new_v4();
+        assert!(!objective_outcome_set_replay_identity_matches(
+            &foreign,
+            &request,
+            project_scope_id
+        ));
+    }
 }

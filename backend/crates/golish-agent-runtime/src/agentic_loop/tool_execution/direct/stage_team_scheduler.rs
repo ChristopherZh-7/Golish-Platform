@@ -11,7 +11,9 @@ use golish_agent_kit::db_traits::{
     StageWorkItemView, StageWorkerOutputDisposition, StageWorkerOutputView,
 };
 use golish_agent_kit::harness::{CanonicalFactKey, StageKind, StageSpec};
-use golish_sub_agents::{StageTeamCompiledActionBinding, StageTeamLeaderBinding};
+use golish_sub_agents::{
+    InvestigationAssetLaneIdentity, StageTeamCompiledActionBinding, StageTeamLeaderBinding,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -28,8 +30,18 @@ const MAX_STAGE_TEAM_CONTROLLER_TURN_RESUMES: usize = 2;
 const MAX_REPAIR_WORKER_RUNS_PER_GENERATION: usize = 4;
 const COMPANY_CONTROLLER_COORDINATION_MODE: &str = "company_controller";
 const INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE: &str = "investigation_task_orchestrator";
-const INVESTIGATION_COGNITIVE_ROLES: [&str; 9] = [
+const INVESTIGATION_CONFIGURED_COGNITIVE_ROLES: [&str; 9] = [
     "investigation",
+    "pentester",
+    "researcher",
+    "browser",
+    "adviser",
+    "coder",
+    "installer",
+    "enricher",
+    "memorist",
+];
+const INVESTIGATION_DYNAMIC_COGNITIVE_ROLES: [&str; 8] = [
     "pentester",
     "researcher",
     "browser",
@@ -442,6 +454,7 @@ const VULN_GENERAL_DAST_TECHNIQUES: &[&str] = &["WSTG-INPV-05", "WSTG-INPV-01", 
 const VULN_ANONYMOUS_TECHNIQUE: &str = "WSTG-ATHN-04";
 const VULN_NDAY_TECHNIQUE: &str = "GOLISH-NDAY";
 pub(super) const MAX_VULN_AUTOMATIC_ATTEMPTS: u32 = 3;
+pub(super) const MAX_VULN_ANONYMOUS_AUTOMATIC_ATTEMPTS: u32 = 2;
 const VULN_BUDGET_RECOVERY_ATTEMPT: u32 = MAX_VULN_AUTOMATIC_ATTEMPTS + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -701,65 +714,84 @@ pub(super) fn build_vuln_worklist_shards(
         .collect())
 }
 
-/// Project a claimed WorkItem into the narrow host authority understood by
-/// `golish-sub-agents`. Company Controllers receive the durable dispatch/final
-/// router, while an Investigation Primary receives only planning authority;
-/// every dynamic child intentionally receives no binding.
+pub(super) fn exact_investigation_asset_primary(item: &StageWorkItemView) -> bool {
+    let Some([marker]) = item.input_refs.as_array().map(Vec::as_slice) else {
+        return false;
+    };
+    let Some(marker) = marker
+        .as_object()
+        .filter(|marker| matches!(marker.len(), 5 | 6))
+    else {
+        return false;
+    };
+    let Some(asset_lane_id) = marker
+        .get("asset_lane_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+    else {
+        return false;
+    };
+    let Some(target_id) = marker
+        .get("target_id")
+        .and_then(Value::as_str)
+        .and_then(|value| Uuid::parse_str(value).ok())
+    else {
+        return false;
+    };
+    let Some(asset_context_sha256) = marker.get("asset_context_sha256").and_then(Value::as_str)
+    else {
+        return false;
+    };
+    let Some(evolution_epoch) = marker.get("evolution_epoch").and_then(Value::as_i64) else {
+        return false;
+    };
+    let schedule_round = match marker.get("schedule_round") {
+        Some(value) => match value.as_i64().filter(|value| *value >= 0) {
+            Some(value) if marker.len() == 6 => Some(value),
+            _ => return false,
+        },
+        None if marker.len() == 5 => None,
+        None => return false,
+    };
+    if (InvestigationAssetLaneIdentity {
+        asset_lane_id,
+        target_id,
+        asset_context_sha256: asset_context_sha256.to_string(),
+    })
+    .validate()
+    .is_err()
+    {
+        return false;
+    }
+    let expected_id = Uuid::new_v5(
+        &asset_lane_id,
+        match schedule_round {
+            Some(round) => {
+                format!("investigation-asset-primary-work-item-v2:{evolution_epoch}:{round}")
+            }
+            None => format!("investigation-asset-primary-work-item-v1:{evolution_epoch}"),
+        }
+        .as_bytes(),
+    );
+    let expected_key = match schedule_round {
+        Some(round) => format!("asset:{asset_lane_id}:primary:{evolution_epoch}:round:{round}"),
+        None => format!("asset:{asset_lane_id}:primary:{evolution_epoch}"),
+    };
+    marker.get("kind").and_then(Value::as_str) == Some("investigation_asset_lane")
+        && item.id == expected_id
+        && item.stable_key == expected_key
+        && item.work_item_kind == "investigation_asset_primary"
+        && item.created_by == "server_phase_transition"
+        && item.output_schema == "stage_unit_aggregate.v1"
+        && item.conflict_key.is_none()
+        && !item.required_for_barrier
+        && item.input_manifest_hash == asset_context_sha256
+}
+
 pub(super) fn stage_team_leader_binding_for_claim(
     plan: &StageTeamPlanView,
     item: &StageWorkItemView,
 ) -> Option<StageTeamLeaderBinding> {
-    fn exact_verification_task_primary(item: &StageWorkItemView) -> bool {
-        let Some(verification_task_id) = item
-            .stable_key
-            .strip_prefix("task:")
-            .and_then(|value| value.strip_suffix(":primary"))
-            .and_then(|value| Uuid::parse_str(value).ok())
-            .filter(|value| !value.is_nil())
-        else {
-            return false;
-        };
-        let Some([marker]) = item.input_refs.as_array().map(Vec::as_slice) else {
-            return false;
-        };
-        let fingerprint = marker
-            .get("subject_fingerprint_sha256")
-            .and_then(Value::as_str)
-            .and_then(|value| value.strip_prefix("sha256:"));
-        let original_item_id = Uuid::new_v5(
-            &verification_task_id,
-            b"investigation-task-primary-work-item-v1",
-        );
-        let recovery_item_id = Uuid::new_v5(
-            &original_item_id,
-            b"investigation-task-primary-infrastructure-recovery-work-item-v1",
-        );
-        let recovery_v2_item_id = Uuid::new_v5(
-            &original_item_id,
-            b"investigation-task-primary-infrastructure-recovery-work-item-v2",
-        );
-        (item.work_item_kind == "investigation_primary"
-            || (item.work_item_kind == "investigation_primary_recovery"
-                && item.id == recovery_item_id)
-            || (item.work_item_kind == "investigation_primary_recovery_v2"
-                && item.id == recovery_v2_item_id))
-            && item.created_by == "server_phase_transition"
-            && item.output_schema == "stage_unit_aggregate.v1"
-            && item.conflict_key.is_none()
-            && marker.get("kind").and_then(Value::as_str) == Some("verification_task")
-            && marker
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(|value| Uuid::parse_str(value).ok())
-                == Some(verification_task_id)
-            && fingerprint.is_some_and(|hex| {
-                hex.len() == 64
-                    && hex
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
-    }
-
     let coordination_mode = plan
         .dynamic_request_policy
         .get("coordination_mode")
@@ -775,8 +807,7 @@ pub(super) fn stage_team_leader_binding_for_claim(
         _ => return None,
     };
     let exact_primary_key = item.stable_key == "leader:primary";
-    let exact_verification_task_primary_key =
-        planning_only && exact_verification_task_primary(item);
+    let exact_asset_primary_key = planning_only && exact_investigation_asset_primary(item);
     let exact_synthesis_recovery_key = planning_only
         && item
             .stable_key
@@ -785,23 +816,26 @@ pub(super) fn stage_team_leader_binding_for_claim(
             .is_some();
     let exact_finalizer_conflict = (exact_primary_key
         && item.conflict_key.as_deref() == Some("stage_unit_finalizer"))
-        || ((exact_synthesis_recovery_key || exact_verification_task_primary_key)
+        || ((exact_synthesis_recovery_key || exact_asset_primary_key)
             && item.conflict_key.is_none());
     let completed_investigation_primary_replay = planning_only
-        && (exact_primary_key || exact_verification_task_primary_key)
+        && (exact_primary_key || exact_asset_primary_key)
         && plan.requests_closed_at.is_some()
         && item.status == RuntimeStageWorkItemStatus::Completed;
+    let parked_investigation_primary_continuation = planning_only
+        && (exact_primary_key || exact_asset_primary_key)
+        && plan.requests_closed_at.is_none()
+        && item.status == RuntimeStageWorkItemStatus::WaitingDependency;
     (((plan.status == RuntimeStageTeamPlanStatus::Active)
         || (completed_investigation_primary_replay
             && plan.status == RuntimeStageTeamPlanStatus::Finalizing))
         && (item.status == RuntimeStageWorkItemStatus::Running
+            || parked_investigation_primary_continuation
             || completed_investigation_primary_replay)
         && item.stage_team_plan_id == plan.id
         && item.stage_run_unit_id == plan.stage_run_unit_id
         && item.organization_id == plan.organization_id
-        && (exact_primary_key
-            || exact_synthesis_recovery_key
-            || exact_verification_task_primary_key)
+        && (exact_primary_key || exact_synthesis_recovery_key || exact_asset_primary_key)
         && item.role == plan.leader_role
         && plan.aggregator_role.as_deref() == Some(item.role.as_str())
         && item.is_aggregator
@@ -1442,12 +1476,12 @@ pub(super) fn build_stage_team_seed(
             .iter()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        let cognitive_catalog = INVESTIGATION_COGNITIVE_ROLES
+        let cognitive_catalog = INVESTIGATION_CONFIGURED_COGNITIVE_ROLES
             .into_iter()
             .collect::<BTreeSet<_>>();
         if policy.aggregator_kind != "investigation_primary"
             || policy.aggregator_role != "investigation"
-            || policy.allowed_roles.len() != INVESTIGATION_COGNITIVE_ROLES.len()
+            || policy.allowed_roles.len() != INVESTIGATION_CONFIGURED_COGNITIVE_ROLES.len()
             || configured_roles != cognitive_catalog
         {
             return Err("invalid_investigation_task_orchestrator_policy");
@@ -1472,7 +1506,7 @@ pub(super) fn build_stage_team_seed(
         "role": policy.aggregator_role,
         "stage": spec.kind.as_str(),
     }));
-    let work_items = vec![StageWorkItemSeed {
+    let leader_work_item = StageWorkItemSeed {
         stable_key: "leader:primary".to_string(),
         work_item_kind: policy.aggregator_kind.clone(),
         role: policy.aggregator_role.clone(),
@@ -1486,9 +1520,27 @@ pub(super) fn build_stage_team_seed(
         budget: json!({}),
         output_schema: "stage_unit_aggregate.v1".to_string(),
         created_by: "server_seed".to_string(),
-    }];
+    };
+    // Investigation starts with a closed, empty governance plan. The current
+    // company/asset queue owns runnable admission; only the exact Asset
+    // Primary schedule may open an epoch. The Primary then generates dynamic
+    // cognition requests from the current asset rather than a host roster.
+    // Seeding a generic organization Primary here would
+    // reintroduce the retired org-wide topology before an asset was claimed.
+    let work_items = if investigation_task_orchestrator {
+        Vec::new()
+    } else {
+        vec![leader_work_item]
+    };
 
     let mut allowed_roles = policy.allowed_roles.clone();
+    if investigation_task_orchestrator {
+        allowed_roles.extend(
+            INVESTIGATION_DYNAMIC_COGNITIVE_ROLES
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
     if server_owned_enumeration_worklist {
         allowed_roles.extend(
             [
@@ -1583,7 +1635,11 @@ pub(super) fn build_stage_team_seed(
         // are separate bounded fuels. The latter aligns with the
         // producer contract that may need three attempts before an
         // exact cell can terminalize.
-        "max_controller_gate_repairs": 1,
+        // EAS can legitimately discover a new exact Web origin while repairing
+        // liveness. That newly-authoritative denominator needs one additional
+        // bounded repair turn for web fingerprinting; a single repair would
+        // terminalize the Controller before it can close the derived cell.
+        "max_controller_gate_repairs": 2,
         "max_controller_turn_resumes": MAX_STAGE_TEAM_CONTROLLER_TURN_RESUMES,
         "max_requests": policy.max_dynamic_requests,
         "max_repair_generations": MAX_STAGE_TEAM_REPAIR_GENERATIONS,
@@ -1788,6 +1844,12 @@ mod tests {
         assert!(binding.controller_action_compiler.is_none());
         assert!(binding.compiled_actions.is_empty());
 
+        item.status = RuntimeStageWorkItemStatus::WaitingDependency;
+        let parked = stage_team_leader_binding_for_claim(&plan, &item)
+            .expect("parked Investigation Primary retains planning-only continuation authority");
+        assert!(parked.planning_only);
+        item.status = RuntimeStageWorkItemStatus::Running;
+
         plan.requests_closed_at = Some(chrono::Utc::now());
         plan.status = RuntimeStageTeamPlanStatus::Finalizing;
         item.status = RuntimeStageWorkItemStatus::Completed;
@@ -1826,50 +1888,19 @@ mod tests {
             "kind": "verification_task",
             "subject_fingerprint_sha256": format!("sha256:{}", "a".repeat(64)),
         }]);
-        let task_primary = stage_team_leader_binding_for_claim(&plan, &item)
-            .expect("exact VerificationTask Primary retains planning-only authority");
-        assert!(task_primary.planning_only);
-
-        let original_item_id = Uuid::new_v5(
-            &verification_task_id,
-            b"investigation-task-primary-work-item-v1",
+        assert!(
+            stage_team_leader_binding_for_claim(&plan, &item).is_none(),
+            "legacy per-VerificationTask Primary must not regain runnable authority"
         );
-        item.id = Uuid::new_v5(
-            &original_item_id,
-            b"investigation-task-primary-infrastructure-recovery-work-item-v1",
-        );
-        item.work_item_kind = "investigation_primary_recovery".to_string();
-        let recovery_primary = stage_team_leader_binding_for_claim(&plan, &item)
-            .expect("deterministic VerificationTask recovery retains planning-only authority");
-        assert!(recovery_primary.planning_only);
-        item.id = Uuid::new_v5(
-            &original_item_id,
-            b"investigation-task-primary-infrastructure-recovery-work-item-v2",
-        );
-        item.work_item_kind = "investigation_primary_recovery_v2".to_string();
-        let recovery_v2_primary = stage_team_leader_binding_for_claim(&plan, &item)
-            .expect("deterministic VerificationTask v2 recovery retains planning-only authority");
-        assert!(recovery_v2_primary.planning_only);
-        item.id = Uuid::new_v4();
-        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
-        item.id = original_item_id;
-        item.work_item_kind = "investigation_primary".to_string();
 
-        item.created_by = "model".to_string();
-        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
-        item.created_by = "server_phase_transition".to_string();
-        item.input_refs[0]["id"] = json!(Uuid::from_u128(78));
-        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
-        item.input_refs[0]["id"] = json!(verification_task_id);
-        item.input_refs[0]["subject_fingerprint_sha256"] = json!("sha256:BAD");
-        assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
-
+        item.stable_key = "leader:primary".to_string();
+        item.conflict_key = Some("stage_unit_finalizer".to_string());
         plan.stage_kind = StageKind::TargetIntel.as_str().to_string();
         assert!(stage_team_leader_binding_for_claim(&plan, &item).is_none());
     }
 
     #[test]
-    fn investigation_policy_seeds_one_primary_without_fixed_lanes() {
+    fn investigation_policy_seeds_closed_governance_without_an_org_primary() {
         let raw_spec: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../resources/harness/stages/investigation/spec.json"
@@ -1892,10 +1923,7 @@ mod tests {
             .expect("valid Investigation TaskOrchestrator policy")
             .expect("Investigation seeds its durable governance envelope");
 
-        assert_eq!(seeded.work_items.len(), 1);
-        assert_eq!(seeded.work_items[0].stable_key, "leader:primary");
-        assert_eq!(seeded.work_items[0].work_item_kind, "investigation_primary");
-        assert_eq!(seeded.work_items[0].role, "investigation");
+        assert!(seeded.work_items.is_empty());
         assert_eq!(
             seeded.plan.dynamic_request_policy["coordination_mode"],
             INVESTIGATION_TASK_ORCHESTRATOR_COORDINATION_MODE
@@ -1916,8 +1944,8 @@ mod tests {
                 "browser",
                 "coder",
                 "enricher",
-                "installer",
                 "investigation",
+                "installer",
                 "memorist",
                 "pentester",
                 "researcher",
@@ -1940,6 +1968,108 @@ mod tests {
             seeded.plan.dynamic_request_policy["child_output_schema"],
             "investigation_cognitive_output.v1"
         );
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["allowed_request_kinds"],
+            json!(["analysis_task", "cognitive_support", "verification_task"])
+        );
+    }
+
+    #[test]
+    fn exact_asset_primary_binds_to_one_lane_without_a_seeded_roster() {
+        let spec =
+            load_embedded_stage_spec(StageKind::Investigation).expect("Investigation stage spec");
+        let mut base = base_seed();
+        base.stage_kind = StageKind::Investigation.as_str().to_string();
+        base.specialist = "investigation".to_string();
+        let seeded = build_stage_team_seed(&spec, base).unwrap().unwrap();
+        assert!(seeded.work_items.is_empty());
+        assert!(seeded.plan.allowed_roles.iter().any(|role| role == "coder"));
+        assert!(seeded
+            .plan
+            .allowed_roles
+            .iter()
+            .any(|role| role == "memorist"));
+        let plan_id = Uuid::from_u128(10);
+        let unit_id = Uuid::from_u128(11);
+        let organization_id = Uuid::from_u128(12);
+        let asset_lane_id = Uuid::from_u128(13);
+        let target_id = Uuid::from_u128(14);
+        let evolution_epoch = 2_i64;
+        let asset_hash = format!("sha256:{}", "a".repeat(64));
+        let plan = StageTeamPlanView {
+            id: plan_id,
+            operation_id: seeded.base.operation_id,
+            stage_execution_id: seeded.base.stage_execution_id,
+            stage_run_unit_id: unit_id,
+            scope_snapshot_id: Uuid::from_u128(15),
+            organization_id,
+            stage_kind: StageKind::Investigation.as_str().to_string(),
+            unit_generation: 1,
+            schema_version: seeded.plan.schema_version,
+            plan_version: seeded.plan.plan_version,
+            plan_sha256: seeded.plan.plan_sha256,
+            leader_role: seeded.plan.leader_role,
+            allowed_roles: seeded.plan.allowed_roles,
+            aggregator_kind: seeded.plan.aggregator_kind,
+            aggregator_role: seeded.plan.aggregator_role,
+            max_workers_total: seeded.plan.max_workers_total,
+            max_workers_active: seeded.plan.max_workers_active,
+            dynamic_requests_enabled: seeded.plan.dynamic_requests_enabled,
+            dynamic_request_policy: seeded.plan.dynamic_request_policy,
+            dispatch_epoch: 3,
+            requests_closed_at: None,
+            final_submitter_kind: seeded.plan.final_submitter_kind,
+            final_submitter_worker_run_id: None,
+            created_from_stage_spec_hash: seeded.plan.created_from_stage_spec_hash,
+            status: RuntimeStageTeamPlanStatus::Active,
+            row_version: 4,
+        };
+        let primary_marker = json!([{
+            "kind": "investigation_asset_lane",
+            "asset_lane_id": asset_lane_id,
+            "target_id": target_id,
+            "asset_context_sha256": asset_hash,
+            "evolution_epoch": evolution_epoch,
+        }]);
+        let primary = StageWorkItemView {
+            id: Uuid::new_v5(
+                &asset_lane_id,
+                format!("investigation-asset-primary-work-item-v1:{evolution_epoch}").as_bytes(),
+            ),
+            stage_team_plan_id: plan_id,
+            stage_run_unit_id: unit_id,
+            organization_id,
+            stable_key: format!("asset:{asset_lane_id}:primary:{evolution_epoch}"),
+            work_item_kind: "investigation_asset_primary".to_string(),
+            role: "investigation".to_string(),
+            input_refs: primary_marker,
+            input_manifest_hash: asset_hash.clone(),
+            priority: 0,
+            required_for_barrier: false,
+            is_aggregator: true,
+            conflict_key: None,
+            attempt_policy: json!({"max_attempts": 3}),
+            budget: json!({}),
+            output_schema: "stage_unit_aggregate.v1".to_string(),
+            created_by: "server_phase_transition".to_string(),
+            status: RuntimeStageWorkItemStatus::Running,
+            row_version: 1,
+        };
+        assert!(stage_team_leader_binding_for_claim(&plan, &primary)
+            .is_some_and(|binding| binding.planning_only));
+
+        let schedule_round = 4_i64;
+        let mut v2_primary = primary;
+        v2_primary.input_refs[0]["schedule_round"] = json!(schedule_round);
+        v2_primary.id = Uuid::new_v5(
+            &asset_lane_id,
+            format!("investigation-asset-primary-work-item-v2:{evolution_epoch}:{schedule_round}")
+                .as_bytes(),
+        );
+        v2_primary.stable_key =
+            format!("asset:{asset_lane_id}:primary:{evolution_epoch}:round:{schedule_round}");
+        assert!(stage_team_leader_binding_for_claim(&plan, &v2_primary)
+            .is_some_and(|binding| binding.planning_only));
     }
 
     #[test]
@@ -2312,13 +2442,25 @@ mod tests {
                 "coordination_mode": "company_controller",
                 "global_provider_cap": 7,
                 "max_company_units_active": 3,
-                "max_controller_gate_repairs": 1,
+                "max_controller_gate_repairs": 2,
                 "max_controller_turn_resumes": 2,
                 "max_repair_generations": MAX_STAGE_TEAM_REPAIR_GENERATIONS,
                 "max_requests": 32,
                 "max_subject_refs": 32,
                 "organization_scope_implicit": true,
             })
+        );
+    }
+
+    #[test]
+    fn company_controller_allows_a_second_gate_repair_for_a_derived_denominator() {
+        let seeded = build_stage_team_seed(&company_controller_spec(1, 1), base_seed())
+            .expect("valid controller policy")
+            .expect("team enabled");
+
+        assert_eq!(
+            seeded.plan.dynamic_request_policy["max_controller_gate_repairs"],
+            json!(2)
         );
     }
 

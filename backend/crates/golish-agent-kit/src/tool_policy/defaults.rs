@@ -79,6 +79,9 @@ const ALLOW_TOOLS_DYNAMIC: &[&str] = &[
     "search_skills",
     "load_skill",
     "search_tools",
+    // Server-scoped, read-only harness census. It neither expands scope nor
+    // sends traffic and therefore must not interrupt a headless stage for HITL.
+    "list_in_scope_targets",
 ];
 
 /// Default allowed tools (safe read-only operations).
@@ -102,6 +105,7 @@ pub const ALLOW_TOOLS: &[&str] = &[
     "search_skills",
     "load_skill",
     "search_tools",
+    "list_in_scope_targets",
     "ast_grep",
     "graph_search",
     "graph_neighbors",

@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatAutoScroll } from "./useChatAutoScroll";
 
@@ -29,8 +29,17 @@ function lastObserver(): CapturingResizeObserver | undefined {
 
 let hookState: ReturnType<typeof useChatAutoScroll> | null = null;
 
-function Harness({ messages }: { messages: readonly unknown[] }) {
-  hookState = useChatAutoScroll(messages);
+function Harness({
+  messages,
+  active = true,
+  scrollKey = "conversation-1",
+}: {
+  messages: readonly unknown[];
+  active?: boolean;
+  scrollKey?: string;
+}) {
+  hookState = useChatAutoScroll(messages, { active, scrollKey });
+  if (!active) return null;
   return (
     <div data-testid="container" ref={hookState.messagesContainerRef}>
       <div data-testid="content">body</div>
@@ -100,5 +109,61 @@ describe("useChatAutoScroll", () => {
     hookState!.userScrolledUpRef.current = true;
     act(() => lastObserver()?.fire());
     expect(readTop()).toBe(0);
+  });
+
+  it("reattaches to a rebuilt viewport and follows messages added while detail owns the UI", async () => {
+    const messages = [{ id: 1 }];
+    const view = render(<Harness messages={messages} />);
+    const oldViewport = view.getByTestId("container");
+    const readOldTop = patchScroll(oldViewport, 800);
+    act(() => lastObserver()?.fire());
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    expect(readOldTop()).toBe(800);
+
+    const observer = lastObserver();
+    observer?.observe.mockClear();
+    const hiddenMessages = [...messages, { id: 2 }];
+    view.rerender(<Harness active={false} messages={hiddenMessages} />);
+    view.rerender(<Harness messages={hiddenMessages} />);
+
+    const rebuiltViewport = view.getByTestId("container");
+    expect(rebuiltViewport).not.toBe(oldViewport);
+    const readRebuiltTop = patchScroll(rebuiltViewport, 1_100);
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(readRebuiltTop()).toBe(1_100);
+    expect(observer?.observe).toHaveBeenCalledWith(view.getByTestId("content"));
+
+    rebuiltViewport.scrollTop = 500;
+    fireEvent.wheel(rebuiltViewport, { deltaY: -120 });
+    act(() => observer?.fire());
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    expect(readRebuiltTop()).toBe(500);
+  });
+
+  it("restores an intentional history-reading position after the viewport is rebuilt", async () => {
+    const messages = [{ id: 1 }];
+    const view = render(<Harness messages={messages} />);
+    const oldViewport = view.getByTestId("container");
+    patchScroll(oldViewport, 800);
+    oldViewport.scrollTop = 240;
+    hookState!.userScrolledUpRef.current = true;
+
+    view.rerender(<Harness active={false} messages={messages} />);
+    view.rerender(<Harness messages={messages} />);
+
+    const rebuiltViewport = view.getByTestId("container");
+    const readRebuiltTop = patchScroll(rebuiltViewport, 900);
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+
+    expect(readRebuiltTop()).toBe(240);
   });
 });

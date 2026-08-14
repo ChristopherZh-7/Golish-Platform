@@ -505,6 +505,48 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                              OR (
                                                  worker.message_chain_id IS NULL
                                                  AND worker.status<>'queued'
+                                                 AND NOT (
+                                                     worker.status IN (
+                                                         'passed','failed','superseded','exhausted'
+                                                     )
+                                                     AND worker.terminal_at IS NOT NULL
+                                                     AND worker.lease_token IS NULL
+                                                     AND worker.active_tool_call_id IS NULL
+                                                     AND (
+                                                         EXISTS (
+                                                             SELECT 1
+                                                               FROM investigation_asset_primary_current_authorities current_primary
+                                                              WHERE current_primary.operation_id=worker.operation_id
+                                                                AND current_primary.stage_execution_id=worker.stage_execution_id
+                                                                AND current_primary.stage_run_unit_id=worker.stage_run_unit_id
+                                                                AND current_primary.authority_primary_work_item_id=worker.work_item_id
+                                                                AND current_primary.authority_primary_worker_run_id=worker.id
+                                                                AND current_primary.execution_rearm_receipt_id IS NOT NULL
+                                                         )
+                                                         OR EXISTS (
+                                                             SELECT 1
+                                                               FROM investigation_asset_primary_schedules fixed
+                                                               JOIN investigation_asset_primary_current_authorities current_primary
+                                                                 ON current_primary.asset_lane_id=fixed.asset_lane_id
+                                                                AND current_primary.operation_id=fixed.operation_id
+                                                                AND current_primary.stage_execution_id=fixed.stage_execution_id
+                                                                AND current_primary.stage_run_unit_id=fixed.stage_run_unit_id
+                                                                AND current_primary.primary_message_chain_id=fixed.primary_message_chain_id
+                                                              WHERE fixed.schedule_contract='fixed_roster_v1'
+                                                                AND fixed.status='applied'
+                                                                AND (
+                                                                    fixed.primary_work_item_id=worker.work_item_id
+                                                                    AND fixed.primary_worker_run_id=worker.id
+                                                                    OR worker.work_item_id IN (
+                                                                        fixed.browser_work_item_id,
+                                                                        fixed.researcher_work_item_id,
+                                                                        fixed.pentester_work_item_id,
+                                                                        fixed.adviser_work_item_id
+                                                                    )
+                                                                )
+                                                         )
+                                                     )
+                                                 )
                                              )
                                              OR (
                                                  worker.message_chain_id IS NOT NULL
@@ -514,6 +556,22 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                                                        AND bound_chain.session_id=tasks.session_id
                                                        AND bound_chain.task_id=tasks.id
                                                        AND bound_chain.agent=(CASE
+                                                           WHEN EXISTS (
+                                                           SELECT 1
+                                                                 FROM investigation_asset_primary_current_authorities asset_schedule
+                                                                WHERE asset_schedule.operation_id=worker.operation_id
+                                                                  AND asset_schedule.stage_execution_id=worker.stage_execution_id
+                                                                  AND asset_schedule.stage_run_unit_id=worker.stage_run_unit_id
+                                                                  AND (
+                                                                       (asset_schedule.primary_work_item_id=worker.work_item_id
+                                                                        AND asset_schedule.primary_worker_run_id=worker.id)
+                                                                       OR (
+                                                                           asset_schedule.execution_rearm_receipt_id IS NOT NULL
+                                                                           AND asset_schedule.authority_primary_work_item_id=worker.work_item_id
+                                                                           AND asset_schedule.authority_primary_worker_run_id=worker.id
+                                                                       )
+                                                                  )
+                                                           ) THEN 'primary'::agent_type
                                                            WHEN worker.work_item_id IS NOT NULL
                                                                THEN 'pentester'::agent_type
                                                            WHEN worker.specialist='reporter'
@@ -586,6 +644,177 @@ const V2_RELATIONAL_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
                  )
              )"#;
 
+/// Exact task-level recovery authority for the narrow Investigation crash
+/// window after Primary synthesis closed the request epoch but before the
+/// deterministic census/compiler continuation completed the physical Primary.
+///
+/// This intentionally requires an expired current worker instead of a live
+/// lease. The worker startup reaper preserves the same execution shell, then
+/// this predicate keeps the owning task waiting/resumable rather than failing
+/// it before stage_run can finish the already-durable synthesis.
+const V2_POST_SYNTHESIS_RECOVERABLE_SQL: &str = r#"os.superseded_by IS NULL
+             AND os.current_stage='investigation'
+             AND os.project_scope_id IS NOT NULL
+             AND (
+                 SELECT COUNT(*)
+                   FROM stage_runs post_execution
+                   JOIN operation_org_scope_snapshots post_snapshot
+                     ON post_snapshot.operation_id=os.operation_id
+                    AND post_snapshot.project_scope_id=os.project_scope_id
+                    AND post_snapshot.sealed_at IS NOT NULL
+                   JOIN stage_run_units post_unit
+                     ON post_unit.operation_id=os.operation_id
+                    AND post_unit.stage_execution_id=post_execution.id
+                    AND post_unit.scope_snapshot_id=post_snapshot.id
+                    AND post_unit.stage_kind='investigation'
+                   JOIN operation_org_scope_units post_member
+                     ON post_member.snapshot_id=post_snapshot.id
+                    AND post_member.organization_id=post_unit.organization_id
+                   JOIN stage_team_plans post_plan
+                     ON post_plan.operation_id=os.operation_id
+                    AND post_plan.stage_execution_id=post_execution.id
+                    AND post_plan.stage_run_unit_id=post_unit.id
+                    AND post_plan.scope_snapshot_id=post_snapshot.id
+                    AND post_plan.organization_id=post_unit.organization_id
+                    AND post_plan.stage_kind='investigation'
+                   JOIN investigation_asset_primary_current_authorities current_primary
+                     ON current_primary.stage_team_plan_id=post_plan.id
+                    AND current_primary.operation_id=os.operation_id
+                    AND current_primary.stage_execution_id=post_execution.id
+                    AND current_primary.stage_run_unit_id=post_unit.id
+                    AND current_primary.scope_snapshot_id=post_snapshot.id
+                    AND current_primary.organization_id=post_unit.organization_id
+                    AND current_primary.resume_dispatch_epoch=post_plan.dispatch_epoch
+                   JOIN stage_work_items post_item
+                     ON post_item.id=current_primary.primary_work_item_id
+                    AND post_item.team_plan_id=post_plan.id
+                    AND post_item.operation_id=os.operation_id
+                    AND post_item.stage_execution_id=post_execution.id
+                    AND post_item.stage_run_unit_id=post_unit.id
+                    AND post_item.scope_snapshot_id=post_snapshot.id
+                    AND post_item.organization_id=post_unit.organization_id
+                    AND post_item.dispatch_epoch=post_plan.dispatch_epoch
+                   JOIN stage_worker_runs post_worker
+                     ON post_worker.id=current_primary.primary_worker_run_id
+                    AND post_worker.work_item_id=post_item.id
+                    AND post_worker.operation_id=os.operation_id
+                    AND post_worker.stage_execution_id=post_execution.id
+                    AND post_worker.stage_run_unit_id=post_unit.id
+                    AND post_worker.organization_id=post_unit.organization_id
+                   JOIN message_chains post_chain
+                     ON post_chain.id=current_primary.primary_message_chain_id
+                    AND post_chain.id=post_worker.message_chain_id
+                    AND post_chain.session_id=tasks.session_id
+                    AND post_chain.task_id=tasks.id
+                    AND post_chain.agent='primary'::agent_type
+                    AND jsonb_typeof(post_chain.chain)='array'
+                  WHERE post_execution.operation_id=os.operation_id
+                    AND post_execution.status='started'
+                    AND post_execution.stage_kind='investigation'
+                    AND post_execution.started_at=os.stage_started_at
+                    AND post_plan.requests_closed_at IS NOT NULL
+                    AND post_plan.final_submitter_worker_run_id IS NULL
+                    AND post_plan.dynamic_request_policy ->> 'coordination_mode'=
+                        'investigation_task_orchestrator'
+                    AND post_item.kind='investigation_asset_primary'
+                    AND post_item.stable_key=concat(
+                        'asset:',current_primary.asset_lane_id::TEXT,
+                        ':primary:',current_primary.evolution_epoch::TEXT,
+                        ':round:',current_primary.schedule_round::TEXT
+                    )
+                    AND post_item.role=post_plan.leader_role
+                    AND post_item.created_by='server_phase_transition'
+                    AND post_item.required_for_barrier=FALSE
+                    AND post_item.conflict_key IS NULL
+                    AND post_item.output_schema='stage_unit_aggregate.v1'
+                    AND post_item.input_manifest_hash=current_primary.asset_context_sha256
+                    AND post_item.input_refs=jsonb_build_array(jsonb_build_object(
+                        'kind','investigation_asset_lane',
+                        'asset_lane_id',current_primary.asset_lane_id,
+                        'target_id',current_primary.target_id,
+                        'asset_context_sha256',current_primary.asset_context_sha256,
+                        'evolution_epoch',current_primary.evolution_epoch,
+                        'schedule_round',current_primary.schedule_round
+                    ))
+                    AND post_item.status='running'
+                    AND post_item.terminal_at IS NULL
+                    AND post_worker.specialist=post_plan.leader_role
+                    AND post_worker.work_item_kind=post_item.kind
+                    AND post_worker.work_item_key=post_item.stable_key
+                    AND post_worker.status='running'
+                    AND post_worker.terminal_at IS NULL
+                    AND post_worker.lease_token IS NOT NULL
+                    AND post_worker.lease_expires_at IS NOT NULL
+                    AND post_worker.lease_expires_at<=NOW()
+                    AND post_worker.active_tool_call_id IS NULL
+                    AND (
+                        SELECT COUNT(*)
+                          FROM investigation_pentagi_task_plans task_plan
+                          JOIN investigation_refiner_plan_ledgers ledger
+                            ON ledger.task_plan_id=task_plan.task_plan_id
+                           AND ledger.ledger_contract='dynamic_ordered_v2'
+                          JOIN investigation_refiner_plan_ledger_seals refiner_seal
+                            ON refiner_seal.task_plan_id=task_plan.task_plan_id
+                           AND refiner_seal.ledger_id=ledger.ledger_id
+                           AND refiner_seal.seal_contract='dynamic_ordered_v2'
+                           AND refiner_seal.final_active_realized_subtask_count=0
+                          JOIN pentagi_logical_dispatch_receipts primary_dispatch
+                            ON primary_dispatch.task_plan_id=task_plan.task_plan_id
+                           AND primary_dispatch.actor_kind='primary'
+                           AND primary_dispatch.subtask_id IS NULL
+                          JOIN investigation_pentagi_pipeline_events synthesis
+                            ON synthesis.task_plan_id=task_plan.task_plan_id
+                           AND synthesis.event_kind='primary_synthesis'
+                           AND synthesis.subtask_id IS NULL
+                           AND synthesis.actor_worker_run_id=primary_dispatch.worker_run_id
+                           AND synthesis.parent_dispatch_receipt_id=
+                               primary_dispatch.dispatch_receipt_id
+                         WHERE task_plan.stage_team_plan_id=post_plan.id
+                           AND task_plan.operation_id=os.operation_id
+                           AND task_plan.stage_execution_id=post_execution.id
+                           AND task_plan.stage_run_unit_id=post_unit.id
+                           AND task_plan.scope_snapshot_id=post_snapshot.id
+                           AND task_plan.organization_id=post_unit.organization_id
+                           AND task_plan.subject_kind='analysis_attempt'
+                           AND task_plan.status IN('open','sealed')
+                           AND investigation_asset_primary_dispatch_in_current_lineage(
+                               post_plan.id,os.operation_id,post_execution.id,post_unit.id,
+                               post_snapshot.id,post_unit.organization_id,
+                               primary_dispatch.worker_run_id
+                           )
+                           AND (
+                               SELECT COUNT(*)
+                                 FROM investigation_refiner_plan_ledger_seals all_refiner_seal
+                                WHERE all_refiner_seal.task_plan_id=task_plan.task_plan_id
+                           )=1
+                           AND (
+                               SELECT COUNT(*)
+                                 FROM pentagi_logical_dispatch_receipts all_primary_dispatch
+                                WHERE all_primary_dispatch.task_plan_id=task_plan.task_plan_id
+                                  AND all_primary_dispatch.actor_kind='primary'
+                           )=1
+                           AND (
+                               SELECT COUNT(*)
+                                 FROM pentagi_logical_dispatch_attempts primary_attempt
+                                WHERE primary_attempt.dispatch_receipt_id=
+                                      primary_dispatch.dispatch_receipt_id
+                                  AND primary_attempt.outcome IN('completed','residual')
+                                  AND primary_attempt.result_sha256=synthesis.event_sha256
+                           )=1
+                           AND (
+                               SELECT COUNT(*)
+                                 FROM investigation_pentagi_pipeline_events all_synthesis
+                                WHERE all_synthesis.task_plan_id=task_plan.task_plan_id
+                                  AND all_synthesis.event_kind='primary_synthesis'
+                           )=1
+                    )=1
+             )=1
+             AND (
+                 SELECT COUNT(*) FROM stage_runs active_count
+                  WHERE active_count.operation_id=os.operation_id
+                    AND active_count.status='started'
+             )=1"#;
+
 /// Persisted contract chooses one complete source. `dual_write_v2_preferred`
 /// may fall back to a complete legacy checkpoint, but never combines fields;
 /// `v2_only` has no fallback.
@@ -598,12 +827,16 @@ const RECOVERABLE_ABANDONED_CHECKPOINT_SQL: &str = r#"(
                      os.runtime_memory_contract='dual_write_v2_preferred'
                      AND (
                          (V2_RELATIONAL_RECOVERABLE_SQL)
+                         OR (V2_POST_SYNTHESIS_RECOVERABLE_SQL)
                          OR (LEGACY_RECOVERABLE_CHECKPOINT_SQL)
                      )
                  )
                  OR (
                      os.runtime_memory_contract='v2_only'
-                     AND (V2_RELATIONAL_RECOVERABLE_SQL)
+                     AND (
+                         (V2_RELATIONAL_RECOVERABLE_SQL)
+                         OR (V2_POST_SYNTHESIS_RECOVERABLE_SQL)
+                     )
                  )
              )"#;
 
@@ -616,6 +849,10 @@ fn recoverable_abandoned_checkpoint_sql() -> String {
         .replace(
             "V2_RELATIONAL_RECOVERABLE_SQL",
             V2_RELATIONAL_RECOVERABLE_SQL,
+        )
+        .replace(
+            "V2_POST_SYNTHESIS_RECOVERABLE_SQL",
+            V2_POST_SYNTHESIS_RECOVERABLE_SQL,
         )
 }
 
@@ -951,7 +1188,8 @@ mod tests {
         fail_abandoned_tasks_sql, latest_resumable_by_session_sql,
         pause_resumable_abandoned_tasks_sql, recoverable_abandoned_checkpoint_sql,
         ABANDONED_TASK_RESULT, INSERT_TASK_WITH_ID_SQL, LEGACY_GRAPH_RESUME_SQL,
-        LEGACY_RECOVERABLE_CHECKPOINT_SQL, V2_LIVE_LEASE_SQL, V2_RELATIONAL_RECOVERABLE_SQL,
+        LEGACY_RECOVERABLE_CHECKPOINT_SQL, V2_LIVE_LEASE_SQL, V2_POST_SYNTHESIS_RECOVERABLE_SQL,
+        V2_RELATIONAL_RECOVERABLE_SQL,
     };
 
     #[test]
@@ -972,6 +1210,42 @@ mod tests {
             "a checkpointed running task from a dead request must be immediately resumable: {sql}"
         );
         assert!(sql.contains("live_worker.lease_expires_at>NOW()"));
+    }
+
+    #[test]
+    fn relational_resume_uses_asset_schedule_to_identify_primary_chain() {
+        for required in [
+            "investigation_asset_primary_current_authorities asset_schedule",
+            "asset_schedule.primary_work_item_id=worker.work_item_id",
+            "asset_schedule.primary_worker_run_id=worker.id",
+            "asset_schedule.execution_rearm_receipt_id IS NOT NULL",
+            "asset_schedule.authority_primary_work_item_id=worker.work_item_id",
+            "asset_schedule.authority_primary_worker_run_id=worker.id",
+            "THEN 'primary'::agent_type",
+        ] {
+            assert!(
+                V2_RELATIONAL_RECOVERABLE_SQL.contains(required),
+                "missing {required}: {V2_RELATIONAL_RECOVERABLE_SQL}"
+            );
+        }
+    }
+
+    #[test]
+    fn relational_resume_accepts_only_receipt_backed_terminal_asset_primary_predecessors() {
+        for required in [
+            "current_primary.authority_primary_worker_run_id=worker.id",
+            "current_primary.execution_rearm_receipt_id IS NOT NULL",
+            "fixed.schedule_contract='fixed_roster_v1'",
+            "current_primary.primary_message_chain_id=fixed.primary_message_chain_id",
+            "fixed.browser_work_item_id",
+            "worker.status IN (",
+            "worker.active_tool_call_id IS NULL",
+        ] {
+            assert!(
+                V2_RELATIONAL_RECOVERABLE_SQL.contains(required),
+                "missing {required}: {V2_RELATIONAL_RECOVERABLE_SQL}"
+            );
+        }
     }
 
     #[test]
@@ -1135,6 +1409,65 @@ mod tests {
 
         assert_eq!(fail_sql.matches(&predicate).count(), 1, "sql={fail_sql}");
         assert_eq!(pause_sql.matches(&predicate).count(), 1, "sql={pause_sql}");
+    }
+
+    #[test]
+    fn post_synthesis_reaper_requires_exact_expired_current_primary_authority() {
+        let sql = V2_POST_SYNTHESIS_RECOVERABLE_SQL;
+
+        for required in [
+            "os.current_stage='investigation'",
+            "post_plan.requests_closed_at IS NOT NULL",
+            "post_plan.final_submitter_worker_run_id IS NULL",
+            "current_primary.primary_work_item_id",
+            "current_primary.primary_worker_run_id",
+            "current_primary.resume_dispatch_epoch=post_plan.dispatch_epoch",
+            "post_item.kind='investigation_asset_primary'",
+            "post_item.status='running'",
+            "post_worker.status='running'",
+            "post_worker.lease_token IS NOT NULL",
+            "post_worker.lease_expires_at<=NOW()",
+            "post_worker.active_tool_call_id IS NULL",
+            "ledger.ledger_contract='dynamic_ordered_v2'",
+            "refiner_seal.seal_contract='dynamic_ordered_v2'",
+            "refiner_seal.final_active_realized_subtask_count=0",
+            "investigation_asset_primary_dispatch_in_current_lineage",
+            "all_refiner_seal.task_plan_id=task_plan.task_plan_id",
+            "all_primary_dispatch.actor_kind='primary'",
+            "primary_attempt.outcome IN('completed','residual')",
+            "primary_attempt.result_sha256=synthesis.event_sha256",
+            "all_synthesis.event_kind='primary_synthesis'",
+        ] {
+            assert!(sql.contains(required), "missing {required}: {sql}");
+        }
+        assert!(
+            !sql.contains("lease_expires_at>NOW()"),
+            "post-synthesis recovery must be proven by durable authority, not a live lease: {sql}"
+        );
+    }
+
+    #[test]
+    fn post_synthesis_recovery_is_shared_by_task_pause_and_fail_complement() {
+        let predicate = recoverable_abandoned_checkpoint_sql();
+        let fail_sql = fail_abandoned_tasks_sql();
+        let pause_sql = pause_resumable_abandoned_tasks_sql();
+
+        assert!(
+            predicate.contains(V2_POST_SYNTHESIS_RECOVERABLE_SQL),
+            "predicate={predicate}"
+        );
+        assert_eq!(
+            fail_sql.matches(V2_POST_SYNTHESIS_RECOVERABLE_SQL).count(),
+            2,
+            "post-synthesis authority must exclude both dual-write-v2 and v2-only tasks from failure: {fail_sql}"
+        );
+        assert_eq!(
+            pause_sql
+                .matches(V2_POST_SYNTHESIS_RECOVERABLE_SQL)
+                .count(),
+            2,
+            "post-synthesis authority must demote both dual-write-v2 and v2-only abandoned tasks to waiting: {pause_sql}"
+        );
     }
 
     /// A flat first-stage checkpoint is recoverable only when every identity
